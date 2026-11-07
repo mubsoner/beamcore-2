@@ -1,4 +1,4 @@
-import { type ActionFunctionArgs } from '@remix-run/cloudflare';
+import type { ActionFunctionArgs } from '@remix-run/node';
 import { StreamingTextResponse, parseStreamPart } from 'ai';
 import { streamText } from '~/lib/.server/llm/stream-text';
 import { stripIndents } from '~/utils/stripIndent';
@@ -10,15 +10,14 @@ export async function action(args: ActionFunctionArgs) {
   return enhancerAction(args);
 }
 
-async function enhancerAction({ context, request }: ActionFunctionArgs) {
+async function enhancerAction({ request }: ActionFunctionArgs) {
   const { message } = await request.json<{ message: string }>();
 
   try {
-    const result = await streamText(
-      [
-        {
-          role: 'user',
-          content: stripIndents`
+    const result = await streamText([
+      {
+        role: 'user',
+        content: stripIndents`
           I want you to improve the user prompt that is wrapped in \`<original_prompt>\` tags.
 
           IMPORTANT: Only respond with the improved prompt and nothing else!
@@ -27,10 +26,8 @@ async function enhancerAction({ context, request }: ActionFunctionArgs) {
             ${message}
           </original_prompt>
         `,
-        },
-      ],
-      context.cloudflare.env,
-    );
+      },
+    ]);
 
     const transformStream = new TransformStream({
       transform(chunk, controller) {
@@ -46,15 +43,9 @@ async function enhancerAction({ context, request }: ActionFunctionArgs) {
       },
     });
 
-    const transformedStream = result.toAIStream().pipeThrough(transformStream);
-
-    return new StreamingTextResponse(transformedStream);
+    return new StreamingTextResponse(result.toAIStream().pipeThrough(transformStream));
   } catch (error) {
-    console.log(error);
-
-    throw new Response(null, {
-      status: 500,
-      statusText: 'Internal Server Error',
-    });
+    console.error('Prompt enhancement failed:', error);
+    throw new Response(null, { status: 500, statusText: 'Internal Server Error' });
   }
 }

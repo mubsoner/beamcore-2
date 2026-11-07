@@ -1,4 +1,4 @@
-import type { AppLoadContext, EntryContext } from '@remix-run/cloudflare';
+import type { AppLoadContext, EntryContext } from '@remix-run/node';
 import { RemixServer } from '@remix-run/react';
 import { isbot } from 'isbot';
 import { renderToReadableStream } from 'react-dom/server';
@@ -42,7 +42,6 @@ export default async function handleRequest(
             if (done) {
               controller.enqueue(new Uint8Array(new TextEncoder().encode(`</div></body></html>`)));
               controller.close();
-
               return;
             }
 
@@ -54,9 +53,9 @@ export default async function handleRequest(
             readable.cancel();
           });
       }
+
       read();
     },
-
     cancel() {
       readable.cancel();
     },
@@ -67,7 +66,6 @@ export default async function handleRequest(
   }
 
   responseHeaders.set('Content-Type', 'text/html');
-
   responseHeaders.set('Cross-Origin-Embedder-Policy', 'require-corp');
   responseHeaders.set('Cross-Origin-Opener-Policy', 'same-origin');
 
