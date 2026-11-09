@@ -7,24 +7,37 @@ export interface PreviewInfo {
   baseUrl: string;
 }
 
-// A singleton atom lets runtime server-ready events and WebContainer port
-// events converge on the same state consumed by the Preview component.
-const previews = atom<PreviewInfo[]>([]);
+/** Shared by the Workbench preview listener and ActionRunner server-ready events. */
+export const previewStore = atom<PreviewInfo[]>([]);
 
 export function registerWebContainerPreview(port: number, baseUrl: string) {
-  if (!Number.isInteger(port) || port < 1 || port > 65535 || !baseUrl) {
-    return;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return false;
   }
 
-  const existing = previews.get().filter((preview) => preview.port !== port);
-  previews.set([...existing, { port, ready: true, baseUrl }]);
+  let parsedUrl: URL;
+
+  try {
+    parsedUrl = new URL(baseUrl);
+  } catch {
+    return false;
+  }
+
+  if (!['http:', 'https:'].includes(parsedUrl.protocol) || !parsedUrl.hostname) {
+    return false;
+  }
+
+  const existing = previewStore.get().filter((preview) => preview.port !== port);
+  previewStore.set([...existing, { port, ready: true, baseUrl: parsedUrl.toString() }]);
+
+  return true;
 }
 
 export class PreviewsStore {
   #availablePreviews = new Map<number, PreviewInfo>();
   #webcontainer: Promise<WebContainer>;
 
-  previews = previews;
+  previews = previewStore;
 
   constructor(webcontainerPromise: Promise<WebContainer>) {
     this.#webcontainer = webcontainerPromise;
