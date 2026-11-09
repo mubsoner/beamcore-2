@@ -6,8 +6,10 @@ import { createScopedLogger } from '~/utils/logger';
 import { WORK_DIR } from '~/utils/constants';
 import { executeDaytonaCommand, remotePreviewStore, syncDaytonaFiles, writeDaytonaFile, type DaytonaSyncFile } from '~/lib/daytona.client';
 import type { FileMap } from '~/lib/stores/files';
+import { registerWebContainerPreview } from '~/lib/stores/previews';
 import { unreachable } from '~/utils/unreachable';
 import type { ActionCallbackData } from './message-parser';
+import { isDaytonaUnavailableError, isDevServerCommand, normalizeProjectPath } from './command-utils';
 
 const logger = createScopedLogger('ActionRunner');
 
@@ -40,7 +42,6 @@ type ActionsMap = MapStore<Record<string, ActionState>>;
 export class ActionRunner {
   #webcontainer: Promise<WebContainer>;
   #getFiles: () => FileMap;
-  #webcontainerReady = false;
   #daytonaUnavailableReason?: string;
   #currentExecutionPromise: Promise<void> = Promise.resolve();
 
@@ -50,23 +51,16 @@ export class ActionRunner {
     this.#webcontainer = webcontainerPromise;
     this.#getFiles = getFiles;
 
-    void this.#webcontainer.then(
-      () => {
-        this.#webcontainerReady = true;
-      },
-      (error) => {
-        this.#webcontainerReady = false;
-        logger.warn('Browser WebContainer is unavailable; Daytona remains the primary runtime.', error);
-      },
-    );
+    void this.#webcontainer.catch((error) => {
+      logger.warn('Browser WebContainer is unavailable; Daytona remains the primary runtime.', error);
+    });
   }
 
   addAction(data: ActionCallbackData) {
     const { actionId } = data;
     const actions = this.actions.get();
-    const action = actions[actionId];
 
-    if (action) {
+    if (actions[actionId]) {
       return;
     }
 
@@ -81,10 +75,6 @@ export class ActionRunner {
         this.#updateAction(actionId, { status: 'aborted' });
       },
       abortSignal: abortController.signal,
-    });
-
-    this.#currentExecutionPromise.then(() => {
-      this.#updateAction(actionId, { status: 'running' });
     });
   }
 
@@ -102,16 +92,19 @@ export class ActionRunner {
 
     this.#updateAction(actionId, { ...action, ...data.action, executed: true });
 
+    // Keep all action types in one queue: file writes must finish before the
+    // following install/start command can observe the project on either runtime.
     this.#currentExecutionPromise = this.#currentExecutionPromise
       .then(() => this.#executeAction(actionId))
       .catch((error) => {
+        // #executeAction records the failure on the action. Recover the queue so
+        // later actions still run, while retaining the visible failed status.
         console.error('[BeamCore] Action execution failed:', error);
       });
   }
 
   async #executeAction(actionId: string) {
     const action = this.actions.get()[actionId];
-
     this.#updateAction(actionId, { status: 'running' });
 
     try {
@@ -144,9 +137,8 @@ export class ActionRunner {
       throw new Error('Command was cancelled before execution.');
     }
 
-    // Daytona is the preferred runtime. If its credentials or service are
-    // unavailable, continue in the browser WebContainer instead of silently
-    // leaving the generated project without a running Preview.
+    // Daytona is preferred; a missing credential/service should not prevent a
+    // local browser runtime from executing the generated project.
     if (this.#daytonaUnavailableReason) {
       logger.warn('Using WebContainer because Daytona is unavailable: ' + this.#daytonaUnavailableReason);
       return this.#runWebContainerCommand(action.content);
@@ -190,7 +182,7 @@ export class ActionRunner {
       const output = result.output || '';
 
       if (typeof result.exitCode === 'number' && result.exitCode !== 0) {
-        throw new Error('Daytona command failed with exit code ' + result.exitCode + '.\\n' + output);
+        throw new Error('Daytona command failed with exit code ' + result.exitCode + '.\n' + output);
       }
 
       if (result.preview) {
@@ -200,7 +192,7 @@ export class ActionRunner {
       logger.info('Command completed in Daytona sandbox.');
       return { output };
     } catch (error) {
-      if (!this.#isDaytonaUnavailable(error)) {
+      if (!isDaytonaUnavailableError(error)) {
         throw error;
       }
 
@@ -210,14 +202,9 @@ export class ActionRunner {
     }
   }
 
-  #isDaytonaUnavailable(error: unknown) {
-    const detail = error instanceof Error ? error.message : String(error);
-    return /DAYTONA_API_KEY|Daytona request failed|Daytona could not complete|Failed to fetch|NetworkError|ECONN|\b50[023]\b|timed out/i.test(detail);
-  }
-
   async #runWebContainerCommand(command: string) {
     const webcontainer = await this.#webcontainer;
-    const isDevServer = /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|preview)\b/i.test(command);
+    const isDevServer = isDevServerCommand(command);
     const process = await webcontainer.spawn('jsh');
     let output = '';
 
@@ -242,6 +229,7 @@ export class ActionRunner {
         const dispose = webcontainer.on('server-ready', (port, url) => {
           clearTimeout(timeout);
           dispose();
+          registerWebContainerPreview(port, url);
           resolve({ port, url });
         });
       });
@@ -258,14 +246,14 @@ export class ActionRunner {
     if (serverReadyPromise) {
       const server = await serverReadyPromise;
       logger.info('WebContainer Preview is ready on port ' + server.port + ': ' + server.url);
-      return { output: (output ? output + '\\n' : '') + 'WebContainer Preview ready: ' + server.url };
+      return { output: (output ? output + '\n' : '') + 'WebContainer Preview ready: ' + server.url };
     }
 
     const exitCode = await process.exit;
     await outputFinished;
 
     if (exitCode !== 0) {
-      throw new Error('WebContainer command failed with exit code ' + exitCode + '.\\n' + output);
+      throw new Error('WebContainer command failed with exit code ' + exitCode + '.\n' + output);
     }
 
     logger.info('Command completed in browser WebContainer.');
@@ -277,41 +265,26 @@ export class ActionRunner {
       unreachable('Expected file action');
     }
 
-    const requestedPath = action.filePath.replace(/\\\\/g, '/');
-    const safePath = nodePath.posix.normalize(requestedPath);
-
-    if (
-      !requestedPath ||
-      nodePath.posix.isAbsolute(requestedPath) ||
-      safePath === '.' ||
-      safePath === '..' ||
-      safePath.startsWith('../')
-    ) {
-      throw new Error('Refusing to write outside the project directory: ' + action.filePath);
-    }
-
+    const safePath = normalizeProjectPath(action.filePath);
     let browserSaved = false;
     let remoteSaved = false;
     let browserError: unknown;
 
-    // Write locally first so a missing Daytona credential never discards the
-    // AI-generated file. The local editor and Preview remain usable offline.
+    // Preserve generated files locally first so a missing Daytona key never
+    // discards model output. Each successful destination is recorded below.
     try {
       const webcontainer = await this.#webcontainer;
       const folder = nodePath.posix.dirname(safePath);
 
       if (folder !== '.') {
         await webcontainer.fs.mkdir(folder, { recursive: true });
-        logger.debug('Created browser project folder', folder);
       }
 
       await webcontainer.fs.writeFile(safePath, action.content);
-      this.#webcontainerReady = true;
       browserSaved = true;
       logger.debug('File saved to browser WebContainer: ' + safePath);
     } catch (error) {
       browserError = error;
-      this.#webcontainerReady = false;
       logger.warn('Could not save the file to browser WebContainer: ' + safePath, error);
     }
 
@@ -327,10 +300,9 @@ export class ActionRunner {
     }
 
     if (!browserSaved && !remoteSaved) {
-      const browserDetail = browserError instanceof Error ? browserError.message : String(browserError || '');
+      const browserDetail = browserError instanceof Error ? browserError.message : String(browserError || 'unavailable');
       throw new Error(
-        'Could not save ' + safePath + ' in either runtime. WebContainer: ' +
-        (browserDetail || 'unavailable') + '. Daytona: ' +
+        'Could not save ' + safePath + ' in either runtime. WebContainer: ' + browserDetail + '. Daytona: ' +
         (this.#daytonaUnavailableReason || 'unavailable'),
       );
     }

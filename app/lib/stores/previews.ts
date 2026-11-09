@@ -7,15 +7,27 @@ export interface PreviewInfo {
   baseUrl: string;
 }
 
+// A singleton atom lets runtime server-ready events and WebContainer port
+// events converge on the same state consumed by the Preview component.
+const previews = atom<PreviewInfo[]>([]);
+
+export function registerWebContainerPreview(port: number, baseUrl: string) {
+  if (!Number.isInteger(port) || port < 1 || port > 65535 || !baseUrl) {
+    return;
+  }
+
+  const existing = previews.get().filter((preview) => preview.port !== port);
+  previews.set([...existing, { port, ready: true, baseUrl }]);
+}
+
 export class PreviewsStore {
   #availablePreviews = new Map<number, PreviewInfo>();
   #webcontainer: Promise<WebContainer>;
 
-  previews = atom<PreviewInfo[]>([]);
+  previews = previews;
 
   constructor(webcontainerPromise: Promise<WebContainer>) {
     this.#webcontainer = webcontainerPromise;
-
     this.#init();
   }
 
@@ -25,25 +37,24 @@ export class PreviewsStore {
     webcontainer.on('port', (port, type, url) => {
       let previewInfo = this.#availablePreviews.get(port);
 
-      if (type === 'close' && previewInfo) {
+      if (type === 'close') {
         this.#availablePreviews.delete(port);
         this.previews.set(this.previews.get().filter((preview) => preview.port !== port));
-
         return;
       }
 
-      const previews = this.previews.get();
-
       if (!previewInfo) {
-        previewInfo = { port, ready: type === 'open', baseUrl: url };
+        previewInfo = this.previews.get().find((preview) => preview.port === port) ?? {
+          port,
+          ready: type === 'open',
+          baseUrl: url,
+        };
         this.#availablePreviews.set(port, previewInfo);
-        previews.push(previewInfo);
       }
 
       previewInfo.ready = type === 'open';
       previewInfo.baseUrl = url;
-
-      this.previews.set([...previews]);
+      this.previews.set([...this.previews.get().filter((preview) => preview.port !== port), previewInfo]);
     });
   }
 }
