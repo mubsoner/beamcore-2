@@ -10,23 +10,23 @@ const PROJECT_ACTION_TAG_CLOSE = '</beamcoreAction>';
 
 const logger = createScopedLogger('MessageParser');
 
-export interface ArtifactCallbackData extends BeamCoreProjectData {
+export interface ProjectCallbackData extends BeamCoreProjectData {
   messageId: string;
 }
 
 export interface ActionCallbackData {
-  artifactId: string;
+  projectId: string;
   messageId: string;
   actionId: string;
   action: BeamCoreAction;
 }
 
-export type ArtifactCallback = (data: ArtifactCallbackData) => void;
+export type ProjectCallback = (data: ProjectCallbackData) => void;
 export type ActionCallback = (data: ActionCallbackData) => void;
 
 export interface ParserCallbacks {
-  onArtifactOpen?: ArtifactCallback;
-  onArtifactClose?: ArtifactCallback;
+  onProjectOpen?: ProjectCallback;
+  onProjectClose?: ProjectCallback;
   onActionOpen?: ActionCallback;
   onActionClose?: ActionCallback;
 }
@@ -39,14 +39,14 @@ type ElementFactory = (props: ElementFactoryProps) => string;
 
 export interface StreamingMessageParserOptions {
   callbacks?: ParserCallbacks;
-  artifactElement?: ElementFactory;
+  projectElement?: ElementFactory;
 }
 
 interface MessageState {
   position: number;
-  insideArtifact: boolean;
+  insideProject: boolean;
   insideAction: boolean;
-  currentArtifact?: BeamCoreProjectData;
+  currentProject?: BeamCoreProjectData;
   currentAction: BeamCoreActionData;
   actionId: number;
 }
@@ -71,7 +71,7 @@ export class StreamingMessageParser {
       state = {
         position: 0,
         insideAction: false,
-        insideArtifact: false,
+        insideProject: false,
         currentAction: { content: '' },
         actionId: 0,
       };
@@ -84,11 +84,11 @@ export class StreamingMessageParser {
     let earlyBreak = false;
 
     while (i < input.length) {
-      if (state.insideArtifact) {
-        const currentArtifact = state.currentArtifact;
+      if (state.insideProject) {
+        const currentProject = state.currentProject;
 
-        if (currentArtifact === undefined) {
-          unreachable('Artifact not initialized');
+        if (currentProject === undefined) {
+          unreachable('Project not initialized');
         }
 
         if (state.insideAction) {
@@ -108,7 +108,7 @@ export class StreamingMessageParser {
             currentAction.content = content;
 
             this._options.callbacks?.onActionClose?.({
-              artifactId: currentArtifact.id,
+              projectId: currentProject.id,
               messageId,
 
               /**
@@ -141,7 +141,7 @@ export class StreamingMessageParser {
               state.currentAction = this.#parseActionTag(input, actionOpenIndex, actionEndIndex);
 
               this._options.callbacks?.onActionOpen?.({
-                artifactId: currentArtifact.id,
+                projectId: currentProject.id,
                 messageId,
                 actionId: String(state.actionId++),
                 action: state.currentAction as BeamCoreAction,
@@ -152,10 +152,10 @@ export class StreamingMessageParser {
               break;
             }
           } else if (artifactCloseIndex !== -1) {
-            this._options.callbacks?.onArtifactClose?.({ messageId, ...currentArtifact });
+            this._options.callbacks?.onProjectClose?.({ messageId, ...currentProject });
 
-            state.insideArtifact = false;
-            state.currentArtifact = undefined;
+            state.insideProject = false;
+            state.currentProject = undefined;
 
             i = artifactCloseIndex + PROJECT_TAG_CLOSE.length;
           } else {
@@ -184,28 +184,28 @@ export class StreamingMessageParser {
               const artifactTag = input.slice(i, openTagEnd + 1);
 
               const artifactTitle = this.#extractAttribute(artifactTag, 'title') as string;
-              const artifactId = this.#extractAttribute(artifactTag, 'id') as string;
+              const projectId = this.#extractAttribute(artifactTag, 'id') as string;
 
               if (!artifactTitle) {
-                logger.warn('Artifact title missing');
+                logger.warn('Project title missing');
               }
 
-              if (!artifactId) {
-                logger.warn('Artifact id missing');
+              if (!projectId) {
+                logger.warn('Project id missing');
               }
 
-              state.insideArtifact = true;
+              state.insideProject = true;
 
-              const currentArtifact = {
-                id: artifactId,
+              const currentProject = {
+                id: projectId,
                 title: artifactTitle,
               } satisfies BeamCoreProjectData;
 
-              state.currentArtifact = currentArtifact;
+              state.currentProject = currentProject;
 
-              this._options.callbacks?.onArtifactOpen?.({ messageId, ...currentArtifact });
+              this._options.callbacks?.onProjectOpen?.({ messageId, ...currentProject });
 
-              const artifactFactory = this._options.artifactElement ?? createArtifactElement;
+              const artifactFactory = this._options.projectElement ?? createProjectElement;
 
               output += artifactFactory({ messageId });
 
@@ -277,9 +277,9 @@ export class StreamingMessageParser {
   }
 }
 
-const createArtifactElement: ElementFactory = (props) => {
+const createProjectElement: ElementFactory = (props) => {
   const elementProps = [
-    'class="__boltArtifact__"',
+    'class="__beamcoreProject__"',
     ...Object.entries(props).map(([key, value]) => {
       return `data-${camelToDashCase(key)}=${JSON.stringify(value)}`;
     }),
