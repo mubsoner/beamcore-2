@@ -268,12 +268,25 @@ export class ActionRunner {
     }
 
     const safePath = normalizeProjectPath(action.filePath);
-    let browserSaved = false;
     let remoteSaved = false;
-    let browserError: unknown;
+    let browserSaved = false;
+    let remoteError: unknown;
 
-    // Preserve generated files locally first so a missing Daytona key never
-    // discards model output. Each successful destination is recorded below.
+    // Save to Daytona first so the editor and Preview share one authoritative project.
+    if (!this.#daytonaUnavailableReason) {
+      try {
+        await writeDaytonaFile(safePath, action.content);
+        remoteSaved = true;
+      } catch (error) {
+        remoteError = error;
+        if (!isDaytonaUnavailableError(error)) throw error;
+        this.#daytonaUnavailableReason = error instanceof Error ? error.message : String(error);
+        remotePreviewStore.set(undefined);
+        logger.warn('Daytona file write unavailable; trying browser fallback.', error);
+      }
+    }
+
+    // Browser storage is an optional mirror/fallback, never a prerequisite for Daytona.
     try {
       const webcontainer = await withTimeout(
         this.#webcontainer,
@@ -281,37 +294,16 @@ export class ActionRunner {
         'The browser WebContainer runtime did not finish starting within 60 seconds. ' + getWebContainerCookieHelp(),
       );
       const folder = nodePath.posix.dirname(safePath);
-
-      if (folder !== '.') {
-        await webcontainer.fs.mkdir(folder, { recursive: true });
-      }
-
+      if (folder !== '.') await webcontainer.fs.mkdir(folder, { recursive: true });
       await webcontainer.fs.writeFile(safePath, action.content);
       browserSaved = true;
-      logger.debug('File saved to browser WebContainer: ' + safePath);
     } catch (error) {
-      browserError = error;
-      logger.warn('Could not save the file to browser WebContainer: ' + safePath, error);
+      logger.warn('Optional browser file mirror is unavailable: ' + safePath, error);
     }
 
-    if (!this.#daytonaUnavailableReason) {
-      try {
-        await writeDaytonaFile(safePath, action.content);
-        remoteSaved = true;
-        logger.debug('File mirrored to Daytona sandbox: ' + safePath);
-      } catch (error) {
-        this.#daytonaUnavailableReason = error instanceof Error ? error.message : String(error);
-        remotePreviewStore.set(undefined);
-        logger.warn('Daytona file sync is unavailable; keeping the file in WebContainer: ' + safePath, error);
-      }
-    }
-
-    if (!browserSaved && !remoteSaved) {
-      const browserDetail = browserError instanceof Error ? browserError.message : String(browserError || 'unavailable');
-      throw new Error(
-        'Could not save ' + safePath + ' in either runtime. WebContainer: ' + browserDetail + '. Daytona: ' +
-        (this.#daytonaUnavailableReason || 'unavailable'),
-      );
+    if (!remoteSaved && !browserSaved) {
+      const remoteDetail = remoteError instanceof Error ? remoteError.message : String(remoteError || 'unavailable');
+      throw new Error('Could not save ' + safePath + '. Daytona: ' + remoteDetail + '. Browser runtime is unavailable.');
     }
   }
 
