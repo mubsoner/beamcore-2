@@ -48,6 +48,8 @@ type ElementFactory = (props: ElementFactoryProps) => string;
 export interface StreamingMessageParserOptions {
   callbacks?: ParserCallbacks;
   projectElement?: ElementFactory;
+  /** @deprecated Use projectElement. */
+  artifactElement?: ElementFactory;
 }
 
 interface MessageState {
@@ -191,10 +193,10 @@ export class StreamingMessageParser {
             if (openTagEnd !== -1) {
               const artifactTag = input.slice(i, openTagEnd + 1);
 
-              const artifactTitle = this.#extractAttribute(artifactTag, 'title') as string;
+              const projectTitle = this.#extractAttribute(artifactTag, 'title') as string;
               const projectId = this.#extractAttribute(artifactTag, 'id') as string;
 
-              if (!artifactTitle) {
+              if (!projectTitle) {
                 logger.warn('Project title missing');
               }
 
@@ -213,9 +215,9 @@ export class StreamingMessageParser {
 
               (this._options.callbacks?.onProjectOpen ?? this._options.callbacks?.onArtifactOpen)?.({ messageId, ...currentProject });
 
-              const artifactFactory = this._options.projectElement ?? createProjectElement;
+              const projectFactory = this._options.projectElement ?? this._options.artifactElement ?? createProjectElement;
 
-              output += artifactFactory({ messageId });
+              output += projectFactory({ messageId });
 
               i = openTagEnd + 1;
             } else {
