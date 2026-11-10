@@ -10,7 +10,7 @@ import { registerWebContainerPreview } from '~/lib/stores/previews';
 import { getWebContainerCookieHelp, WEB_CONTAINER_STARTUP_TIMEOUT_MS } from '~/lib/webcontainer/support';
 import { unreachable } from '~/utils/unreachable';
 import type { ActionCallbackData } from './message-parser';
-import { isDaytonaUnavailableError, isDevServerCommand, normalizeProjectPath } from './command-utils';
+import { getProjectPreviewPort, isDaytonaUnavailableError, isDevServerCommand, normalizeProjectPath } from './command-utils';
 
 const logger = createScopedLogger('ActionRunner');
 
@@ -186,7 +186,7 @@ export class ActionRunner {
       }
 
       if (files.length > 0) await syncDaytonaFiles(files);
-      const result = await executeDaytonaCommand(action.content);
+      const result = await executeDaytonaCommand(\n        action.content,\n        isDevServerCommand(action.content) ? getProjectPreviewPort(action.content, this.#getFiles()) : undefined,\n      );
       const output = result.output || '';
 
       if (typeof result.exitCode === 'number' && result.exitCode !== 0) {
