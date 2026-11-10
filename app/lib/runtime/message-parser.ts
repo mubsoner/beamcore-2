@@ -57,6 +57,15 @@ export class StreamingMessageParser {
   constructor(private _options: StreamingMessageParserOptions = {}) {}
 
   parse(messageId: string, input: string) {
+    // Normalize the native BeamCore protocol to the stable internal parser tokens.
+    // Keep accepting legacy Bolt tags so older saved conversations still render.
+    const normalizedInput = input
+      .replace(/<beamcoreProject(?=[\\s>])/gi, '<boltArtifact')
+      .replace(/<\\/beamcoreProject\\s*>/gi, '</boltArtifact>')
+      .replace(/<beamcoreAction(?=[\\s>])/gi, '<boltAction')
+      .replace(/<\\/beamcoreAction\\s*>/gi, '</boltAction>');
+    input = normalizedInput;
+
     let state = this.#messages.get(messageId);
 
     if (!state) {
