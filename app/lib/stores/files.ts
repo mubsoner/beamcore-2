@@ -64,7 +64,7 @@ export class FilesStore {
   }
 
   setGeneratedFile(relativePath: string, content: string) {
-    const safeRelativePath = relativePath.replace(/\\\\/g, '/').replace(/^\\.\\//, '');
+    const safeRelativePath = relativePath.replace(/\\/g, '/').replace(/^\\.\\//, '');
     if (!safeRelativePath || safeRelativePath.startsWith('/') || safeRelativePath.split('/').includes('..')) {
       throw new Error('Refusing to add a file outside the project directory.');
     }
