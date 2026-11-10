@@ -7,6 +7,7 @@ import { WORK_DIR } from '~/utils/constants';
 import { executeDaytonaCommand, remotePreviewStore, syncDaytonaFiles, writeDaytonaFile, type DaytonaSyncFile } from '~/lib/daytona.client';
 import type { FileMap } from '~/lib/stores/files';
 import { registerWebContainerPreview } from '~/lib/stores/previews';
+import { getWebContainerCookieHelp, WEB_CONTAINER_STARTUP_TIMEOUT_MS } from '~/lib/webcontainer/support';
 import { unreachable } from '~/utils/unreachable';
 import type { ActionCallbackData } from './message-parser';
 import { isDaytonaUnavailableError, isDevServerCommand, normalizeProjectPath } from './command-utils';
@@ -222,8 +223,8 @@ export class ActionRunner {
   async #runWebContainerCommand(command: string) {
     const webcontainer = await withTimeout(
       this.#webcontainer,
-      20_000,
-      'The browser WebContainer runtime did not finish starting within 20 seconds. Check browser support and cross-origin isolation.',
+      WEB_CONTAINER_STARTUP_TIMEOUT_MS,
+      'The browser WebContainer runtime did not finish starting within 60 seconds. ' + getWebContainerCookieHelp(),
     );
     const isDevServer = isDevServerCommand(command);
     const process = await webcontainer.spawn('jsh');
