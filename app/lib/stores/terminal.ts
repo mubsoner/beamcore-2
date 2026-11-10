@@ -3,6 +3,7 @@ import type { ITerminal } from '~/types/terminal';
 import { executeDaytonaCommand, ensureDaytonaSession, remotePreviewStore } from '~/lib/daytona.client';
 import { webcontainer } from '~/lib/webcontainer';
 import { coloredText } from '~/utils/terminal';
+import { getWebContainerCookieHelp, WEB_CONTAINER_STARTUP_TIMEOUT_MS } from '~/lib/webcontainer/support';
 
 function withRuntimeTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -11,7 +12,7 @@ function withRuntimeTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<
     promise,
     new Promise<never>((_, reject) => {
       timeout = setTimeout(
-        () => reject(new Error('WebContainer did not finish starting within 20 seconds. Check browser support and cross-origin isolation.')),
+        () => reject(new Error('WebContainer did not finish starting within 60 seconds. ' + getWebContainerCookieHelp())),
         timeoutMs,
       );
     }),
@@ -53,7 +54,7 @@ export class TerminalStore {
     }
 
     try {
-      const container = await withRuntimeTimeout(webcontainer, 20_000);
+      const container = await withRuntimeTimeout(webcontainer, WEB_CONTAINER_STARTUP_TIMEOUT_MS);
       const process = await container.spawn('jsh');
       const writer = process.input.getWriter();
 
