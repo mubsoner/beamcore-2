@@ -153,69 +153,49 @@ export class ActionRunner {
       throw new Error('Command was cancelled before execution.');
     }
 
-    // Daytona is preferred; a missing credential/service should not prevent a
-    // local browser runtime from executing the generated project.
+    // Daytona is the primary runtime. Only infrastructure/credential failures
+    // trigger the optional browser fallback; ordinary command errors stay visible.
     if (this.#daytonaUnavailableReason) {
       remotePreviewStore.set(undefined);
-      logger.warn('Using WebContainer because Daytona is unavailable: ' + this.#daytonaUnavailableReason);
       return this.#runWebContainerCommand(action.content);
     }
 
-    const files: DaytonaSyncFile[] = [];
-    let totalBytes = 0;
-
-    for (const [absolutePath, entry] of Object.entries(this.#getFiles())) {
-      if (entry?.type !== 'file' || entry.isBinary) {
-        continue;
-      }
-
-      const relativePath = nodePath.posix.relative(WORK_DIR, absolutePath.replace(/\\/g, '/'));
-
-      if (
-        !relativePath ||
-        relativePath === '.' ||
-        relativePath === '..' ||
-        relativePath.startsWith('../') ||
-        /(^|\/)(?:node_modules|\.git|\.cache|dist|build)(\/|$)/.test(relativePath)
-      ) {
-        continue;
-      }
-
-      totalBytes += new TextEncoder().encode(entry.content).byteLength;
-
-      if (files.length >= 300 || totalBytes > 2_000_000) {
-        break;
-      }
-
-      files.push({ path: relativePath, content: entry.content });
-    }
-
     try {
-      if (files.length > 0) {
-        await syncDaytonaFiles(files);
+      const files: DaytonaSyncFile[] = [];
+      let totalBytes = 0;
+
+      for (const [absolutePath, entry] of Object.entries(this.#getFiles())) {
+        if (entry?.type !== 'file' || entry.isBinary) continue;
+
+        const relativePath = nodePath.posix.relative(WORK_DIR, absolutePath.replace(/\\\\/g, '/'));
+        if (!relativePath || relativePath === '.' || relativePath === '..' || relativePath.startsWith('../') ||
+          /(^|\\/)(?:node_modules|\\.git|\\.cache|dist|build)(\\/|$)/.test(relativePath)) continue;
+
+        const bytes = new TextEncoder().encode(entry.content).byteLength;
+        if (files.length >= 300 || totalBytes + bytes > 2_000_000) {
+          throw new Error('Generated project exceeds the 300-file / 2 MB Daytona sync limit.');
+        }
+        totalBytes += bytes;
+        files.push({ path: relativePath, content: entry.content });
       }
 
+      if (files.length > 0) await syncDaytonaFiles(files);
       const result = await executeDaytonaCommand(action.content);
       const output = result.output || '';
 
       if (typeof result.exitCode === 'number' && result.exitCode !== 0) {
-        throw new Error('Daytona command failed with exit code ' + result.exitCode + '.\n' + output);
+        throw new Error('Daytona command failed with exit code ' + result.exitCode + '.\\n' + output);
       }
 
-      if (result.preview) {
-        remotePreviewStore.set(result.preview);
-      }
-
+      if (result.preview) remotePreviewStore.set(result.preview);
       logger.info('Command completed in Daytona sandbox.');
       return { output };
     } catch (error) {
-      if (!isDaytonaUnavailableError(error)) {
-        throw error;
-      }
+      if (!isDaytonaUnavailableError(error)) throw error;
 
       this.#daytonaUnavailableReason = error instanceof Error ? error.message : String(error);
       remotePreviewStore.set(undefined);
-      logger.warn('Daytona is unavailable; falling back to the browser WebContainer.', error);
+      logger.warn('Daytona is unavailable; falling back to browser WebContainer.', error);
       return this.#runWebContainerCommand(action.content);
     }
   }
