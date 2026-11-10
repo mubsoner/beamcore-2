@@ -46,7 +46,7 @@ describe('TerminalStore runtime fallback', () => {
     const terminal: ITerminal = {
       reset: vi.fn(),
       write: vi.fn(),
-      onData: vi.fn((callback) => {
+      onData: vi.fn((callback: (data: string) => void) => {
         onData = callback;
       }),
     };
