@@ -15,13 +15,17 @@ export interface ProjectCallbackData extends BeamCoreProjectData {
 }
 
 export interface ActionCallbackData {
-  projectId: string;
+  artifactId: string;
   messageId: string;
   actionId: string;
   action: BeamCoreAction;
 }
 
 export type ProjectCallback = (data: ProjectCallbackData) => void;
+/** @deprecated Use ProjectCallbackData. */
+export type ArtifactCallbackData = ProjectCallbackData;
+/** @deprecated Use ProjectCallback. */
+export type ArtifactCallback = ProjectCallback;
 export type ActionCallback = (data: ActionCallbackData) => void;
 
 export interface ParserCallbacks {
@@ -112,7 +116,7 @@ export class StreamingMessageParser {
             currentAction.content = content;
 
             this._options.callbacks?.onActionClose?.({
-              projectId: currentProject.id,
+              artifactId: currentProject.id,
               messageId,
 
               /**
