@@ -304,7 +304,7 @@ export async function action({ request }: ActionFunctionArgs) {
     if (devServer) {
       await new Promise((resolve) => setTimeout(resolve, 2500));
 
-      const port = detectDevPort(command);
+      const port = detectDevPort(command, Number(body.port));
 
       try {
         preview = await getPreview(sandbox, port);
