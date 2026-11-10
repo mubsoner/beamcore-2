@@ -1,16 +1,16 @@
-import type { ActionType, BoltAction, BoltActionData, FileAction, ShellAction } from '~/types/actions';
-import type { BoltArtifactData } from '~/types/artifact';
+import type { ActionType, BeamCoreAction, BeamCoreActionData, FileAction, ShellAction } from '~/types/actions';
+import type { BeamCoreProjectData } from '~/types/artifact';
 import { createScopedLogger } from '~/utils/logger';
 import { unreachable } from '~/utils/unreachable';
 
-const ARTIFACT_TAG_OPEN = '<boltArtifact';
-const ARTIFACT_TAG_CLOSE = '</boltArtifact>';
-const ARTIFACT_ACTION_TAG_OPEN = '<boltAction';
-const ARTIFACT_ACTION_TAG_CLOSE = '</boltAction>';
+const PROJECT_TAG_OPEN = '<beamcoreProject';
+const PROJECT_TAG_CLOSE = '</beamcoreProject>';
+const PROJECT_ACTION_TAG_OPEN = '<beamcoreAction';
+const PROJECT_ACTION_TAG_CLOSE = '</beamcoreAction>';
 
 const logger = createScopedLogger('MessageParser');
 
-export interface ArtifactCallbackData extends BoltArtifactData {
+export interface ArtifactCallbackData extends BeamCoreProjectData {
   messageId: string;
 }
 
@@ -18,7 +18,7 @@ export interface ActionCallbackData {
   artifactId: string;
   messageId: string;
   actionId: string;
-  action: BoltAction;
+  action: BeamCoreAction;
 }
 
 export type ArtifactCallback = (data: ArtifactCallbackData) => void;
@@ -46,8 +46,8 @@ interface MessageState {
   position: number;
   insideArtifact: boolean;
   insideAction: boolean;
-  currentArtifact?: BoltArtifactData;
-  currentAction: BoltActionData;
+  currentArtifact?: BeamCoreProjectData;
+  currentAction: BeamCoreActionData;
   actionId: number;
 }
 
@@ -57,13 +57,12 @@ export class StreamingMessageParser {
   constructor(private _options: StreamingMessageParserOptions = {}) {}
 
   parse(messageId: string, input: string) {
-    // Normalize the native BeamCore protocol to the stable internal parser tokens.
-    // Keep accepting legacy Bolt tags so older saved conversations still render.
+    // Normalize legacy Bolt tags to the native BeamCore protocol so saved conversations remain readable.
     const normalizedInput = input
-      .split('<beamcoreProject').join('<boltArtifact')
-      .split('</beamcoreProject>').join('</boltArtifact>')
-      .split('<beamcoreAction').join('<boltAction')
-      .split('</beamcoreAction>').join('</boltAction>');
+      .split('<boltArtifact').join('<beamcoreProject')
+      .split('</boltArtifact>').join('</beamcoreProject>')
+      .split('<boltAction').join('<beamcoreAction')
+      .split('</boltAction>').join('</beamcoreAction>');
     input = normalizedInput;
 
     let state = this.#messages.get(messageId);
@@ -93,7 +92,7 @@ export class StreamingMessageParser {
         }
 
         if (state.insideAction) {
-          const closeIndex = input.indexOf(ARTIFACT_ACTION_TAG_CLOSE, i);
+          const closeIndex = input.indexOf(PROJECT_ACTION_TAG_CLOSE, i);
 
           const currentAction = state.currentAction;
 
@@ -119,19 +118,19 @@ export class StreamingMessageParser {
                */
               actionId: String(state.actionId - 1),
 
-              action: currentAction as BoltAction,
+              action: currentAction as BeamCoreAction,
             });
 
             state.insideAction = false;
             state.currentAction = { content: '' };
 
-            i = closeIndex + ARTIFACT_ACTION_TAG_CLOSE.length;
+            i = closeIndex + PROJECT_ACTION_TAG_CLOSE.length;
           } else {
             break;
           }
         } else {
-          const actionOpenIndex = input.indexOf(ARTIFACT_ACTION_TAG_OPEN, i);
-          const artifactCloseIndex = input.indexOf(ARTIFACT_TAG_CLOSE, i);
+          const actionOpenIndex = input.indexOf(PROJECT_ACTION_TAG_OPEN, i);
+          const artifactCloseIndex = input.indexOf(PROJECT_TAG_CLOSE, i);
 
           if (actionOpenIndex !== -1 && (artifactCloseIndex === -1 || actionOpenIndex < artifactCloseIndex)) {
             const actionEndIndex = input.indexOf('>', actionOpenIndex);
@@ -145,7 +144,7 @@ export class StreamingMessageParser {
                 artifactId: currentArtifact.id,
                 messageId,
                 actionId: String(state.actionId++),
-                action: state.currentAction as BoltAction,
+                action: state.currentAction as BeamCoreAction,
               });
 
               i = actionEndIndex + 1;
@@ -158,7 +157,7 @@ export class StreamingMessageParser {
             state.insideArtifact = false;
             state.currentArtifact = undefined;
 
-            i = artifactCloseIndex + ARTIFACT_TAG_CLOSE.length;
+            i = artifactCloseIndex + PROJECT_TAG_CLOSE.length;
           } else {
             break;
           }
@@ -167,10 +166,10 @@ export class StreamingMessageParser {
         let j = i;
         let potentialTag = '';
 
-        while (j < input.length && potentialTag.length < ARTIFACT_TAG_OPEN.length) {
+        while (j < input.length && potentialTag.length < PROJECT_TAG_OPEN.length) {
           potentialTag += input[j];
 
-          if (potentialTag === ARTIFACT_TAG_OPEN) {
+          if (potentialTag === PROJECT_TAG_OPEN) {
             const nextChar = input[j + 1];
 
             if (nextChar && nextChar !== '>' && nextChar !== ' ') {
@@ -200,7 +199,7 @@ export class StreamingMessageParser {
               const currentArtifact = {
                 id: artifactId,
                 title: artifactTitle,
-              } satisfies BoltArtifactData;
+              } satisfies BeamCoreProjectData;
 
               state.currentArtifact = currentArtifact;
 
@@ -216,7 +215,7 @@ export class StreamingMessageParser {
             }
 
             break;
-          } else if (!ARTIFACT_TAG_OPEN.startsWith(potentialTag)) {
+          } else if (!PROJECT_TAG_OPEN.startsWith(potentialTag)) {
             output += input.slice(i, j + 1);
             i = j + 1;
             break;
@@ -225,7 +224,7 @@ export class StreamingMessageParser {
           j++;
         }
 
-        if (j === input.length && ARTIFACT_TAG_OPEN.startsWith(potentialTag)) {
+        if (j === input.length && PROJECT_TAG_OPEN.startsWith(potentialTag)) {
           break;
         }
       } else {
