@@ -1,7 +1,7 @@
 import { atom, map, type MapStore, type ReadableAtom, type WritableAtom } from 'nanostores';
 import type { EditorDocument, ScrollPosition } from '~/components/editor/codemirror/CodeMirrorEditor';
 import { ActionRunner } from '~/lib/runtime/action-runner';
-import type { ActionCallbackData, ArtifactCallbackData } from '~/lib/runtime/message-parser';
+import type { ActionCallbackData, ProjectCallbackData } from '~/lib/runtime/message-parser';
 import { webcontainer } from '~/lib/webcontainer';
 import type { ITerminal } from '~/types/terminal';
 import { unreachable } from '~/utils/unreachable';
@@ -10,15 +10,15 @@ import { FilesStore, type FileMap } from './files';
 import { PreviewsStore } from './previews';
 import { TerminalStore } from './terminal';
 
-export interface ArtifactState {
+export interface ProjectState {
   id: string;
   title: string;
   closed: boolean;
   runner: ActionRunner;
 }
 
-export type ArtifactUpdateState = Pick<ArtifactState, 'title' | 'closed'>;
-type Artifacts = MapStore<Record<string, ArtifactState>>;
+export type ProjectUpdateState = Pick<ProjectState, 'title' | 'closed'>;
+type Projects = MapStore<Record<string, ProjectState>>;
 export type WorkbenchViewType = 'code' | 'preview';
 
 export class WorkbenchStore {
@@ -27,16 +27,16 @@ export class WorkbenchStore {
   #editorStore = new EditorStore(this.#filesStore);
   #terminalStore = new TerminalStore();
 
-  artifacts: Artifacts = import.meta.hot?.data.artifacts ?? map({});
+  projects: Projects = import.meta.hot?.data.projects ?? map({});
   showWorkbench: WritableAtom<boolean> = import.meta.hot?.data.showWorkbench ?? atom(false);
   currentView: WritableAtom<WorkbenchViewType> = import.meta.hot?.data.currentView ?? atom('code');
   unsavedFiles: WritableAtom<Set<string>> = import.meta.hot?.data.unsavedFiles ?? atom(new Set<string>());
   modifiedFiles = new Set<string>();
-  artifactIdList: string[] = [];
+  projectIdList: string[] = [];
 
   constructor() {
     if (import.meta.hot) {
-      import.meta.hot.data.artifacts = this.artifacts;
+      import.meta.hot.data.projects = this.projects;
       import.meta.hot.data.unsavedFiles = this.unsavedFiles;
       import.meta.hot.data.showWorkbench = this.showWorkbench;
       import.meta.hot.data.currentView = this.currentView;
@@ -59,8 +59,8 @@ export class WorkbenchStore {
     return this.#editorStore.selectedFile;
   }
 
-  get firstArtifact(): ArtifactState | undefined {
-    return this.#getArtifact(this.artifactIdList[0]);
+  get firstProject(): ProjectState | undefined {
+    return this.#getProject(this.projectIdList[0]);
   }
 
   get filesCount(): number {
@@ -200,16 +200,16 @@ export class WorkbenchStore {
     // Daytona commands are bounded by the server-side command timeout.
   }
 
-  addArtifact({ messageId, title, id }: ArtifactCallbackData) {
-    if (this.#getArtifact(messageId)) {
+  addProject({ messageId, title, id }: ProjectCallbackData) {
+    if (this.#getProject(messageId)) {
       return;
     }
 
-    if (!this.artifactIdList.includes(messageId)) {
-      this.artifactIdList.push(messageId);
+    if (!this.projectIdList.includes(messageId)) {
+      this.projectIdList.push(messageId);
     }
 
-    this.artifacts.setKey(messageId, {
+    this.projects.setKey(messageId, {
       id,
       title,
       closed: false,
@@ -221,36 +221,36 @@ export class WorkbenchStore {
     });
   }
 
-  updateArtifact({ messageId }: ArtifactCallbackData, state: Partial<ArtifactUpdateState>) {
-    const artifact = this.#getArtifact(messageId);
+  updateProject({ messageId }: ProjectCallbackData, state: Partial<ProjectUpdateState>) {
+    const artifact = this.#getProject(messageId);
 
     if (artifact) {
-      this.artifacts.setKey(messageId, { ...artifact, ...state });
+      this.projects.setKey(messageId, { ...artifact, ...state });
     }
   }
 
   async addAction(data: ActionCallbackData) {
-    const artifact = this.#getArtifact(data.messageId);
+    const artifact = this.#getProject(data.messageId);
 
     if (!artifact) {
-      unreachable('Artifact not found');
+      unreachable('Project not found');
     }
 
     artifact.runner.addAction(data);
   }
 
   async runAction(data: ActionCallbackData) {
-    const artifact = this.#getArtifact(data.messageId);
+    const artifact = this.#getProject(data.messageId);
 
     if (!artifact) {
-      unreachable('Artifact not found');
+      unreachable('Project not found');
     }
 
     artifact.runner.runAction(data);
   }
 
-  #getArtifact(id: string) {
-    return this.artifacts.get()[id];
+  #getProject(id: string) {
+    return this.projects.get()[id];
   }
 }
 
