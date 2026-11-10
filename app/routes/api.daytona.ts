@@ -211,15 +211,15 @@ async function waitForPreview(sandbox: any, port: number, commandId?: string) {
       try {
         const command = await sandbox.process.getSessionCommand(TERMINAL_SESSION_ID, commandId);
 
-        if (typeof command?.exitCode === 'number' && command.exitCode !== 0) {
+        if (typeof command?.exitCode === 'number') {
           const logs = await getCommandLogs(sandbox, commandId);
           throw new Error(
-            'The dev server process exited with code ' + command.exitCode +
+            'The dev server process stopped with exit code ' + command.exitCode +
             (logs ? '.\n' + logs : '. Check the project terminal output.'),
           );
         }
       } catch (error) {
-        if (error instanceof Error && error.message.includes('dev server process exited')) {
+        if (error instanceof Error && error.message.includes('dev server process stopped')) {
           throw error;
         }
         // A transient command-status lookup failure should not hide a working HTTP server.
