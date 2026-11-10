@@ -38,9 +38,10 @@ describe('runtime command utilities', () => {
     expect(() => normalizeProjectPath(path)).toThrow('Refusing to write outside the project directory');
   });
 
-  it('recognizes missing credentials and runtime connectivity errors for fallback', () => {
+  it('uses browser fallback only when Daytona is unavailable, not when a project command fails', () => {
     expect(isDaytonaUnavailableError(new Error('DAYTONA_API_KEY is missing'))).toBe(true);
-    expect(isDaytonaUnavailableError(new Error('Daytona could not complete the request: 503'))).toBe(true);
+    expect(isDaytonaUnavailableError(new Error('Daytona request failed (503).'))).toBe(true);
+    expect(isDaytonaUnavailableError(new Error('Daytona could not complete the request: The dev server did not become reachable'))).toBe(false);
     expect(isDaytonaUnavailableError(new Error('Command exited with code 1'))).toBe(false);
   });
 });
