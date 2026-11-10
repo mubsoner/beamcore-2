@@ -213,7 +213,11 @@ export class WorkbenchStore {
       id,
       title,
       closed: false,
-      runner: new ActionRunner(webcontainer, () => this.#filesStore.files.get()),
+      runner: new ActionRunner(
+        webcontainer,
+        () => this.#filesStore.files.get(),
+        (path, content) => this.#filesStore.setGeneratedFile(path, content),
+      ),
     });
   }
 

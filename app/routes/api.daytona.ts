@@ -148,18 +148,17 @@ async function ensureTerminalSession(sandbox: any) {
   }
 }
 
-function detectDevPort(command: string) {
-  const explicit = command.match(/(?:--port\s+|--port=|PORT=)(\d{2,5})/i);
-
-  if (explicit) {
-    return Number(explicit[1]);
+function detectDevPort(command: string, requestedPort?: number) {
+  if (Number.isInteger(requestedPort) && requestedPort! >= 1024 && requestedPort! <= 65535) {
+    return requestedPort!;
   }
-
-  return /\b(?:next\s+(?:dev|start)|react-scripts\s+start|vite\s+preview|npm\s+start)\b/i.test(command)
-    ? 3000
-    : 5173;
+  const explicit = command.match(/(?:--port\s+|--port=|PORT=)(\d{2,5})/i);
+  if (explicit) return Number(explicit[1]);
+  if (/\b(?:next\s+(?:dev|start)|react-scripts\s+start|npm\s+start)\b/i.test(command)) return 3000;
+  if (/\bastro\s+dev\b/i.test(command)) return 4321;
+  if (/\bvite\s+preview\b/i.test(command)) return 4173;
+  return 5173;
 }
-
 function isDevServerCommand(command: string) {
   return /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|preview)\b/i.test(command);
 }
@@ -304,7 +303,7 @@ export async function action({ request }: ActionFunctionArgs) {
     if (devServer) {
       await new Promise((resolve) => setTimeout(resolve, 2500));
 
-      const port = detectDevPort(command);
+      const port = detectDevPort(command, Number(body.port));
 
       try {
         preview = await getPreview(sandbox, port);
