@@ -58,14 +58,20 @@ type ActionsMap = MapStore<Record<string, ActionState>>;
 export class ActionRunner {
   #webcontainer: Promise<WebContainer>;
   #getFiles: () => FileMap;
+  #onFileSaved?: (path: string, content: string) => void;
   #daytonaUnavailableReason?: string;
   #currentExecutionPromise: Promise<void> = Promise.resolve();
 
   actions: ActionsMap = map({});
 
-  constructor(webcontainerPromise: Promise<WebContainer>, getFiles: () => FileMap = () => ({})) {
+  constructor(
+    webcontainerPromise: Promise<WebContainer>,
+    getFiles: () => FileMap = () => ({}),
+    onFileSaved?: (path: string, content: string) => void,
+  ) {
     this.#webcontainer = webcontainerPromise;
     this.#getFiles = getFiles;
+    this.#onFileSaved = onFileSaved;
 
     void this.#webcontainer.catch((error) => {
       logger.warn('Browser WebContainer is unavailable; Daytona remains the primary runtime.', error);
@@ -300,6 +306,8 @@ export class ActionRunner {
     } catch (error) {
       logger.warn('Optional browser file mirror is unavailable: ' + safePath, error);
     }
+
+    if (remoteSaved || browserSaved) this.#onFileSaved?.(safePath, action.content);
 
     if (!remoteSaved && !browserSaved) {
       const remoteDetail = remoteError instanceof Error ? remoteError.message : String(remoteError || 'unavailable');
