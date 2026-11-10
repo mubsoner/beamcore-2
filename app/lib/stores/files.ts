@@ -63,6 +63,18 @@ export class FilesStore {
     this.#init();
   }
 
+  setGeneratedFile(relativePath: string, content: string) {
+    const safeRelativePath = relativePath.replace(/\\\\/g, '/').replace(/^\\.\\//, '');
+    if (!safeRelativePath || safeRelativePath.startsWith('/') || safeRelativePath.split('/').includes('..')) {
+      throw new Error('Refusing to add a file outside the project directory.');
+    }
+
+    const absolutePath = nodePath.posix.join(WORK_DIR, safeRelativePath);
+    const existing = this.files.get()[absolutePath];
+    if (existing?.type !== 'file') this.#size++;
+    this.files.setKey(absolutePath, { type: 'file', content, isBinary: false });
+  }
+
   getFile(filePath: string) {
     const dirent = this.files.get()[filePath];
 
