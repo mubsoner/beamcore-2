@@ -45,7 +45,16 @@ export class PreviewsStore {
   }
 
   async #init() {
-    const webcontainer = await this.#webcontainer;
+    let webcontainer: WebContainer;
+
+    try {
+      webcontainer = await this.#webcontainer;
+    } catch (error) {
+      // Daytona previews are published through remotePreviewStore. A failed
+      // optional browser runtime must not break Workbench construction.
+      console.warn('[BeamCore] WebContainer preview listener unavailable; Daytona Preview remains active.', error);
+      return;
+    }
 
     webcontainer.on('port', (port, type, url) => {
       let previewInfo = this.#availablePreviews.get(port);
