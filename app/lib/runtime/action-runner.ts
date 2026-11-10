@@ -140,6 +140,7 @@ export class ActionRunner {
     // Daytona is preferred; a missing credential/service should not prevent a
     // local browser runtime from executing the generated project.
     if (this.#daytonaUnavailableReason) {
+      remotePreviewStore.set(undefined);
       logger.warn('Using WebContainer because Daytona is unavailable: ' + this.#daytonaUnavailableReason);
       return this.#runWebContainerCommand(action.content);
     }
@@ -197,6 +198,7 @@ export class ActionRunner {
       }
 
       this.#daytonaUnavailableReason = error instanceof Error ? error.message : String(error);
+      remotePreviewStore.set(undefined);
       logger.warn('Daytona is unavailable; falling back to the browser WebContainer.', error);
       return this.#runWebContainerCommand(action.content);
     }
@@ -295,6 +297,7 @@ export class ActionRunner {
         logger.debug('File mirrored to Daytona sandbox: ' + safePath);
       } catch (error) {
         this.#daytonaUnavailableReason = error instanceof Error ? error.message : String(error);
+        remotePreviewStore.set(undefined);
         logger.warn('Daytona file sync is unavailable; keeping the file in WebContainer: ' + safePath, error);
       }
     }
