@@ -12,6 +12,36 @@ interface ExpectedResult {
 }
 
 describe('StreamingMessageParser', () => {
+  it('parses native BeamCore project and action tags', () => {
+    const onProjectOpen = vi.fn();
+    const onProjectClose = vi.fn();
+    const onActionOpen = vi.fn();
+    const onActionClose = vi.fn();
+    const parser = new StreamingMessageParser({
+      projectElement: () => '<project-card />',
+      callbacks: { onProjectOpen, onProjectClose, onActionOpen, onActionClose },
+    });
+
+    const input = 'Before <beamcoreProject title="Demo" id="demo"><beamcoreAction type="file" filePath="index.html"><h1>BeamCore</h1></beamcoreAction></beamcoreProject> After';
+    const output = parser.parse('message-native', input);
+
+    expect(output).toBe('Before <project-card /> After');
+    expect(onProjectOpen).toHaveBeenCalledWith({ messageId: 'message-native', id: 'demo', title: 'Demo' });
+    expect(onProjectClose).toHaveBeenCalledWith({ messageId: 'message-native', id: 'demo', title: 'Demo' });
+    expect(onActionOpen).toHaveBeenCalledWith(expect.objectContaining({
+      artifactId: 'demo',
+      messageId: 'message-native',
+      actionId: '0',
+      action: expect.objectContaining({ type: 'file', filePath: 'index.html' }),
+    }));
+    expect(onActionClose).toHaveBeenCalledWith(expect.objectContaining({
+      artifactId: 'demo',
+      messageId: 'message-native',
+      actionId: '0',
+      action: expect.objectContaining({ type: 'file', filePath: 'index.html', content: '<h1>BeamCore</h1>\\n' }),
+    }));
+  });
+
   it('should pass through normal text', () => {
     const parser = new StreamingMessageParser();
     expect(parser.parse('test_id', 'Hello, world!')).toBe('Hello, world!');
