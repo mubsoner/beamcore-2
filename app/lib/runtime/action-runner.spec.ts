@@ -1,6 +1,7 @@
 import type { WebContainer } from '@webcontainer/api';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ActionRunner } from './action-runner';
+import { remotePreviewStore } from '~/lib/daytona.client';
 import { PreviewsStore, previewStore } from '~/lib/stores/previews';
 
 vi.mock('~/lib/daytona.client', async (importOriginal) => {
@@ -17,6 +18,7 @@ vi.mock('~/lib/daytona.client', async (importOriginal) => {
 describe('ActionRunner WebContainer fallback', () => {
   beforeEach(() => {
     previewStore.set([]);
+    remotePreviewStore.set(undefined);
   });
 
   it('writes generated files, starts the server, and publishes server-ready to the Workbench preview store', async () => {
@@ -46,6 +48,7 @@ describe('ActionRunner WebContainer fallback', () => {
     } as unknown as WebContainer;
 
     const workbenchPreviews = new PreviewsStore(Promise.resolve(webcontainer)).previews;
+    remotePreviewStore.set({ port: 3000, ready: true, baseUrl: 'https://stale-daytona.example.test/' });
     const runner = new ActionRunner(Promise.resolve(webcontainer));
     const fileAction = {
       artifactId: 'build',
@@ -73,5 +76,6 @@ describe('ActionRunner WebContainer fallback', () => {
     expect(workbenchPreviews.get()).toEqual([
       { port: 5173, ready: true, baseUrl: 'https://webcontainer.example.test/' },
     ]);
+    expect(remotePreviewStore.get()).toBeUndefined();
   });
 });
