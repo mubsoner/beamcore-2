@@ -21,7 +21,10 @@ export default async function handleRequest(
     },
   });
 
-  const body = new ReadableStream({
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let cancelled = false;
+
+  const body = new ReadableStream<Uint8Array>({
     start(controller) {
       const head = renderHeadToString({ request, remixContext, Head });
 
@@ -33,12 +36,16 @@ export default async function handleRequest(
         ),
       );
 
-      const reader = readable.getReader();
+      reader = readable.getReader();
 
       function read() {
-        reader
+        reader!
           .read()
           .then(({ done, value }) => {
+            if (cancelled) {
+              return;
+            }
+
             if (done) {
               controller.enqueue(new Uint8Array(new TextEncoder().encode(`</div></body></html>`)));
               controller.close();
@@ -46,19 +53,29 @@ export default async function handleRequest(
               return;
             }
 
-            controller.enqueue(value);
+            if (value) {
+              controller.enqueue(value);
+            }
+
             read();
           })
           .catch((error) => {
-            controller.error(error);
-            readable.cancel();
+            if (!cancelled) {
+              controller.error(error);
+            }
+
+            // The stream is locked by this reader, so cancellation must go
+            // through reader.cancel() rather than readable.cancel().
+            void reader?.cancel(error).catch(() => undefined);
           });
       }
+
       read();
     },
 
-    cancel() {
-      readable.cancel();
+    cancel(reason) {
+      cancelled = true;
+      return reader?.cancel(reason).catch(() => undefined);
     },
   });
 
