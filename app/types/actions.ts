@@ -13,6 +13,11 @@ export interface ShellAction extends BaseAction {
   type: 'shell';
 }
 
-export type BoltAction = FileAction | ShellAction;
+export type BeamCoreAction = FileAction | ShellAction;
+export type BeamCoreActionData = BeamCoreAction | BaseAction;
 
-export type BoltActionData = BoltAction | BaseAction;
+/** @deprecated Use BeamCoreAction for new code. */
+export type BoltAction = BeamCoreAction;
+
+/** @deprecated Use BeamCoreActionData for new code. */
+export type BoltActionData = BeamCoreActionData;
