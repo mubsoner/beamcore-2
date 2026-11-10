@@ -181,6 +181,83 @@ async function getPreview(sandbox: any, port: number) {
   };
 }
 
+const PREVIEW_READY_TIMEOUT_MS = 5_000;
+const PREVIEW_PROBE_TIMEOUT_MS = 1_000;
+const PREVIEW_POLL_INTERVAL_MS = 350;
+
+async function getCommandLogs(sandbox: any, commandId?: string) {
+  if (!commandId) return '';
+
+  try {
+    const logs = await sandbox.process.getSessionCommandLogs(TERMINAL_SESSION_ID, commandId);
+    return String(logs?.output || logs?.stdout || logs?.stderr || '').slice(-4_000);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * A Daytona signed URL can be created before an application is listening.
+ * Do not publish it as ready until the async command is still alive and the
+ * HTTP endpoint responds. The timeout stays bounded for serverless requests.
+ */
+async function waitForPreview(sandbox: any, port: number, commandId?: string) {
+  const signed = await sandbox.getSignedPreviewUrl(port, 3600);
+  const deadline = Date.now() + PREVIEW_READY_TIMEOUT_MS;
+  let lastProbeError = 'The preview endpoint has not responded yet.';
+
+  while (Date.now() < deadline) {
+    if (commandId) {
+      try {
+        const command = await sandbox.process.getSessionCommand(TERMINAL_SESSION_ID, commandId);
+
+        if (typeof command?.exitCode === 'number' && command.exitCode !== 0) {
+          const logs = await getCommandLogs(sandbox, commandId);
+          throw new Error(
+            'The dev server process exited with code ' + command.exitCode +
+            (logs ? '.\\n' + logs : '. Check the project terminal output.'),
+          );
+        }
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('dev server process exited')) {
+          throw error;
+        }
+        // A transient command-status lookup failure should not hide a working HTTP server.
+      }
+    }
+
+    try {
+      const response = await fetch(signed.url, {
+        method: 'GET',
+        redirect: 'follow',
+        signal: AbortSignal.timeout(PREVIEW_PROBE_TIMEOUT_MS),
+      });
+      await response.body?.cancel().catch(() => undefined);
+
+      if (response.status >= 200 && response.status < 500) {
+        return {
+          port,
+          ready: true,
+          baseUrl: signed.url,
+        };
+      }
+
+      lastProbeError = 'The preview endpoint responded with HTTP ' + response.status + '.';
+    } catch (error) {
+      lastProbeError = error instanceof Error ? error.message : String(error);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, PREVIEW_POLL_INTERVAL_MS));
+  }
+
+  const logs = await getCommandLogs(sandbox, commandId);
+  throw new Error(
+    'The dev server did not become reachable on port ' + port + ' within ' +
+    PREVIEW_READY_TIMEOUT_MS / 1000 + ' seconds. ' + lastProbeError +
+    (logs ? '\\nRecent server output:\\n' + logs : ''),
+  );
+}
+
 export async function action({ request }: ActionFunctionArgs) {
   if (request.method !== 'POST') {
     return json({ ok: false, error: 'Method not allowed.' }, { status: 405 });
@@ -274,7 +351,7 @@ export async function action({ request }: ActionFunctionArgs) {
         return json({ ok: false, error: 'Preview port must be between 1024 and 65535.' }, { status: 400, headers });
       }
 
-      const preview = await getPreview(sandbox, port);
+      const preview = await waitForPreview(sandbox, port);
 
       return json({ ok: true, preview }, { headers });
     }
