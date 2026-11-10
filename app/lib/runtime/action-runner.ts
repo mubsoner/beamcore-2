@@ -1,7 +1,7 @@
 import { WebContainer } from '@webcontainer/api';
 import { map, type MapStore } from 'nanostores';
 import * as nodePath from 'node:path';
-import type { BoltAction } from '~/types/actions';
+import type { BeamCoreAction } from '~/types/actions';
 import { createScopedLogger } from '~/utils/logger';
 import { WORK_DIR } from '~/utils/constants';
 import { executeDaytonaCommand, remotePreviewStore, syncDaytonaFiles, writeDaytonaFile, type DaytonaSyncFile } from '~/lib/daytona.client';
@@ -27,14 +27,14 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
 }
 
 export type ActionStatus = 'pending' | 'running' | 'complete' | 'aborted' | 'failed';
-export type BaseActionState = BoltAction & {
+export type BaseActionState = BeamCoreAction & {
   status: Exclude<ActionStatus, 'failed'>;
   abort: () => void;
   executed: boolean;
   abortSignal: AbortSignal;
   output?: string;
 };
-export type FailedActionState = BoltAction & Omit<BaseActionState, 'status'> & {
+export type FailedActionState = BeamCoreAction & Omit<BaseActionState, 'status'> & {
   status: Extract<ActionStatus, 'failed'>;
   error: string;
 };
