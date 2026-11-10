@@ -5,10 +5,10 @@ import { CHAT_SYSTEM_PROMPT, CONTINUE_PROMPT, getSystemPrompt } from '~/lib/.ser
 import { generateText, type Messages } from '~/lib/.server/llm/stream-text';
 
 const BUILD_RETRY_PROMPT = `
-Your previous response did not contain executable Bolt actions, so no project files could be created.
+Your previous response did not contain executable BeamCore actions, so no project files could be created.
 Do not search, browse, narrate, or provide a plan. Immediately complete the user's original project request.
-Return ONLY one valid <boltArtifact id="..." title="..."> with at least one complete
-<boltAction type="file" filePath="relative/path">FULL FILE CONTENT</boltAction>.
+Return ONLY one valid <beamcoreProject id="..." title="..."> with at least one complete
+<beamcoreAction type="file" filePath="relative/path">FULL FILE CONTENT</beamcoreAction>.
 Add shell actions only when required. Do not wrap the tags in Markdown fences.
 `;
 
@@ -52,7 +52,7 @@ function compactChatMessages(messages: Messages): Messages {
 }
 
 function hasExecutableArtifact(text: string) {
-  const artifact = /<boltArtifact\b([^>]*)>([\s\S]*?)<\/boltArtifact>/i.exec(text);
+  const artifact = /<beamcoreProject\b([^>]*)>([\s\S]*?)<\/beamcoreProject>/i.exec(text);
 
   if (!artifact) {
     return false;
@@ -63,9 +63,9 @@ function hasExecutableArtifact(text: string) {
   const hasId = /\bid="[^"]+"/i.test(attributes);
   const hasTitle = /\btitle="[^"]+"/i.test(attributes);
   const hasFileAction =
-    /<boltAction\b(?=[^>]*\btype="file")(?=[^>]*\bfilePath="[^"]+")[^>]*>[\s\S]*?<\/boltAction>/i.test(body);
+    /<beamcoreAction\b(?=[^>]*\btype="file")(?=[^>]*\bfilePath="[^"]+")[^>]*>[\s\S]*?<\/beamcoreAction>/i.test(body);
   const hasShellAction =
-    /<boltAction\b(?=[^>]*\btype="shell")[^>]*>[\s\S]*?<\/boltAction>/i.test(body);
+    /<beamcoreAction\b(?=[^>]*\btype="shell")[^>]*>[\s\S]*?<\/beamcoreAction>/i.test(body);
 
   return hasId && hasTitle && (hasFileAction || hasShellAction);
 }
@@ -86,7 +86,7 @@ export async function loader({ request, context }: LoaderFunctionArgs) {
         const result = await generateText(
           [{
             role: 'user',
-            content: 'Create a tiny HTML page that says BeamCore build probe. Return one complete Bolt artifact with one file action for index.html.',
+            content: 'Create a tiny HTML page that says BeamCore build probe. Return one complete BeamCore project with one file action for index.html.',
           }],
           env,
           { system: getSystemPrompt(), maxRetries: 0, maxTokens: 1536 },
@@ -100,8 +100,8 @@ export async function loader({ request, context }: LoaderFunctionArgs) {
           model: config.model,
           apiKeyConfigured: true,
           probe: executable ? 'passed' : 'failed',
-          artifactDetected: /<boltArtifact\b/i.test(result.text),
-          actionDetected: /<boltAction\b/i.test(result.text),
+          artifactDetected: /<beamcoreProject\b/i.test(result.text),
+          actionDetected: /<beamcoreAction\b/i.test(result.text),
           finishReason: result.finishReason,
           responsePreview: result.text.slice(0, 180),
         }), {
@@ -310,7 +310,7 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
     // If this is a build/edit request, do not accept a status-only answer as success.
     // Retry once with an explicit executable-output instruction.
     if (buildRequest && !hasExecutableArtifact(responseText)) {
-      console.warn('[BeamCore] Build response had no executable Bolt actions; retrying once.');
+      console.warn('[BeamCore] Build response had no executable BeamCore actions; retrying once.');
 
       const retryResult = await generateText(
         [
@@ -326,7 +326,7 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
       if (hasExecutableArtifact(retryResult.text)) {
         responseText = retryResult.text;
       } else {
-        console.error('[BeamCore] Provider retry still returned no executable Bolt actions.', {
+        console.error('[BeamCore] Provider retry still returned no executable BeamCore actions.', {
           finishReason: retryResult.finishReason,
           responseLength: retryResult.text.length,
         });
