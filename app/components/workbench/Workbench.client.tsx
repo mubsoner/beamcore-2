@@ -6,7 +6,7 @@ import { toast } from 'react-toastify';
 import {
   type OnChangeCallback as OnEditorChange,
   type OnScrollCallback as OnEditorScroll,
-} from '~/components/editor/codemirror/CodeMirrorEditor';
+} from '~/components/editor/codemirror/EditorMirrorEditor';
 import { IconButton } from '~/components/ui/IconButton';
 import { PanelHeaderButton } from '~/components/ui/PanelHeaderButton';
 import { Slider, type SliderOptions } from '~/components/ui/Slider';
@@ -28,7 +28,7 @@ const viewTransition = { ease: cubicEasingFn };
 const sliderOptions: SliderOptions<WorkbenchViewType> = {
   left: {
     value: 'code',
-    text: 'Code',
+    text: 'Editor',
   },
   right: {
     value: 'preview',
@@ -132,7 +132,7 @@ export const Workbench = memo(({ chatStarted, isStreaming }: WorkspaceProps) => 
                     }}
                   >
                     <div className="i-ph:terminal" />
-                    Toggle Terminal
+                    Terminal
                   </PanelHeaderButton>
                 )}
                 <IconButton
