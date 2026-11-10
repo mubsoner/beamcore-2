@@ -20,19 +20,19 @@ if (import.meta.hot) {
   import.meta.hot.data.shellHighlighter = shellHighlighter;
 }
 
-interface ArtifactProps {
+interface ProjectCardProps {
   messageId: string;
 }
 
-export const Artifact = memo(({ messageId }: ArtifactProps) => {
+export const ProjectCard = memo(({ messageId }: ProjectCardProps) => {
   const userToggledActions = useRef(false);
   const [showActions, setShowActions] = useState(false);
 
-  const artifacts = useStore(workbenchStore.artifacts);
-  const artifact = artifacts[messageId];
+  const projects = useStore(workbenchStore.projects);
+  const project = projects[messageId];
 
   const actions = useStore(
-    computed(artifact.runner.actions, (actions) => {
+    computed(project.runner.actions, (actions) => {
       return Object.values(actions);
     }),
   );
@@ -59,8 +59,8 @@ export const Artifact = memo(({ messageId }: ArtifactProps) => {
           }}
         >
           <div className="px-5 p-3.5 w-full text-left">
-            <div className="w-full text-bolt-elements-textPrimary font-medium leading-5 text-sm">{artifact?.title}</div>
-            <div className="w-full w-full text-bolt-elements-textSecondary text-xs mt-0.5">Click to open Workbench</div>
+            <div className="w-full text-bolt-elements-textPrimary font-medium leading-5 text-sm">{project?.title}</div>
+            <div className="w-full w-full text-bolt-elements-textSecondary text-xs mt-0.5">Open BeamCore project workspace</div>
           </div>
         </button>
         <div className="bg-bolt-elements-artifacts-borderColor w-[1px]" />
@@ -169,7 +169,7 @@ const ActionList = memo(({ actions }: ActionListProps) => {
                   </div>
                 ) : type === 'shell' ? (
                   <div className="flex items-center w-full min-h-[28px]">
-                    <span className="flex-1">Run command</span>
+                    <span className="flex-1">Run project command</span>
                   </div>
                 ) : null}
               </div>
