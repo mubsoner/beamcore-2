@@ -82,4 +82,35 @@ describe('ActionRunner WebContainer fallback', () => {
     ]);
     expect(remotePreviewStore.get()).toBeUndefined();
   });
+
+  it('marks a file action failed when WebContainer startup never resolves and Daytona is unavailable', async () => {
+    vi.useFakeTimers();
+
+    try {
+      const unavailableWebContainer = new Promise<WebContainer>(() => undefined);
+      const runner = new ActionRunner(unavailableWebContainer);
+      const fileAction = {
+        artifactId: 'build-timeout',
+        messageId: 'build-timeout',
+        actionId: 'file-timeout',
+        action: { type: 'file' as const, filePath: 'index.html', content: '<h1>BeamCore</h1>' },
+      };
+
+      runner.addAction(fileAction);
+      await runner.runAction(fileAction);
+      await vi.advanceTimersByTimeAsync(20_001);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const failedAction = runner.actions.get()['file-timeout'];
+      expect(failedAction.status).toBe('failed');
+
+      if (failedAction.status === 'failed') {
+        expect(failedAction.error).toContain('did not finish starting within 20 seconds');
+        expect(failedAction.error).toContain('DAYTONA_API_KEY is missing');
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
