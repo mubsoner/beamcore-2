@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isDaytonaUnavailableError, isDevServerCommand, normalizeProjectPath } from './command-utils';
+import { getProjectPreviewPort, isDaytonaUnavailableError, isDevServerCommand, normalizeProjectPath } from './command-utils';
 
 describe('runtime command utilities', () => {
   it.each([
@@ -16,6 +16,17 @@ describe('runtime command utilities', () => {
 
   it.each(['npm install', 'node scripts/build.js', 'echo "start dev server later"'])('does not classify a regular command as a server: %s', (command) => {
     expect(isDevServerCommand(command)).toBe(false);
+  });
+
+  it('detects preview ports from explicit flags and framework dependencies', () => {
+    expect(getProjectPreviewPort('npm run dev -- --port 4200')).toBe(4200);
+    expect(getProjectPreviewPort('npm run dev', {
+      '/home/project/package.json': { type: 'file', content: JSON.stringify({ dependencies: { next: '15.0.0' } }) },
+    })).toBe(3000);
+    expect(getProjectPreviewPort('vite preview', {
+      '/home/project/package.json': { type: 'file', content: JSON.stringify({ devDependencies: { vite: '5.0.0' } }) },
+    })).toBe(4173);
+    expect(getProjectPreviewPort('astro dev')).toBe(4321);
   });
 
   it('normalizes Windows separators to project-relative paths', () => {
