@@ -215,7 +215,7 @@ async function waitForPreview(sandbox: any, port: number, commandId?: string) {
           const logs = await getCommandLogs(sandbox, commandId);
           throw new Error(
             'The dev server process exited with code ' + command.exitCode +
-            (logs ? '.\\n' + logs : '. Check the project terminal output.'),
+            (logs ? '.\n' + logs : '. Check the project terminal output.'),
           );
         }
       } catch (error) {
@@ -254,7 +254,7 @@ async function waitForPreview(sandbox: any, port: number, commandId?: string) {
   throw new Error(
     'The dev server did not become reachable on port ' + port + ' within ' +
     PREVIEW_READY_TIMEOUT_MS / 1000 + ' seconds. ' + lastProbeError +
-    (logs ? '\\nRecent server output:\\n' + logs : ''),
+    (logs ? '\nRecent server output:\n' + logs : ''),
   );
 }
 
@@ -378,20 +378,16 @@ export async function action({ request }: ActionFunctionArgs) {
     let preview: Awaited<ReturnType<typeof getPreview>> | undefined;
 
     if (devServer) {
-      await new Promise((resolve) => setTimeout(resolve, 2500));
-
       const port = detectDevPort(command, Number(body.port));
-
-      try {
-        preview = await getPreview(sandbox, port);
-      } catch (previewError) {
-        const previewDetail = previewError instanceof Error ? previewError.message : String(previewError);
-        const logs = await sandbox.process.getEntrypointLogs().catch(() => undefined);
-        output += '\n' + (logs?.output || logs?.stdout || '') + '\nPreview is not ready yet: ' + previewDetail;
-      }
+      preview = await waitForPreview(sandbox, port, result.cmdId);
+      output += (output ? '\n' : '') + 'Daytona Preview ready on port ' + port + '.';
     }
 
-    const exitCode = typeof result.exitCode === 'number' ? result.exitCode : 0;
+    const exitCode = typeof result.exitCode === 'number' ? result.exitCode : undefined;
+
+    if (!devServer && typeof exitCode !== 'number') {
+      return json({ ok: false, output, error: 'Daytona did not return an exit code for the command.' }, { status: 502, headers });
+    }
 
     if (!devServer && exitCode !== 0) {
       return json({ ok: false, output, exitCode, error: 'Command exited with code ' + exitCode + '.' }, { status: 422, headers });
