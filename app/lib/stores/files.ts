@@ -64,11 +64,10 @@ export class FilesStore {
   }
 
   setGeneratedFile(relativePath: string, content: string) {
-    const safeRelativePath = relativePath.replace(/\\/g, '/').replace(/^\\.\\//, '');
+    const safeRelativePath = relativePath.replace(/\\/g, '/').replace(/^\.\//, '');
     if (!safeRelativePath || safeRelativePath.startsWith('/') || safeRelativePath.split('/').includes('..')) {
       throw new Error('Refusing to add a file outside the project directory.');
     }
-
     const absolutePath = nodePath.posix.join(WORK_DIR, safeRelativePath);
     const existing = this.files.get()[absolutePath];
     if (existing?.type !== 'file') this.#size++;
@@ -95,21 +94,14 @@ export class FilesStore {
 
   async saveFile(filePath: string, content: string) {
     try {
-      const relativePath = filePath.replace(/^\\/home\\/project\\/?/, '').replace(/\\\\/g, '/');
-
+      const relativePath = filePath.replace(/^\/home\/project\/?/, '').replace(/\\/g, '/');
       if (!relativePath || relativePath.startsWith('/') || relativePath.split('/').includes('..')) {
         throw new Error('Refusing to save outside the project directory: ' + filePath);
       }
-
       const oldContent = this.getFile(filePath)?.content;
+      if (oldContent === undefined) unreachable('Expected content to be defined');
 
-      if (oldContent === undefined) {
-        unreachable('Expected content to be defined');
-      }
-
-      // Persist to the authoritative Daytona project before mirroring to the browser.
       await writeDaytonaFile(relativePath, content);
-
       try {
         const webcontainer = await this.#webcontainer;
         await webcontainer.fs.writeFile(relativePath, content);
@@ -117,17 +109,11 @@ export class FilesStore {
         logger.warn('File saved to Daytona; browser mirror is unavailable', mirrorError);
       }
 
-      if (!this.#modifiedFiles.has(filePath)) {
-        this.#modifiedFiles.set(filePath, oldContent);
-      }
-
-      // we immediately update the file and don't rely on the `change` event coming from the watcher
+      if (!this.#modifiedFiles.has(filePath)) this.#modifiedFiles.set(filePath, oldContent);
       this.files.setKey(filePath, { type: 'file', content, isBinary: false });
-
       logger.info('File updated');
     } catch (error) {
       logger.error('Failed to update file content\n\n', error);
-
       throw error;
     }
   }
