@@ -102,12 +102,9 @@ export class FilesStore {
       if (oldContent === undefined) unreachable('Expected content to be defined');
 
       await writeDaytonaFile(relativePath, content);
-      try {
-        const webcontainer = await this.#webcontainer;
-        await webcontainer.fs.writeFile(relativePath, content);
-      } catch (mirrorError) {
-        logger.warn('File saved to Daytona; browser mirror is unavailable', mirrorError);
-      }
+      void this.#webcontainer
+        .then((webcontainer) => webcontainer.fs.writeFile(relativePath, content))
+        .catch((mirrorError) => logger.warn('File saved to Daytona; browser mirror is unavailable', mirrorError));
 
       if (!this.#modifiedFiles.has(filePath)) this.#modifiedFiles.set(filePath, oldContent);
       this.files.setKey(filePath, { type: 'file', content, isBinary: false });
