@@ -1,12 +1,14 @@
 import { useStore } from '@nanostores/react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { computed } from 'nanostores';
+import { computed, map } from 'nanostores';
 import { memo, useEffect, useRef, useState } from 'react';
 import { createHighlighter, type BundledLanguage, type BundledTheme, type HighlighterGeneric } from 'shiki';
 import type { ActionState } from '~/lib/runtime/action-runner';
 import { workbenchStore } from '~/lib/stores/workbench';
 import { classNames } from '~/utils/classNames';
 import { cubicEasingFn } from '~/utils/easings';
+
+const emptyActions = map<Record<string, ActionState>>({});
 
 const highlighterOptions = {
   langs: ['shell'],
@@ -32,7 +34,7 @@ export const ProjectCard = memo(({ messageId }: ProjectCardProps) => {
   const project = projects[messageId];
 
   const actions = useStore(
-    computed(project?.runner.actions ?? workbenchStore.firstProject!.runner.actions, (actions) => {
+    computed(project?.runner.actions ?? emptyActions, (actions) => {
       return Object.values(actions);
     }),
   );
