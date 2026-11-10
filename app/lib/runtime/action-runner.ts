@@ -297,8 +297,8 @@ export class ActionRunner {
     try {
       const webcontainer = await withTimeout(
         this.#webcontainer,
-        20_000,
-        'The browser WebContainer runtime did not finish starting within 20 seconds. Check browser support and cross-origin isolation.',
+        WEB_CONTAINER_STARTUP_TIMEOUT_MS,
+        'The browser WebContainer runtime did not finish starting within 60 seconds. ' + getWebContainerCookieHelp(),
       );
       const folder = nodePath.posix.dirname(safePath);
 
