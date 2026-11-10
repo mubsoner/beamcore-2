@@ -151,7 +151,7 @@ export class StreamingMessageParser {
               state.currentAction = this.#parseActionTag(input, actionOpenIndex, actionEndIndex);
 
               this._options.callbacks?.onActionOpen?.({
-                projectId: currentProject.id,
+                artifactId: currentProject.id,
                 messageId,
                 actionId: String(state.actionId++),
                 action: state.currentAction as BeamCoreAction,
