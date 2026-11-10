@@ -62,5 +62,5 @@ export function normalizeProjectPath(path: string) {
 
 export function isDaytonaUnavailableError(error: unknown) {
   const detail = error instanceof Error ? error.message : String(error);
-  return /DAYTONA_API_KEY|Daytona request failed|Daytona could not complete|Failed to fetch|NetworkError|ECONN|\b50[023]\b|timed out/i.test(detail);
+  return /DAYTONA_API_KEY|Daytona request failed|Failed to fetch|NetworkError|ECONN|\b50[023]\b|timed out/i.test(detail);
 }
