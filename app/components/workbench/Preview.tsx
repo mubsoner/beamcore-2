@@ -113,7 +113,7 @@ export const Preview = memo(() => {
             allow="cross-origin-isolated"
           />
         ) : (
-          <div className="flex w-full h-full justify-center items-center bg-white">No preview available</div>
+          <div className="flex w-full h-full justify-center items-center bg-white">Your project preview will appear here when the server is ready.</div>
         )}
       </div>
     </div>
