@@ -117,11 +117,6 @@ export class ActionRunner {
     if (action.type !== 'shell') unreachable('Expected shell action');
     if (action.abortSignal.aborted) throw new Error('Command was cancelled before execution.');
 
-    if (this.#daytonaUnavailableReason) {
-      remotePreviewStore.set(undefined);
-      return this.#runWebContainerCommand(action.content);
-    }
-
     try {
       const files: DaytonaSyncFile[] = [];
       let totalBytes = 0;
@@ -144,6 +139,7 @@ export class ActionRunner {
         action.content,
         isServer ? getProjectPreviewPort(action.content, this.#getFiles()) : undefined,
       );
+      this.#daytonaUnavailableReason = undefined;
       const output = result.output || '';
       if (typeof result.exitCode === 'number' && result.exitCode !== 0) {
         throw new Error('Daytona command failed with exit code ' + result.exitCode + '.\n' + output);
@@ -215,17 +211,16 @@ export class ActionRunner {
     let browserSaved = false;
     let remoteError: unknown;
 
-    if (!this.#daytonaUnavailableReason) {
-      try {
-        await writeDaytonaFile(safePath, action.content);
-        remoteSaved = true;
-      } catch (error) {
-        remoteError = error;
-        if (!isDaytonaUnavailableError(error)) throw error;
-        this.#daytonaUnavailableReason = error instanceof Error ? error.message : String(error);
-        remotePreviewStore.set(undefined);
-        logger.warn('Daytona file write unavailable; trying browser fallback.', error);
-      }
+    try {
+      await writeDaytonaFile(safePath, action.content);
+      remoteSaved = true;
+      this.#daytonaUnavailableReason = undefined;
+    } catch (error) {
+      remoteError = error;
+      if (!isDaytonaUnavailableError(error)) throw error;
+      this.#daytonaUnavailableReason = error instanceof Error ? error.message : String(error);
+      remotePreviewStore.set(undefined);
+      logger.warn('Daytona file write unavailable; trying browser fallback.', error);
     }
 
     const mirrorFile = async () => {
