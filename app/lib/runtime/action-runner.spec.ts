@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ActionRunner } from './action-runner';
 import { remotePreviewStore } from '~/lib/daytona.client';
 import { PreviewsStore, previewStore } from '~/lib/stores/previews';
+import { WEB_CONTAINER_STARTUP_TIMEOUT_MS } from '~/lib/webcontainer/support';
 
 vi.mock('~/lib/daytona.client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/lib/daytona.client')>();
@@ -98,7 +99,7 @@ describe('ActionRunner WebContainer fallback', () => {
 
       runner.addAction(fileAction);
       await runner.runAction(fileAction);
-      await vi.advanceTimersByTimeAsync(20_001);
+      await vi.advanceTimersByTimeAsync(WEB_CONTAINER_STARTUP_TIMEOUT_MS + 1);
       await Promise.resolve();
       await Promise.resolve();
 
@@ -106,7 +107,7 @@ describe('ActionRunner WebContainer fallback', () => {
       expect(failedAction.status).toBe('failed');
 
       if (failedAction.status === 'failed') {
-        expect(failedAction.error).toContain('did not finish starting within 20 seconds');
+        expect(failedAction.error).toContain('did not finish starting within 60 seconds');
         expect(failedAction.error).toContain('DAYTONA_API_KEY is missing');
       }
     } finally {
