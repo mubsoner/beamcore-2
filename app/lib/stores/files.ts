@@ -82,25 +82,28 @@ export class FilesStore {
   }
 
   async saveFile(filePath: string, content: string) {
-    const webcontainer = await this.#webcontainer;
-
     try {
-      const relativePath = nodePath.relative(webcontainer.workdir, filePath);
+      const relativePath = filePath.replace(/^\\/home\\/project\\/?/, '').replace(/\\\\/g, '/');
 
-      if (!relativePath) {
-        throw new Error(`EINVAL: invalid file path, write '${relativePath}'`);
+      if (!relativePath || relativePath.startsWith('/') || relativePath.split('/').includes('..')) {
+        throw new Error('Refusing to save outside the project directory: ' + filePath);
       }
 
       const oldContent = this.getFile(filePath)?.content;
 
-      if (!oldContent) {
+      if (oldContent === undefined) {
         unreachable('Expected content to be defined');
       }
 
-      await webcontainer.fs.writeFile(relativePath, content);
-      await writeDaytonaFile(relativePath.replace(/\\/g, '/'), content).catch((syncError) => {
-        logger.error('File saved locally, but Daytona sync failed', syncError);
-      });
+      // Persist to the authoritative Daytona project before mirroring to the browser.
+      await writeDaytonaFile(relativePath, content);
+
+      try {
+        const webcontainer = await this.#webcontainer;
+        await webcontainer.fs.writeFile(relativePath, content);
+      } catch (mirrorError) {
+        logger.warn('File saved to Daytona; browser mirror is unavailable', mirrorError);
+      }
 
       if (!this.#modifiedFiles.has(filePath)) {
         this.#modifiedFiles.set(filePath, oldContent);
@@ -118,12 +121,16 @@ export class FilesStore {
   }
 
   async #init() {
-    const webcontainer = await this.#webcontainer;
+    try {
+      const webcontainer = await this.#webcontainer;
 
-    webcontainer.internal.watchPaths(
-      { include: [`${WORK_DIR}/**`], exclude: ['**/node_modules', '.git'], includeContent: true },
-      bufferWatchEvents(100, this.#processEventBuffer.bind(this)),
-    );
+      webcontainer.internal.watchPaths(
+        { include: [`${WORK_DIR}/**`], exclude: ['**/node_modules', '.git'], includeContent: true },
+        bufferWatchEvents(100, this.#processEventBuffer.bind(this)),
+      );
+    } catch (error) {
+      logger.warn('Browser file watcher is unavailable; Daytona-backed editor state remains active.', error);
+    }
   }
 
   #processEventBuffer(events: Array<[events: PathWatcherEvent[]]>) {
