@@ -13,6 +13,21 @@ import { isDaytonaUnavailableError, isDevServerCommand, normalizeProjectPath } f
 
 const logger = createScopedLogger('ActionRunner');
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+    }),
+  ]).finally(() => {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  });
+}
+
 export type ActionStatus = 'pending' | 'running' | 'complete' | 'aborted' | 'failed';
 
 export type BaseActionState = BoltAction & {
@@ -205,7 +220,11 @@ export class ActionRunner {
   }
 
   async #runWebContainerCommand(command: string) {
-    const webcontainer = await this.#webcontainer;
+    const webcontainer = await withTimeout(
+      this.#webcontainer,
+      20_000,
+      'The browser WebContainer runtime did not finish starting within 20 seconds. Check browser support and cross-origin isolation.',
+    );
     const isDevServer = isDevServerCommand(command);
     const process = await webcontainer.spawn('jsh');
     let output = '';
@@ -275,7 +294,11 @@ export class ActionRunner {
     // Preserve generated files locally first so a missing Daytona key never
     // discards model output. Each successful destination is recorded below.
     try {
-      const webcontainer = await this.#webcontainer;
+      const webcontainer = await withTimeout(
+        this.#webcontainer,
+        20_000,
+        'The browser WebContainer runtime did not finish starting within 20 seconds. Check browser support and cross-origin isolation.',
+      );
       const folder = nodePath.posix.dirname(safePath);
 
       if (folder !== '.') {
