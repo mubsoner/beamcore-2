@@ -27,6 +27,10 @@ export type ActionCallback = (data: ActionCallbackData) => void;
 export interface ParserCallbacks {
   onProjectOpen?: ProjectCallback;
   onProjectClose?: ProjectCallback;
+  /** @deprecated Legacy callback aliases for older integrations. */
+  onArtifactOpen?: ProjectCallback;
+  /** @deprecated Legacy callback aliases for older integrations. */
+  onArtifactClose?: ProjectCallback;
   onActionOpen?: ActionCallback;
   onActionClose?: ActionCallback;
 }
@@ -152,7 +156,7 @@ export class StreamingMessageParser {
               break;
             }
           } else if (artifactCloseIndex !== -1) {
-            this._options.callbacks?.onProjectClose?.({ messageId, ...currentProject });
+            (this._options.callbacks?.onProjectClose ?? this._options.callbacks?.onArtifactClose)?.({ messageId, ...currentProject });
 
             state.insideProject = false;
             state.currentProject = undefined;
@@ -203,7 +207,7 @@ export class StreamingMessageParser {
 
               state.currentProject = currentProject;
 
-              this._options.callbacks?.onProjectOpen?.({ messageId, ...currentProject });
+              (this._options.callbacks?.onProjectOpen ?? this._options.callbacks?.onArtifactOpen)?.({ messageId, ...currentProject });
 
               const artifactFactory = this._options.projectElement ?? createProjectElement;
 
