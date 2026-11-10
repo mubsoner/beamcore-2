@@ -228,7 +228,7 @@ export class ActionRunner {
       }
     }
 
-    try {
+    const mirrorFile = async () => {
       const webcontainer = await withTimeout(
         this.#webcontainer,
         WEB_CONTAINER_STARTUP_TIMEOUT_MS,
@@ -237,9 +237,18 @@ export class ActionRunner {
       const folder = nodePath.posix.dirname(safePath);
       if (folder !== '.') await webcontainer.fs.mkdir(folder, { recursive: true });
       await webcontainer.fs.writeFile(safePath, action.content);
-      browserSaved = true;
-    } catch (error) {
-      logger.warn('Optional browser file mirror is unavailable: ' + safePath, error);
+    };
+
+    if (remoteSaved) {
+      // Do not make successful Daytona writes wait for browser boot.
+      void mirrorFile().catch((error) => logger.warn('Optional browser file mirror is unavailable: ' + safePath, error));
+    } else {
+      try {
+        await mirrorFile();
+        browserSaved = true;
+      } catch (error) {
+        logger.warn('Browser fallback could not save: ' + safePath, error);
+      }
     }
 
     if (remoteSaved || browserSaved) this.#onFileSaved?.(safePath, action.content);
