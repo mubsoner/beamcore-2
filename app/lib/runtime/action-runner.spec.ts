@@ -6,9 +6,13 @@ import { PreviewsStore, previewStore } from '~/lib/stores/previews';
 
 vi.mock('~/lib/daytona.client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/lib/daytona.client')>();
+  const { atom } = await import('nanostores');
 
   return {
     ...actual,
+    // Keep the store available to both ActionRunner and this test even if
+    // the mocked Daytona module is partially initialized by Vitest.
+    remotePreviewStore: actual.remotePreviewStore ?? atom<{ port: number; ready: boolean; baseUrl: string } | undefined>(undefined),
     writeDaytonaFile: vi.fn(async () => {
       throw new Error('DAYTONA_API_KEY is missing');
     }),
