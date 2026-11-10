@@ -32,7 +32,7 @@ export const ProjectCard = memo(({ messageId }: ProjectCardProps) => {
   const project = projects[messageId];
 
   const actions = useStore(
-    computed(project.runner.actions, (actions) => {
+    computed(project?.runner.actions ?? workbenchStore.firstProject!.runner.actions, (actions) => {
       return Object.values(actions);
     }),
   );
