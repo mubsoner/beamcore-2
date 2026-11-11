@@ -1,0 +1,19 @@
+export type EngineId='INV-01'|'INV-02'|'INV-03'|'INV-04'|'INV-05'|'INV-06'|'INV-07'|'INV-08'|'INV-09'|'INV-10'|'INV-11'|'INV-12'|'INV-13'|'INV-14'|'INV-15'|'INV-16'|'INV-17'|'INV-18'|'INV-19'|'INV-20'|'INV-21';
+export type Ref={engineId:EngineId;kind:string;id:string;revision?:number};
+export type Scope={id:string;kind:"PERSONAL"|"WORKSPACE"|"ORGANIZATION"|"PROJECT"|"WORK"|"SYSTEM"};
+export type Actor={id:string;kind:"HUMAN"|"AGENT"|"SERVICE"|"CONNECTOR"|"SYSTEM"};
+export type Context={requestId:string;correlationId:string;requestedAt:string;actor?:Actor;scope:Scope;idempotencyKey?:string};
+export type Issue={code:"VALIDATION_ERROR"|"UNAUTHENTICATED"|"FORBIDDEN"|"VERSION_CONFLICT"|"INVALID_TRANSITION"|"NOT_READY"|"UNKNOWN";message:string;field?:string};
+export type Result<T>={ok:true;value:T;warnings:string[]}|{ok:false;issues:Issue[]};
+export type Base={id:string;scope:Scope;revision:number;createdAt:string;updatedAt:string;createdBy?:Actor};
+export const ok=<T>(value:T):Result<T>=>({ok:true,value,warnings:[]});
+export const err=<T=never>(...issues:Issue[]):Result<T>=>({ok:false,issues});
+export const problem=(code:Issue["code"],message:string,field?:string):Issue=>({code,message,field});
+export const base=(c:Context,id:string,now:string):Base=>({id,scope:{...c.scope},revision:1,createdAt:now,updatedAt:now,createdBy:c.actor});
+export const sameScope=(a:Scope,b:Scope)=>a.id===b.id&&a.kind===b.kind;
+export const revisionOk=(expected:number,actual:number)=>expected===actual;
+export const validDigest=(s:string)=>/^[a-f0-9]{32,128}$/i.test(s);
+export interface Repository<T extends Base>{get(c:Context,id:string):Promise<Result<T|undefined>>;insert(c:Context,r:T):Promise<Result<T>>;update(c:Context,id:string,expectedRevision:number,patch:Partial<T>):Promise<Result<T>>}
+export interface AppendOnly<T>{append(c:Context,r:T):Promise<Result<T>>}
+export interface Outbox{enqueue(c:Context,event:DomainEvent):Promise<Result<{eventId:string}>>}
+export interface DomainEvent{eventId:string;schemaVersion:number;sourceEngineId:EngineId;eventType:string;source:Ref;sourceRevision:number;occurredAt:string;recordedAt:string;correlationId:string;requestId:string;scope:Scope;payload:unknown}
