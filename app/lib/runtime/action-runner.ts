@@ -210,6 +210,7 @@ export class ActionRunner {
     let remoteSaved = false;
     let browserSaved = false;
     let remoteError: unknown;
+    let browserError: unknown;
 
     try {
       await writeDaytonaFile(safePath, action.content);
@@ -242,6 +243,7 @@ export class ActionRunner {
         await mirrorFile();
         browserSaved = true;
       } catch (error) {
+        browserError = error;
         logger.warn('Browser fallback could not save: ' + safePath, error);
       }
     }
@@ -249,7 +251,8 @@ export class ActionRunner {
     if (remoteSaved || browserSaved) this.#onFileSaved?.(safePath, action.content);
     if (!remoteSaved && !browserSaved) {
       const remoteDetail = remoteError instanceof Error ? remoteError.message : String(remoteError || 'unavailable');
-      throw new Error('Could not save ' + safePath + '. Daytona: ' + remoteDetail + '. Browser runtime is unavailable.');
+      const browserDetail = browserError instanceof Error ? browserError.message : String(browserError || 'unavailable');
+      throw new Error('Could not save ' + safePath + '. Daytona: ' + remoteDetail + '. Browser: ' + browserDetail);
     }
   }
 
