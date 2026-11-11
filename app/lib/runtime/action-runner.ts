@@ -117,6 +117,11 @@ export class ActionRunner {
     if (action.type !== 'shell') unreachable('Expected shell action');
     if (action.abortSignal.aborted) throw new Error('Command was cancelled before execution.');
 
+    if (this.#daytonaUnavailableReason) {
+      remotePreviewStore.set(undefined);
+      return this.#runWebContainerCommand(action.content);
+    }
+
     try {
       const files: DaytonaSyncFile[] = [];
       let totalBytes = 0;
