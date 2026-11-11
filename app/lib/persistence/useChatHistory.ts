@@ -86,19 +86,19 @@ export function useChatHistory() {
       }
 
       await withDatabase(async (database) => {
-        const { firstArtifact } = workbenchStore;
+        const { firstProject } = workbenchStore;
         let currentUrlId = urlId;
         let currentDescription = description.get();
         let currentChatId = chatId.get();
 
-        if (!currentUrlId && firstArtifact?.id) {
-          currentUrlId = await getUrlId(database, firstArtifact.id);
+        if (!currentUrlId && firstProject?.id) {
+          currentUrlId = await getUrlId(database, firstProject.id);
           navigateChat(currentUrlId);
           setUrlId(currentUrlId);
         }
 
-        if (!currentDescription && firstArtifact?.title) {
-          currentDescription = firstArtifact.title;
+        if (!currentDescription && firstProject?.title) {
+          currentDescription = firstProject.title;
           description.set(currentDescription);
         }
 
