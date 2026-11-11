@@ -38,7 +38,7 @@ describe('StreamingMessageParser', () => {
       artifactId: 'demo',
       messageId: 'message-native',
       actionId: '0',
-      action: expect.objectContaining({ type: 'file', filePath: 'index.html', content: '<h1>BeamCore</h1>\\n' }),
+      action: expect.objectContaining({ type: 'file', filePath: 'index.html', content: '<h1>BeamCore</h1>\n' }),
     }));
   });
 
