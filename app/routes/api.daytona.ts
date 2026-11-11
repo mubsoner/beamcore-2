@@ -51,7 +51,12 @@ function getCookieValue(request: Request) {
 }
 
 function signSandboxId(sandboxId: string) {
-  const key = process.env.DAYTONA_API_KEY || '';
+  const key = process.env.DAYTONA_SESSION_SECRET;
+
+  if (!key || key.length < 32) {
+    throw new Error('DAYTONA_SESSION_SECRET must be configured as a separate server-side secret of at least 32 characters.');
+  }
+
   return createHmac('sha256', key).update('beamcore:' + sandboxId).digest('base64url');
 }
 
@@ -304,7 +309,7 @@ export async function action({ request }: ActionFunctionArgs) {
   if (!isDaytonaGuestPreviewEnabled(process.env.VERCEL_ENV, process.env.DAYTONA_GUEST_PREVIEW_ENABLED)) {
     return json({
       ok: false,
-      error: 'Daytona guest runtime is disabled. It may only be enabled on an access-protected Vercel Preview deployment; production requires authenticated user authorization.',
+      error: 'Daytona guest runtime is disabled. It may only be explicitly enabled for a non-production Vercel Preview deployment after Deployment Protection is configured; production requires authenticated user authorization.',
     }, { status: 503, headers: { 'Cache-Control': 'no-store' } });
   }
 
