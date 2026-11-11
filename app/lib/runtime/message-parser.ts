@@ -208,7 +208,7 @@ export class StreamingMessageParser {
 
               const currentProject = {
                 id: projectId,
-                title: artifactTitle,
+                title: projectTitle,
               } satisfies BeamCoreProjectData;
 
               state.currentProject = currentProject;
