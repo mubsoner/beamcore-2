@@ -3,7 +3,7 @@ import ReactMarkdown, { type Components } from 'react-markdown';
 import type { BundledLanguage } from 'shiki';
 import { createScopedLogger } from '~/utils/logger';
 import { rehypePlugins, remarkPlugins, allowedHTMLElements } from '~/utils/markdown';
-import { Artifact } from './Artifact';
+import { ProjectCard } from './Artifact';
 import { CodeBlock } from './CodeBlock';
 
 import styles from './Markdown.module.scss';
@@ -22,14 +22,14 @@ export const Markdown = memo(({ children, html = false, limitedMarkdown = false 
   const components = useMemo(() => {
     return {
       div: ({ className, children, node, ...props }) => {
-        if (className?.includes('__boltArtifact__')) {
+        if (className?.includes('__beamcoreProject__')) {
           const messageId = node?.properties.dataMessageId as string;
 
           if (!messageId) {
             logger.error(`Invalid message id ${messageId}`);
           }
 
-          return <Artifact messageId={messageId} />;
+          return <ProjectCard messageId={messageId} />;
         }
 
         return (

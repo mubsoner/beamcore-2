@@ -8,6 +8,7 @@ import { WORK_DIR } from '~/utils/constants';
 import { computeFileModifications } from '~/utils/diff';
 import { createScopedLogger } from '~/utils/logger';
 import { unreachable } from '~/utils/unreachable';
+import { writeDaytonaFile } from '~/lib/daytona.client';
 
 const logger = createScopedLogger('FilesStore');
 
@@ -62,6 +63,17 @@ export class FilesStore {
     this.#init();
   }
 
+  setGeneratedFile(relativePath: string, content: string) {
+    const safeRelativePath = relativePath.replace(/\\/g, '/').replace(/^\.\//, '');
+    if (!safeRelativePath || safeRelativePath.startsWith('/') || safeRelativePath.split('/').includes('..')) {
+      throw new Error('Refusing to add a file outside the project directory.');
+    }
+    const absolutePath = nodePath.posix.join(WORK_DIR, safeRelativePath);
+    const existing = this.files.get()[absolutePath];
+    if (existing?.type !== 'file') this.#size++;
+    this.files.setKey(absolutePath, { type: 'file', content, isBinary: false });
+  }
+
   getFile(filePath: string) {
     const dirent = this.files.get()[filePath];
 
@@ -81,45 +93,39 @@ export class FilesStore {
   }
 
   async saveFile(filePath: string, content: string) {
-    const webcontainer = await this.#webcontainer;
-
     try {
-      const relativePath = nodePath.relative(webcontainer.workdir, filePath);
-
-      if (!relativePath) {
-        throw new Error(`EINVAL: invalid file path, write '${relativePath}'`);
+      const relativePath = filePath.replace(/^\/home\/project\/?/, '').replace(/\\/g, '/');
+      if (!relativePath || relativePath.startsWith('/') || relativePath.split('/').includes('..')) {
+        throw new Error('Refusing to save outside the project directory: ' + filePath);
       }
-
       const oldContent = this.getFile(filePath)?.content;
+      if (oldContent === undefined) unreachable('Expected content to be defined');
 
-      if (!oldContent) {
-        unreachable('Expected content to be defined');
-      }
+      await writeDaytonaFile(relativePath, content);
+      void this.#webcontainer
+        .then((webcontainer) => webcontainer.fs.writeFile(relativePath, content))
+        .catch((mirrorError) => logger.warn('File saved to Daytona; browser mirror is unavailable', mirrorError));
 
-      await webcontainer.fs.writeFile(relativePath, content);
-
-      if (!this.#modifiedFiles.has(filePath)) {
-        this.#modifiedFiles.set(filePath, oldContent);
-      }
-
-      // we immediately update the file and don't rely on the `change` event coming from the watcher
+      if (!this.#modifiedFiles.has(filePath)) this.#modifiedFiles.set(filePath, oldContent);
       this.files.setKey(filePath, { type: 'file', content, isBinary: false });
-
       logger.info('File updated');
     } catch (error) {
       logger.error('Failed to update file content\n\n', error);
-
       throw error;
     }
   }
 
   async #init() {
-    const webcontainer = await this.#webcontainer;
+    try {
+      const webcontainer = await this.#webcontainer;
 
-    webcontainer.internal.watchPaths(
-      { include: [`${WORK_DIR}/**`], exclude: ['**/node_modules', '.git'], includeContent: true },
-      bufferWatchEvents(100, this.#processEventBuffer.bind(this)),
-    );
+      webcontainer.internal.watchPaths(
+        { include: [`${WORK_DIR}/**`], exclude: ['**/node_modules', '.git'], includeContent: true },
+        bufferWatchEvents(100, this.#processEventBuffer.bind(this)),
+      );
+    } catch (error) {
+      logger.warn('Browser file watcher is unavailable; Daytona-backed editor state remains active.', error);
+    }
   }
 
   #processEventBuffer(events: Array<[events: PathWatcherEvent[]]>) {

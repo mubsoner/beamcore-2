@@ -2,7 +2,7 @@ import { atom } from 'nanostores';
 
 export type Theme = 'dark' | 'light';
 
-export const kTheme = 'bolt_theme';
+export const kTheme = 'beamcore_theme';
 
 export function themeIsDark() {
   return themeStore.get() === 'dark';
@@ -14,7 +14,7 @@ export const themeStore = atom<Theme>(initStore());
 
 function initStore() {
   if (!import.meta.env.SSR) {
-    const persistedTheme = localStorage.getItem(kTheme) as Theme | undefined;
+    const persistedTheme = (localStorage.getItem(kTheme) || localStorage.getItem('bolt_theme')) as Theme | undefined;
     const themeAttribute = document.querySelector('html')?.getAttribute('data-theme');
 
     return persistedTheme ?? (themeAttribute as Theme) ?? DEFAULT_THEME;

@@ -1,12 +1,14 @@
 import { useStore } from '@nanostores/react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { computed } from 'nanostores';
+import { computed, map } from 'nanostores';
 import { memo, useEffect, useRef, useState } from 'react';
 import { createHighlighter, type BundledLanguage, type BundledTheme, type HighlighterGeneric } from 'shiki';
 import type { ActionState } from '~/lib/runtime/action-runner';
 import { workbenchStore } from '~/lib/stores/workbench';
 import { classNames } from '~/utils/classNames';
 import { cubicEasingFn } from '~/utils/easings';
+
+const emptyActions = map<Record<string, ActionState>>({});
 
 const highlighterOptions = {
   langs: ['shell'],
@@ -20,19 +22,19 @@ if (import.meta.hot) {
   import.meta.hot.data.shellHighlighter = shellHighlighter;
 }
 
-interface ArtifactProps {
+interface ProjectCardProps {
   messageId: string;
 }
 
-export const Artifact = memo(({ messageId }: ArtifactProps) => {
+export const ProjectCard = memo(({ messageId }: ProjectCardProps) => {
   const userToggledActions = useRef(false);
   const [showActions, setShowActions] = useState(false);
 
-  const artifacts = useStore(workbenchStore.artifacts);
-  const artifact = artifacts[messageId];
+  const projects = useStore(workbenchStore.projects);
+  const project = projects[messageId];
 
   const actions = useStore(
-    computed(artifact.runner.actions, (actions) => {
+    computed(project?.runner.actions ?? emptyActions, (actions) => {
       return Object.values(actions);
     }),
   );
@@ -59,8 +61,8 @@ export const Artifact = memo(({ messageId }: ArtifactProps) => {
           }}
         >
           <div className="px-5 p-3.5 w-full text-left">
-            <div className="w-full text-bolt-elements-textPrimary font-medium leading-5 text-sm">{artifact?.title}</div>
-            <div className="w-full w-full text-bolt-elements-textSecondary text-xs mt-0.5">Click to open Workbench</div>
+            <div className="w-full text-bolt-elements-textPrimary font-medium leading-5 text-sm">{project?.title}</div>
+            <div className="w-full w-full text-bolt-elements-textSecondary text-xs mt-0.5">Open BeamCore project workspace</div>
           </div>
         </button>
         <div className="bg-bolt-elements-artifacts-borderColor w-[1px]" />
@@ -169,7 +171,7 @@ const ActionList = memo(({ actions }: ActionListProps) => {
                   </div>
                 ) : type === 'shell' ? (
                   <div className="flex items-center w-full min-h-[28px]">
-                    <span className="flex-1">Run command</span>
+                    <span className="flex-1">Run project command</span>
                   </div>
                 ) : null}
               </div>
@@ -180,6 +182,9 @@ const ActionList = memo(({ actions }: ActionListProps) => {
                   })}
                   code={content}
                 />
+              )}
+              {type === 'shell' && action.output && (
+                <pre className="mt-2 max-h-48 overflow-auto rounded-md bg-bolt-elements-background-depth-1 p-3 text-xs whitespace-pre-wrap">{action.output}</pre>
               )}
             </motion.li>
           );

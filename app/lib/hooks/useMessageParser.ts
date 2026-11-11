@@ -8,16 +8,16 @@ const logger = createScopedLogger('useMessageParser');
 
 const messageParser = new StreamingMessageParser({
   callbacks: {
-    onArtifactOpen: (data) => {
-      logger.trace('onArtifactOpen', data);
+    onProjectOpen: (data) => {
+      logger.trace('onProjectOpen', data);
 
       workbenchStore.showWorkbench.set(true);
-      workbenchStore.addArtifact(data);
+      workbenchStore.addProject(data);
     },
-    onArtifactClose: (data) => {
-      logger.trace('onArtifactClose');
+    onProjectClose: (data) => {
+      logger.trace('onProjectClose');
 
-      workbenchStore.updateArtifact(data, { closed: true });
+      workbenchStore.updateProject(data, { closed: true });
     },
     onActionOpen: (data) => {
       logger.trace('onActionOpen', data.action);

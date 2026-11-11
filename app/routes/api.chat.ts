@@ -1,14 +1,14 @@
 import { type ActionFunctionArgs, type LoaderFunctionArgs } from '@remix-run/cloudflare';
-import { getAIConfig } from '~/lib/.server/llm/api-key';
+import { getAIConfig, type AIProvider } from '~/lib/.server/llm/api-key';
 import { MAX_RESPONSE_SEGMENTS } from '~/lib/.server/llm/constants';
-import { CONTINUE_PROMPT } from '~/lib/.server/llm/prompts';
+import { CHAT_SYSTEM_PROMPT, CONTINUE_PROMPT, getSystemPrompt } from '~/lib/.server/llm/prompts';
 import { generateText, type Messages } from '~/lib/.server/llm/stream-text';
 
 const BUILD_RETRY_PROMPT = `
-Your previous response did not contain executable Bolt actions, so no project files could be created.
+Your previous response did not contain executable BeamCore actions, so no project files could be created.
 Do not search, browse, narrate, or provide a plan. Immediately complete the user's original project request.
-Return ONLY one valid <boltArtifact id="..." title="..."> with at least one complete
-<boltAction type="file" filePath="relative/path">FULL FILE CONTENT</boltAction>.
+Return ONLY one valid <beamcoreProject id="..." title="..."> with at least one complete
+<beamcoreAction type="file" filePath="relative/path">FULL FILE CONTENT</beamcoreAction>.
 Add shell actions only when required. Do not wrap the tags in Markdown fences.
 `;
 
@@ -26,8 +26,33 @@ function isBuildRequest(messages: Messages) {
   return /\b(?:build|create|make|generate|develop|implement|scaffold|write|program|fix|update|edit|modify|refactor|debug|design)\b|(?:kirkir\w*|gina|samar da|gyara|sabunta|canza|yi min)/i.test(text);
 }
 
+function compactChatMessages(messages: Messages): Messages {
+  const selected = messages.slice(-8);
+  const maxTotalCharacters = 6_000;
+  let remaining = maxTotalCharacters;
+  const compacted: Messages = [];
+
+  for (let index = selected.length - 1; index >= 0; index -= 1) {
+    const message = selected[index];
+
+    if (remaining <= 0) {
+      break;
+    }
+
+    const content = message.content || '';
+    const keptContent = content.length > remaining
+      ? content.slice(-remaining)
+      : content;
+
+    compacted.unshift({ ...message, content: keptContent });
+    remaining -= keptContent.length;
+  }
+
+  return compacted;
+}
+
 function hasExecutableArtifact(text: string) {
-  const artifact = /<boltArtifact\b([^>]*)>([\s\S]*?)<\/boltArtifact>/i.exec(text);
+  const artifact = /<beamcoreProject\b([^>]*)>([\s\S]*?)<\/beamcoreProject>/i.exec(text);
 
   if (!artifact) {
     return false;
@@ -38,9 +63,9 @@ function hasExecutableArtifact(text: string) {
   const hasId = /\bid="[^"]+"/i.test(attributes);
   const hasTitle = /\btitle="[^"]+"/i.test(attributes);
   const hasFileAction =
-    /<boltAction\b(?=[^>]*\btype="file")(?=[^>]*\bfilePath="[^"]+")[^>]*>[\s\S]*?<\/boltAction>/i.test(body);
+    /<beamcoreAction\b(?=[^>]*\btype="file")(?=[^>]*\bfilePath="[^"]+")[^>]*>[\s\S]*?<\/beamcoreAction>/i.test(body);
   const hasShellAction =
-    /<boltAction\b(?=[^>]*\btype="shell")[^>]*>[\s\S]*?<\/boltAction>/i.test(body);
+    /<beamcoreAction\b(?=[^>]*\btype="shell")[^>]*>[\s\S]*?<\/beamcoreAction>/i.test(body);
 
   return hasId && hasTitle && (hasFileAction || hasShellAction);
 }
@@ -61,10 +86,10 @@ export async function loader({ request, context }: LoaderFunctionArgs) {
         const result = await generateText(
           [{
             role: 'user',
-            content: 'Create a tiny HTML page that says BeamCore build probe. Return one complete Bolt artifact with one file action for index.html.',
+            content: 'Create a tiny HTML page that says BeamCore build probe. Return one complete BeamCore project with one file action for index.html.',
           }],
           env,
-          { maxRetries: 0, maxTokens: 1536 },
+          { system: getSystemPrompt(), maxRetries: 0, maxTokens: 1536 },
         );
 
         const executable = hasExecutableArtifact(result.text);
@@ -75,8 +100,8 @@ export async function loader({ request, context }: LoaderFunctionArgs) {
           model: config.model,
           apiKeyConfigured: true,
           probe: executable ? 'passed' : 'failed',
-          artifactDetected: /<boltArtifact\b/i.test(result.text),
-          actionDetected: /<boltAction\b/i.test(result.text),
+          artifactDetected: /<beamcoreProject\b/i.test(result.text),
+          actionDetected: /<beamcoreAction\b/i.test(result.text),
           finishReason: result.finishReason,
           responsePreview: result.text.slice(0, 180),
         }), {
@@ -177,28 +202,105 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
     return new Response(JSON.stringify({ error: 'The chat request body must be valid JSON.' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
   }
 
+  let providerLabel = 'AI provider';
+  const buildRequest = isBuildRequest(messages);
+  const requestStartedAt = Date.now();
+
   try {
-    // Keep the non-streaming provider call for Cloudflare compatibility.
-    // Chat.client.tsx uses streamProtocol: 'text' to consume this plain-text response.
+    const env = context.cloudflare?.env;
+    const config = getAIConfig(env);
+    providerLabel = config.provider === 'gemini' ? 'Gemini' : config.provider === 'groq' ? 'Groq' : 'OpenRouter';
+
+    // Keep the response as plain text for the existing useChat text protocol.
+    // When the selected provider hits a quota/unavailable response, ordinary
+    // questions automatically fail over to the other configured provider.
+    const primaryProvider = config.provider;
+    const hasGroq = Boolean(process.env.GROQ_API_KEY || env?.GROQ_API_KEY);
+    const hasGemini = Boolean(process.env.GEMINI_API_KEY || env?.GEMINI_API_KEY);
+    const fallbackProvider: AIProvider | undefined = !buildRequest
+      ? primaryProvider === 'gemini' && hasGroq
+        ? 'groq'
+        : primaryProvider === 'groq' && hasGemini
+          ? 'gemini'
+          : undefined
+      : undefined;
+    const providers: AIProvider[] = fallbackProvider
+      ? [primaryProvider, fallbackProvider]
+      : [primaryProvider];
+
+    const requestMessages = buildRequest ? [...messages] : compactChatMessages(messages);
+    console.info('[BeamCore] Chat request received', {
+      provider: primaryProvider,
+      buildRequest,
+      messageCount: requestMessages.length,
+      inputCharacters: requestMessages.reduce((sum, item) => sum + (item.content || '').length, 0),
+    });
+
     let responseText = '';
-    let nextMessages: Messages = [...messages];
+    let activeProvider: AIProvider | undefined;
 
-    for (let segment = 0; segment < MAX_RESPONSE_SEGMENTS; segment += 1) {
-      const result = await generateText(nextMessages, context.cloudflare?.env, {
-        maxRetries: 0,
-      });
+    for (const provider of providers) {
+      try {
+        let nextMessages: Messages = [...requestMessages];
+        let providerText = '';
 
-      responseText += result.text;
+        for (let segment = 0; segment < MAX_RESPONSE_SEGMENTS; segment += 1) {
+          const result = await generateText(nextMessages, env, {
+            maxRetries: 0,
+            maxTokens: buildRequest ? 8192 : 1024,
+            system: buildRequest ? getSystemPrompt() : CHAT_SYSTEM_PROMPT,
+            abortSignal: AbortSignal.timeout(buildRequest ? 90_000 : 35_000),
+          }, provider);
 
-      if (result.finishReason !== 'length' || segment === MAX_RESPONSE_SEGMENTS - 1) {
+          providerText += result.text;
+
+          // Normal chat should return one concise completion. Only build jobs
+          // need continuation chunks to finish complete executable artifacts.
+          if (!buildRequest || result.finishReason !== 'length' || segment === MAX_RESPONSE_SEGMENTS - 1) {
+            break;
+          }
+
+          nextMessages = [
+            ...nextMessages,
+            { role: 'assistant', content: result.text },
+            { role: 'user', content: CONTINUE_PROMPT },
+          ];
+        }
+
+        if (!providerText.trim()) {
+          throw new Error(provider + ' returned an empty response.');
+        }
+
+        responseText = providerText;
+        activeProvider = provider;
         break;
-      }
+      } catch (providerError) {
+        const detail = providerError instanceof Error ? providerError.message : String(providerError);
+        const statusCode = providerError && typeof providerError === 'object' && 'statusCode' in providerError
+          ? Number((providerError as { statusCode?: number }).statusCode)
+          : 0;
+        const canFailOver = !buildRequest && providers.length > 1 &&
+          (statusCode === 429 || statusCode === 503 || /rate limit|too many requests|resource_exhausted|quota|overloaded|temporarily unavailable/i.test(detail));
 
-      nextMessages = [
-        ...nextMessages,
-        { role: 'assistant', content: result.text },
-        { role: 'user', content: CONTINUE_PROMPT },
-      ];
+        console.warn('[BeamCore] AI provider request failed', {
+          provider,
+          statusCode,
+          canFailOver,
+          message: detail.slice(0, 300),
+        });
+
+        if (!canFailOver || provider === providers[providers.length - 1]) {
+          throw providerError;
+        }
+      }
+    }
+
+    if (activeProvider) {
+      console.info('[BeamCore] Chat response completed', {
+        provider: activeProvider,
+        elapsedMs: Date.now() - requestStartedAt,
+        responseCharacters: responseText.length,
+      });
     }
 
     if (!responseText.trim()) {
@@ -207,8 +309,8 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
 
     // If this is a build/edit request, do not accept a status-only answer as success.
     // Retry once with an explicit executable-output instruction.
-    if (isBuildRequest(messages) && !hasExecutableArtifact(responseText)) {
-      console.warn('[BeamCore] Build response had no executable Bolt actions; retrying once.');
+    if (buildRequest && !hasExecutableArtifact(responseText)) {
+      console.warn('[BeamCore] Build response had no executable BeamCore actions; retrying once.');
 
       const retryResult = await generateText(
         [
@@ -216,19 +318,20 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
           { role: 'assistant', content: responseText },
           { role: 'user', content: BUILD_RETRY_PROMPT },
         ],
-        context.cloudflare?.env,
-        { maxRetries: 2 },
+        env,
+        { system: getSystemPrompt(), maxRetries: 0, maxTokens: 8192 },
+        activeProvider,
       );
 
       if (hasExecutableArtifact(retryResult.text)) {
         responseText = retryResult.text;
       } else {
-        console.error('[BeamCore] Gemini retry still returned no executable Bolt actions.', {
+        console.error('[BeamCore] Provider retry still returned no executable BeamCore actions.', {
           finishReason: retryResult.finishReason,
           responseLength: retryResult.text.length,
         });
         responseText =
-          'I could not start this build because Gemini did not return executable file or command actions. No project files were changed. Please try a smaller build request.';
+          'I could not start this build because ' + providerLabel + ' did not return executable file or command actions. No project files were changed. Please try a smaller build request.';
       }
     }
 
@@ -243,10 +346,8 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
     const message = error instanceof Error ? error.message : 'Unknown chat route error';
     console.error('[BeamCore] Chat route failed:', error);
 
-    const isRateLimited = /rate limit|too many requests|resource_exhausted|quota exceeded|\\b429\\b/i.test(message);
-    const retryAfterMatch =
-      message.match(/(?:try again in|retry after|retry in)\\s+([\\d.]+)\\s*s/i) ||
-      message.match(/"retryDelay"\\s*:\\s*"([\\d.]+)s"/i);
+    const isRateLimited = /rate limit|too many requests|resource_exhausted|quota|\\b429\\b/i.test(message);
+    const retryAfterMatch = message.match(/(?:try again in|retry after|retry in)\\s+(?:(\\d+)h)?(?:(\\d+)m)?([\\d.]+)s/i);
     const responseHeaders =
       error && typeof error === 'object' && 'responseHeaders' in error
         ? (error as { responseHeaders?: Record<string, string> }).responseHeaders
@@ -255,20 +356,32 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
     const retryAfterSeconds = retryAfterHeader
       ? Math.max(1, Math.ceil(Number(retryAfterHeader)))
       : retryAfterMatch
-        ? Math.max(1, Math.ceil(Number(retryAfterMatch[1])))
+        ? Math.max(
+            1,
+            Math.ceil(
+              Number(retryAfterMatch[1] || 0) * 3600 +
+              Number(retryAfterMatch[2] || 0) * 60 +
+              Number(retryAfterMatch[3] || 0),
+            ),
+          )
         : 30;
+    const retryAfterText = retryAfterSeconds >= 3600
+      ? Math.ceil(retryAfterSeconds / 3600) + ' hour(s)'
+      : retryAfterSeconds >= 60
+        ? Math.ceil(retryAfterSeconds / 60) + ' minute(s)'
+        : retryAfterSeconds + ' seconds';
     const isAuthError = /\\b401\\b|\\b403\\b|api key.*(invalid|not valid)|unauthorized/i.test(message);
     const isModelError = /\\b404\\b|model.*(not found|unsupported)|not supported for this endpoint/i.test(message);
     const isTemporarilyUnavailable = /service unavailable|\\b503\\b|overloaded|temporarily unavailable/i.test(message);
     const userMessage = isRateLimited
-      ? `Gemini has temporarily limited this API key or project. Wait ${retryAfterSeconds} seconds before retrying. Check Google AI Studio usage and rate limits if it continues.`
+      ? providerLabel + ' has reached its current usage quota. Try again in about ' + retryAfterText + ', or increase the provider quota in its billing/rate-limit settings.'
       : isAuthError
-        ? 'Gemini rejected the API key. Check GEMINI_API_KEY in Vercel Environment Variables.'
+        ? providerLabel + ' rejected its API key. Check the corresponding API key in Vercel Environment Variables.'
         : isModelError
-          ? 'The configured Gemini model is unavailable. Check GEMINI_MODEL in Vercel.'
+          ? 'The configured ' + providerLabel + ' model is unavailable. Check the model setting in Vercel.'
           : isTemporarilyUnavailable
-            ? 'Gemini is temporarily unavailable. No files were changed; please retry shortly.'
-            : 'Gemini could not complete this request. Check the server logs for details.';
+            ? providerLabel + ' is temporarily unavailable. No project files were changed; please retry shortly.'
+            : providerLabel + ' could not complete this request. Check the server logs for details.';
 
     const status = isRateLimited ? 429 : isTemporarilyUnavailable ? 503 : 502;
 

@@ -1,16 +1,37 @@
-import type { ActionType, BoltAction, BoltActionData, FileAction, ShellAction } from '~/types/actions';
-import type { BoltArtifactData } from '~/types/artifact';
+import type { ActionType, BeamCoreAction, BeamCoreActionData, FileAction, ShellAction } from '~/types/actions';
+import type { BeamCoreProjectData } from '~/types/artifact';
 import { createScopedLogger } from '~/utils/logger';
 import { unreachable } from '~/utils/unreachable';
 
-const ARTIFACT_TAG_OPEN = '<boltArtifact';
-const ARTIFACT_TAG_CLOSE = '</boltArtifact>';
-const ARTIFACT_ACTION_TAG_OPEN = '<boltAction';
-const ARTIFACT_ACTION_TAG_CLOSE = '</boltAction>';
+const PROJECT_TAG_OPEN = '<beamcoreProject';
+const LEGACY_PROJECT_TAG_OPEN = '<boltArtifact';
+const PROJECT_TAG_CLOSES = ['</beamcoreProject>', '</boltArtifact>'];
+const PROJECT_ACTION_TAG_OPENS = ['<beamcoreAction', '<boltAction'];
+const PROJECT_ACTION_TAG_CLOSES = ['</beamcoreAction>', '</boltAction>'];
+const PROJECT_TAG_OPENS = [PROJECT_TAG_OPEN, LEGACY_PROJECT_TAG_OPEN];
 
 const logger = createScopedLogger('MessageParser');
 
-export interface ArtifactCallbackData extends BoltArtifactData {
+interface TagMatch {
+  index: number;
+  tag: string;
+}
+
+function findNextTag(input: string, start: number, tags: string[]): TagMatch | undefined {
+  let match: TagMatch | undefined;
+
+  for (const tag of tags) {
+    const index = input.indexOf(tag, start);
+
+    if (index !== -1 && (!match || index < match.index)) {
+      match = { index, tag };
+    }
+  }
+
+  return match;
+}
+
+export interface ProjectCallbackData extends BeamCoreProjectData {
   messageId: string;
 }
 
@@ -18,15 +39,22 @@ export interface ActionCallbackData {
   artifactId: string;
   messageId: string;
   actionId: string;
-  action: BoltAction;
+  action: BeamCoreAction;
 }
 
-export type ArtifactCallback = (data: ArtifactCallbackData) => void;
+export type ProjectCallback = (data: ProjectCallbackData) => void;
+/** @deprecated Use ProjectCallbackData. */
+export type ArtifactCallbackData = ProjectCallbackData;
+/** @deprecated Use ProjectCallback. */
+export type ArtifactCallback = ProjectCallback;
 export type ActionCallback = (data: ActionCallbackData) => void;
 
 export interface ParserCallbacks {
-  onArtifactOpen?: ArtifactCallback;
-  onArtifactClose?: ArtifactCallback;
+  onProjectOpen?: ProjectCallback;
+  onProjectClose?: ProjectCallback;
+  /** @deprecated Legacy callback aliases for older integrations. */
+  onArtifactOpen?: ProjectCallback;
+  onArtifactClose?: ProjectCallback;
   onActionOpen?: ActionCallback;
   onActionClose?: ActionCallback;
 }
@@ -39,15 +67,17 @@ type ElementFactory = (props: ElementFactoryProps) => string;
 
 export interface StreamingMessageParserOptions {
   callbacks?: ParserCallbacks;
+  projectElement?: ElementFactory;
+  /** @deprecated Use projectElement. */
   artifactElement?: ElementFactory;
 }
 
 interface MessageState {
   position: number;
-  insideArtifact: boolean;
+  insideProject: boolean;
   insideAction: boolean;
-  currentArtifact?: BoltArtifactData;
-  currentAction: BoltActionData;
+  currentProject?: BeamCoreProjectData;
+  currentAction: BeamCoreActionData;
   actionId: number;
 }
 
@@ -63,7 +93,7 @@ export class StreamingMessageParser {
       state = {
         position: 0,
         insideAction: false,
-        insideArtifact: false,
+        insideProject: false,
         currentAction: { content: '' },
         actionId: 0,
       };
@@ -76,20 +106,19 @@ export class StreamingMessageParser {
     let earlyBreak = false;
 
     while (i < input.length) {
-      if (state.insideArtifact) {
-        const currentArtifact = state.currentArtifact;
+      if (state.insideProject) {
+        const currentProject = state.currentProject;
 
-        if (currentArtifact === undefined) {
-          unreachable('Artifact not initialized');
+        if (currentProject === undefined) {
+          unreachable('Project not initialized');
         }
 
         if (state.insideAction) {
-          const closeIndex = input.indexOf(ARTIFACT_ACTION_TAG_CLOSE, i);
-
+          const closeMatch = findNextTag(input, i, PROJECT_ACTION_TAG_CLOSES);
           const currentAction = state.currentAction;
 
-          if (closeIndex !== -1) {
-            currentAction.content += input.slice(i, closeIndex);
+          if (closeMatch) {
+            currentAction.content += input.slice(i, closeMatch.index);
 
             let content = currentAction.content.trim();
 
@@ -100,56 +129,49 @@ export class StreamingMessageParser {
             currentAction.content = content;
 
             this._options.callbacks?.onActionClose?.({
-              artifactId: currentArtifact.id,
+              artifactId: currentProject.id,
               messageId,
-
-              /**
-               * We decrement the id because it's been incremented already
-               * when `onActionOpen` was emitted to make sure the ids are
-               * the same.
-               */
               actionId: String(state.actionId - 1),
-
-              action: currentAction as BoltAction,
+              action: currentAction as BeamCoreAction,
             });
 
             state.insideAction = false;
             state.currentAction = { content: '' };
-
-            i = closeIndex + ARTIFACT_ACTION_TAG_CLOSE.length;
+            i = closeMatch.index + closeMatch.tag.length;
           } else {
             break;
           }
         } else {
-          const actionOpenIndex = input.indexOf(ARTIFACT_ACTION_TAG_OPEN, i);
-          const artifactCloseIndex = input.indexOf(ARTIFACT_TAG_CLOSE, i);
+          const actionOpenMatch = findNextTag(input, i, PROJECT_ACTION_TAG_OPENS);
+          const projectCloseMatch = findNextTag(input, i, PROJECT_TAG_CLOSES);
 
-          if (actionOpenIndex !== -1 && (artifactCloseIndex === -1 || actionOpenIndex < artifactCloseIndex)) {
-            const actionEndIndex = input.indexOf('>', actionOpenIndex);
+          if (actionOpenMatch && (!projectCloseMatch || actionOpenMatch.index < projectCloseMatch.index)) {
+            const actionEndIndex = input.indexOf('>', actionOpenMatch.index);
 
             if (actionEndIndex !== -1) {
               state.insideAction = true;
-
-              state.currentAction = this.#parseActionTag(input, actionOpenIndex, actionEndIndex);
+              state.currentAction = this.#parseActionTag(input, actionOpenMatch.index, actionEndIndex);
 
               this._options.callbacks?.onActionOpen?.({
-                artifactId: currentArtifact.id,
+                artifactId: currentProject.id,
                 messageId,
                 actionId: String(state.actionId++),
-                action: state.currentAction as BoltAction,
+                action: state.currentAction as BeamCoreAction,
               });
 
               i = actionEndIndex + 1;
             } else {
               break;
             }
-          } else if (artifactCloseIndex !== -1) {
-            this._options.callbacks?.onArtifactClose?.({ messageId, ...currentArtifact });
+          } else if (projectCloseMatch) {
+            (this._options.callbacks?.onProjectClose ?? this._options.callbacks?.onArtifactClose)?.({
+              messageId,
+              ...currentProject,
+            });
 
-            state.insideArtifact = false;
-            state.currentArtifact = undefined;
-
-            i = artifactCloseIndex + ARTIFACT_TAG_CLOSE.length;
+            state.insideProject = false;
+            state.currentProject = undefined;
+            i = projectCloseMatch.index + projectCloseMatch.tag.length;
           } else {
             break;
           }
@@ -158,13 +180,17 @@ export class StreamingMessageParser {
         let j = i;
         let potentialTag = '';
 
-        while (j < input.length && potentialTag.length < ARTIFACT_TAG_OPEN.length) {
+        while (j < input.length && potentialTag.length < PROJECT_TAG_OPEN.length) {
           potentialTag += input[j];
 
-          if (potentialTag === ARTIFACT_TAG_OPEN) {
+          const matchingOpenTag = PROJECT_TAG_OPENS.find(
+            (tag) => tag.toLowerCase() === potentialTag.toLowerCase(),
+          );
+
+          if (matchingOpenTag) {
             const nextChar = input[j + 1];
 
-            if (nextChar && nextChar !== '>' && nextChar !== ' ') {
+            if (nextChar && nextChar !== '>' && !/\s/.test(nextChar)) {
               output += input.slice(i, j + 1);
               i = j + 1;
               break;
@@ -173,41 +199,41 @@ export class StreamingMessageParser {
             const openTagEnd = input.indexOf('>', j);
 
             if (openTagEnd !== -1) {
-              const artifactTag = input.slice(i, openTagEnd + 1);
+              const projectTag = input.slice(i, openTagEnd + 1);
+              const projectTitle = this.#extractAttribute(projectTag, 'title') as string;
+              const projectId = this.#extractAttribute(projectTag, 'id') as string;
 
-              const artifactTitle = this.#extractAttribute(artifactTag, 'title') as string;
-              const artifactId = this.#extractAttribute(artifactTag, 'id') as string;
-
-              if (!artifactTitle) {
-                logger.warn('Artifact title missing');
+              if (!projectTitle) {
+                logger.warn('Project title missing');
               }
 
-              if (!artifactId) {
-                logger.warn('Artifact id missing');
+              if (!projectId) {
+                logger.warn('Project id missing');
               }
 
-              state.insideArtifact = true;
+              state.insideProject = true;
 
-              const currentArtifact = {
-                id: artifactId,
-                title: artifactTitle,
-              } satisfies BoltArtifactData;
+              const currentProject = {
+                id: projectId,
+                title: projectTitle,
+              } satisfies BeamCoreProjectData;
 
-              state.currentArtifact = currentArtifact;
+              state.currentProject = currentProject;
 
-              this._options.callbacks?.onArtifactOpen?.({ messageId, ...currentArtifact });
+              (this._options.callbacks?.onProjectOpen ?? this._options.callbacks?.onArtifactOpen)?.({
+                messageId,
+                ...currentProject,
+              });
 
-              const artifactFactory = this._options.artifactElement ?? createArtifactElement;
-
-              output += artifactFactory({ messageId });
-
+              const projectFactory = this._options.projectElement ?? this._options.artifactElement ?? createProjectElement;
+              output += projectFactory({ messageId });
               i = openTagEnd + 1;
             } else {
               earlyBreak = true;
             }
 
             break;
-          } else if (!ARTIFACT_TAG_OPEN.startsWith(potentialTag)) {
+          } else if (!PROJECT_TAG_OPENS.some((tag) => tag.toLowerCase().startsWith(potentialTag.toLowerCase()))) {
             output += input.slice(i, j + 1);
             i = j + 1;
             break;
@@ -216,7 +242,10 @@ export class StreamingMessageParser {
           j++;
         }
 
-        if (j === input.length && ARTIFACT_TAG_OPEN.startsWith(potentialTag)) {
+        if (
+          j === input.length &&
+          PROJECT_TAG_OPENS.some((tag) => tag.toLowerCase().startsWith(potentialTag.toLowerCase()))
+        ) {
           break;
         }
       } else {
@@ -240,7 +269,6 @@ export class StreamingMessageParser {
 
   #parseActionTag(input: string, actionOpenIndex: number, actionEndIndex: number) {
     const actionTag = input.slice(actionOpenIndex, actionEndIndex + 1);
-
     const actionType = this.#extractAttribute(actionTag, 'type') as ActionType;
 
     const actionAttributes = {
@@ -269,9 +297,9 @@ export class StreamingMessageParser {
   }
 }
 
-const createArtifactElement: ElementFactory = (props) => {
+const createProjectElement: ElementFactory = (props) => {
   const elementProps = [
-    'class="__boltArtifact__"',
+    'class="__beamcoreProject__"',
     ...Object.entries(props).map(([key, value]) => {
       return `data-${camelToDashCase(key)}=${JSON.stringify(value)}`;
     }),
