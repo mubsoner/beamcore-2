@@ -321,6 +321,13 @@ export async function action({ request }: ActionFunctionArgs) {
     return json({ ok: false, error: 'A same-origin browser request is required.' }, { status: 403 });
   }
 
+  if (!process.env.DAYTONA_SESSION_SECRET || process.env.DAYTONA_SESSION_SECRET.length < 32) {
+    return json({
+      ok: false,
+      error: 'DAYTONA_SESSION_SECRET must be configured as a separate server-side secret of at least 32 characters.',
+    }, { status: 503, headers: { 'Cache-Control': 'no-store' } });
+  }
+
   const parsedBody = await readJsonBodyWithLimit(request);
 
   if (!parsedBody.ok) {
