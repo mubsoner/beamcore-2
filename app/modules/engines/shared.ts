@@ -97,6 +97,41 @@ export interface RequestContext {
   expected_version?: Version;
 }
 
+/** Canonical cross-engine event envelope; payloads contain references and minimal facts only. */
+export interface DomainEventEnvelope<T = unknown> {
+  event_id: ID;
+  event_type: string;
+  schema_version: RevisionNumber;
+  occurred_at: Timestamp;
+  producer_engine: EngineId;
+  object_ref: ObjectRef;
+  scope_ref: ScopeRef;
+  correlation_id: ID;
+  causation_id?: ID;
+  actor_ref?: PrincipalRef;
+  payload: T;
+}
+
+export function isDomainEventEnvelope(value: unknown): value is DomainEventEnvelope {
+  if (!isRecord(value)) return false;
+  return (
+    isNonEmptyString(value.event_id) &&
+    isNonEmptyString(value.event_type) &&
+    isRevisionNumber(value.schema_version) &&
+    isTimestamp(value.occurred_at) &&
+    typeof value.producer_engine === "string" &&
+    (ENGINE_IDS as readonly string[]).includes(value.producer_engine) &&
+    isObjectRef(value.object_ref) &&
+    isScopeRef(value.scope_ref) &&
+    value.object_ref.scope_ref.scope_id === value.scope_ref.scope_id &&
+    value.object_ref.scope_ref.scope_kind === value.scope_ref.scope_kind &&
+    isNonEmptyString(value.correlation_id) &&
+    (value.causation_id === undefined || isNonEmptyString(value.causation_id)) &&
+    (value.actor_ref === undefined || isPrincipalRef(value.actor_ref)) &&
+    Object.prototype.hasOwnProperty.call(value, "payload")
+  );
+}
+
 export const OPERATION_ERROR_CODES = [
   "VALIDATION_ERROR",
   "UNAUTHENTICATED",
