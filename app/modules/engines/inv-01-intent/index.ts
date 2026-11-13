@@ -2,3 +2,4 @@ import {Base,Context,Ref,Result,ok,err,problem,base} from "../shared"; export ty
 
 /** Canonical provider-neutral domain implementation; legacy prototype exports remain temporarily for migration compatibility. */
 export * as CanonicalDomain from "./domain";
+export * as Application from "./application";
