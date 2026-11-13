@@ -52,7 +52,7 @@ describe("INV-01 intent domain", () => {
     const result = normalizeIntent(baseInput());
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.lifecycle_state).toBe("READY_FOR_DECISION");
+    expect(result.value.lifecycle_state).toBe("NORMALIZED");
     expect(result.value.explicit_requirements).toEqual([]);
     expect(result.value.source_refs).toEqual([]);
   });
@@ -134,9 +134,13 @@ describe("INV-01 intent domain", () => {
   });
 
   it("applies only an authoritative Work acceptance receipt", () => {
-    const intent = normalizeIntent(baseInput());
-    expect(intent.ok).toBe(true);
-    if (!intent.ok) return;
+    const normalized = normalizeIntent(baseInput());
+    expect(normalized.ok).toBe(true);
+    if (!normalized.ok) return;
+    const ready = transitionIntent(normalized.value, "READY_FOR_DECISION");
+    expect(ready.ok).toBe(true);
+    if (!ready.ok) return;
+    const intent = ready;
     const proposal = createOutcomeProposal({
       proposal_ref: ref("OUTCOME_PROPOSAL", "proposal-1"),
       intent: intent.value,
