@@ -333,7 +333,7 @@ export function normalizeIntent(input: NormalizeIntentInput): DomainResult<Norma
     input.unknowns.some((item) => item.resolution_required);
   const lifecycle_state: IntentLifecycleState = hasRequiredClarification
     ? "AWAITING_CLARIFICATION"
-    : "READY_FOR_DECISION";
+    : "NORMALIZED";
 
   return ok({
     intent_ref,
@@ -405,7 +405,9 @@ export function createOutcomeProposal(input: {
     return fail("VALIDATION_ERROR", "Acceptance criteria must have descriptions, methods and expected results");
   }
   const state: OutcomeProposalState =
-    input.acceptance_criteria.length > 0 && input.unresolved_criterion_refs.length === 0
+    input.intent.lifecycle_state === "READY_FOR_DECISION" &&
+    input.acceptance_criteria.length > 0 &&
+    input.unresolved_criterion_refs.length === 0
       ? "SUBMITTED"
       : "DRAFT";
   return ok({
@@ -473,6 +475,11 @@ export function canSelectRoute(
   if (intent.lifecycle_state === "AWAITING_CLARIFICATION" &&
       disposition !== "CLARIFY" && disposition !== "STOP" && disposition !== "ESCALATE_TO_HUMAN") {
     return fail("INVALID_TRANSITION", "A material clarification must be resolved before selecting this route");
+  }
+  if (intent.lifecycle_state !== "READY_FOR_DECISION" &&
+      disposition !== "CLARIFY" && disposition !== "STOP" &&
+      disposition !== "DECLINE" && disposition !== "ESCALATE_TO_HUMAN") {
+    return fail("INVALID_TRANSITION", "Intent must reach READY_FOR_DECISION before a route is selected");
   }
   return ok(undefined);
 }
