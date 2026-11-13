@@ -259,7 +259,7 @@ describe("INV-04 orchestration domain", () => {
   });
 
   it("never blindly retries uncertain or non-idempotent side effects", () => {
-    const run = makeRun();
+    const run = makeRunningRun();
     const node = makeNodeCoordination(run, ref("GRAPH_NODE", "node-a"));
     const attempt = createDispatchAttempt({
       context, run, node, attempt_ref: ref("DISPATCH_ATTEMPT", "dispatch-1"),
