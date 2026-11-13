@@ -37,7 +37,7 @@ const makeFixtures = () => {
   if (!workResult.ok) throw new Error(workResult.issues[0].safe_message);
   let work = workResult.value;
   // A minimal READY state fixture; this is a domain test setup, not a persistence claim.
-  work = { ...work, lifecycle_state: "READY", current_revision: 2 };
+  work = { ...work, lifecycle_state: "READY", current_revision: 3 };
 
   const planResult = createPlanRevision({
     context, plan_ref: ref("PLAN", "plan-1"), plan_revision_ref: ref("PLAN_REVISION", "plan-r1"),
@@ -98,7 +98,7 @@ const makeFixtures = () => {
     plan_revision_ref: plan.plan_revision_ref,
     graph_revision_ref: graph.graph_revision_ref,
     expected_work_revision: 2,
-    resulting_work_revision: 2,
+    resulting_work_revision: 3,
     receipt_state: "ACCEPTED" as const,
     received_at: "2026-11-13T03:00:05Z",
   };
@@ -235,6 +235,9 @@ describe("INV-04 orchestration domain", () => {
       capability_ref: ref("CAPABILITY", "cap-1"), capability_version: "v1",
       authorization_decision_ref: ref("AUTHORITY_DECISION", "auth-1"),
       resource_admission_ref: ref("RESOURCE_ADMISSION", "admit-1"),
+      authorization_disposition: "ALLOWED",
+      capability_eligible: true,
+      resource_admission_state: "ADMITTED",
       attempt_number: 1, submitted_at: "2026-11-13T03:00:09Z",
     });
     expect(attempt.ok).toBe(true);
@@ -248,6 +251,9 @@ describe("INV-04 orchestration domain", () => {
       capability_ref: ref("CAPABILITY", "cap-1"), capability_version: "v1",
       authorization_decision_ref: ref("AUTHORITY_DECISION", "auth-1"),
       resource_admission_ref: ref("RESOURCE_ADMISSION", "admit-1"),
+      authorization_disposition: "ALLOWED",
+      capability_eligible: true,
+      resource_admission_state: "ADMITTED",
       attempt_number: 1, submitted_at: "2026-11-13T03:00:09Z",
     });
     if (!attempt.ok) return;
