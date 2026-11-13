@@ -190,7 +190,7 @@ export interface IdempotencyRecord<T> {
 }
 
 export interface IdempotencyPort {
-  get<T>(context: RequestContext, idempotency_key: string): Promise<OperationResult<IdempotencyRecord<T>>>;
+  get<T>(context: RequestContext, idempotency_key: string): Promise<OperationResult<IdempotencyRecord<T> | null>>;
   record<T>(context: RequestContext, record: IdempotencyRecord<T>): Promise<OperationResult<IdempotencyRecord<T>>>;
 }
 
