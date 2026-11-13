@@ -468,6 +468,141 @@ export function transitionIntent(
   return ok({ ...intent, lifecycle_state: target });
 }
 
+export function createRouteProposal(input: {
+  route_ref: ObjectRef;
+  intent: NormalizedIntent;
+  disposition: DecisionDisposition;
+  target_engine_id?: "INV-02" | "INV-03" | "INV-06" | "INV-07" | "INV-08" | "INV-13";
+  target_operation?: string;
+  input_refs: ObjectRef[];
+  required_authority_check: boolean;
+  created_at: Timestamp;
+}): DomainResult<RouteProposal> {
+  const allowed = canSelectRoute(input.disposition, input.intent);
+  if (!allowed.ok) return allowed;
+  if (!isObjectRef(input.route_ref) || input.route_ref.object_kind !== "ROUTE_PROPOSAL" ||
+      !isTimestamp(input.created_at) || !allObjectRefs(input.input_refs)) {
+    return fail("VALIDATION_ERROR", "Route proposal reference, input refs or timestamp are invalid");
+  }
+  const targetByDisposition: Partial<Record<DecisionDisposition, readonly string[]>> = {
+    RESEARCH: ["INV-13"],
+    CREATE: ["INV-02", "INV-03"],
+    AUTOMATE: ["INV-02", "INV-03"],
+    CONNECT: ["INV-07"],
+    CONTINUE_EXISTING_WORK: ["INV-02"],
+    REQUEST_AUTHORIZATION: ["INV-06"],
+    REQUEST_APPROVAL: ["INV-06"],
+  };
+  const permittedTargets = targetByDisposition[input.disposition];
+  if (permittedTargets && (!input.target_engine_id || !permittedTargets.includes(input.target_engine_id))) {
+    return fail("VALIDATION_ERROR", "Route target engine is not valid for the selected disposition");
+  }
+  if (!permittedTargets && input.target_engine_id !== undefined) {
+    return fail("VALIDATION_ERROR", "This disposition must not dispatch to a target engine");
+  }
+  if (input.target_engine_id && (!input.target_operation?.trim() || input.input_refs.length === 0)) {
+    return fail("VALIDATION_ERROR", "A handoff route requires an operation and typed input references");
+  }
+  return ok({
+    route_ref: input.route_ref,
+    disposition: input.disposition,
+    ...(input.target_engine_id ? { target_engine_id: input.target_engine_id } : {}),
+    ...(input.target_operation ? { target_operation: input.target_operation } : {}),
+    input_refs: [...input.input_refs],
+    required_authority_check: input.required_authority_check,
+    created_at: input.created_at,
+  });
+}
+
+export function createDecisionRecord(input: {
+  decision_ref: ObjectRef;
+  intent: NormalizedIntent;
+  disposition: DecisionDisposition;
+  route_proposal?: RouteProposal;
+  outcome_proposal?: OutcomeProposal;
+  clarification?: ClarificationRequest;
+  policy_decision_refs?: ObjectRef[];
+  authority_decision_refs?: ObjectRef[];
+  capability_refs?: ObjectRef[];
+  rationale_summary: string;
+  created_at: Timestamp;
+  supersedes_decision_ref?: ObjectRef;
+}): DomainResult<DecisionRecord> {
+  const allowed = canSelectRoute(input.disposition, input.intent);
+  if (!allowed.ok) return allowed;
+  if (!isObjectRef(input.decision_ref) || input.decision_ref.object_kind !== "DECISION_RECORD" ||
+      !isTimestamp(input.created_at) || !input.rationale_summary.trim()) {
+    return fail("VALIDATION_ERROR", "Decision record reference, timestamp and redacted rationale are required");
+  }
+  if (input.route_proposal && input.route_proposal.disposition !== input.disposition) {
+    return fail("VALIDATION_ERROR", "Decision disposition must match its route proposal");
+  }
+  if (input.outcome_proposal && input.outcome_proposal.intent_ref.object_id !== input.intent.intent_ref.object_id) {
+    return fail("VALIDATION_ERROR", "Outcome proposal must belong to the normalized intent");
+  }
+  if (input.clarification && input.clarification.intent_ref.object_id !== input.intent.intent_ref.object_id) {
+    return fail("VALIDATION_ERROR", "Clarification request must belong to the normalized intent");
+  }
+  const state: DecisionState =
+    input.disposition === "CLARIFY" ? "AWAITING_CLARIFICATION" :
+    input.disposition === "STOP" ? "STOPPED" :
+    input.disposition === "DECLINE" || input.disposition === "UNSUPPORTED" ? "DECLINED" :
+    input.disposition === "ESCALATE_TO_HUMAN" ? "BLOCKED" :
+    input.disposition === "REQUEST_AUTHORIZATION" || input.disposition === "REQUEST_APPROVAL" ? "BLOCKED" :
+    input.route_proposal ? "ROUTE_SELECTED" : "RECORDED";
+  return ok({
+    decision_ref: input.decision_ref,
+    intent_ref: input.intent.intent_ref,
+    intent_revision: input.intent.revision_number,
+    state,
+    disposition: input.disposition,
+    ...(input.route_proposal ? { route_proposal_ref: input.route_proposal.route_ref } : {}),
+    ...(input.outcome_proposal ? { outcome_proposal_ref: input.outcome_proposal.proposal_ref } : {}),
+    ...(input.clarification ? { clarification_ref: input.clarification.clarification_ref } : {}),
+    lineage: {
+      source_refs: [...input.intent.source_refs],
+      requirement_refs: input.intent.explicit_requirements.flatMap((item) => item.source_ref ? [item.source_ref.object_ref] : []),
+      contextual_fact_refs: input.intent.contextual_facts.map((item) => item.source_ref.object_ref),
+      assumption_refs: [],
+      constraint_refs: [],
+      policy_decision_refs: [...(input.policy_decision_refs ?? [])],
+      authority_decision_refs: [...(input.authority_decision_refs ?? [])],
+      capability_refs: [...(input.capability_refs ?? [])],
+      uncertainty_summary: [
+        ...input.intent.unknowns.map((item) => item.description),
+        ...input.intent.ambiguity_items.map((item) => item.description),
+      ],
+      rationale_summary: input.rationale_summary,
+    },
+    created_at: input.created_at,
+    correlation_id: input.intent.intent_ref.object_id,
+    ...(input.supersedes_decision_ref ? { supersedes_decision_ref: input.supersedes_decision_ref } : {}),
+  });
+}
+
+export function transitionDecision(
+  decision: DecisionRecord,
+  target: DecisionState,
+): DomainResult<DecisionRecord> {
+  const allowed: Record<DecisionState, readonly DecisionState[]> = {
+    RECORDED: ["AWAITING_CLARIFICATION", "ROUTE_SELECTED", "BLOCKED", "DECLINED", "STOPPED"],
+    AWAITING_CLARIFICATION: ["RECORDED", "ROUTE_SELECTED", "BLOCKED", "STOPPED", "DECLINED"],
+    ROUTE_SELECTED: ["HANDOFF_REQUESTED", "BLOCKED", "STOPPED", "FAILED", "UNKNOWN"],
+    HANDOFF_REQUESTED: ["HANDOFF_CONFIRMED", "BLOCKED", "FAILED", "UNKNOWN"],
+    HANDOFF_CONFIRMED: ["COMPLETED", "FAILED", "UNKNOWN"],
+    COMPLETED: [],
+    DECLINED: [],
+    STOPPED: [],
+    BLOCKED: ["RECORDED", "ROUTE_SELECTED", "STOPPED", "DECLINED", "FAILED", "UNKNOWN"],
+    FAILED: [],
+    UNKNOWN: [],
+  };
+  if (!allowed[decision.state].includes(target)) {
+    return fail("INVALID_TRANSITION", `Decision cannot transition from ${decision.state} to ${target}`);
+  }
+  return ok({ ...decision, state: target });
+}
+
 export function canSelectRoute(
   disposition: DecisionDisposition,
   intent: NormalizedIntent,
