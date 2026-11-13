@@ -169,9 +169,12 @@ export function createOrchestrationRun(input: {
       !isObjectRef(input.request_ref)) {
     return fail("VALIDATION_ERROR", "Orchestration run requires trusted context, idempotency and valid run/request references");
   }
-  if (!isObjectRef(work.work_ref) || work.lifecycle_state === "CANCELLED" ||
-      work.lifecycle_state === "FAILED" || work.lifecycle_state === "COMPLETED") {
-    return fail("VALIDATION_ERROR", "Work is not eligible for a new orchestration run");
+  if (!isObjectRef(work.work_ref) || work.lifecycle_state !== "READY") {
+    return fail("VALIDATION_ERROR", "A new orchestration run requires Work in READY state");
+  }
+  if (work.scope_ref.scope_id !== context.scope_ref.scope_id ||
+      work.scope_ref.scope_kind !== context.scope_ref.scope_kind) {
+    return fail("FORBIDDEN", "Orchestration request scope does not match Work scope");
   }
   if (graph.state !== "VALIDATED" || graph.work_ref.object_id !== work.work_ref.object_id ||
       !work.current_plan_ref || !work.current_work_graph_ref ||
@@ -186,7 +189,8 @@ export function createOrchestrationRun(input: {
       activation_receipt.work_ref.object_id !== work.work_ref.object_id ||
       activation_receipt.plan_revision_ref.object_id !== graph.source_plan_revision_ref.object_id ||
       activation_receipt.graph_revision_ref.object_id !== graph.graph_revision_ref.object_id ||
-      activation_receipt.resulting_work_revision !== work.current_revision) {
+      activation_receipt.resulting_work_revision !== work.current_revision ||
+      activation_receipt.resulting_work_revision !== activation_receipt.expected_work_revision + 1) {
     return fail("VALIDATION_ERROR", "Activation receipt does not confirm the exact current Work/Plan/Graph binding");
   }
   return ok({
@@ -378,9 +382,29 @@ export function createDispatchAttempt(input: {
   capability_version: string;
   authorization_decision_ref: ObjectRef;
   resource_admission_ref: ObjectRef;
+  authorization_disposition: "ALLOWED" | "DENIED" | "REQUIRES_APPROVAL" | "UNKNOWN";
+  capability_eligible: boolean;
+  resource_admission_state: ResourceAdmissionState;
   attempt_number: number;
   submitted_at: Timestamp;
 }): OrchestrationResult<DispatchAttempt> {
+  const dispatchGate = authorizeDispatch({
+    node_state: input.node.state,
+    authorization: {
+      decision_ref: input.authorization_decision_ref,
+      disposition: input.authorization_disposition,
+    },
+    capability: {
+      capability_ref: input.capability_ref,
+      version: input.capability_version,
+      eligible: input.capability_eligible,
+    },
+    resource: {
+      admission_ref: input.resource_admission_ref,
+      state: input.resource_admission_state,
+    },
+  });
+  if (!dispatchGate.ok) return dispatchGate;
   if (!isRequestContext(input.context) || !input.context.idempotency_key ||
       !isObjectRef(input.attempt_ref) || input.attempt_ref.object_kind !== "DISPATCH_ATTEMPT" ||
       !isObjectRef(input.capability_ref) || !isObjectRef(input.authorization_decision_ref) ||
@@ -432,7 +456,7 @@ export function decideRetry(input: {
   let disposition: RetryDisposition;
   let reason_code: string;
   if (input.side_effect_class === "UNKNOWN" || input.side_effect_class === "NON_IDEMPOTENT" || input.side_effect_class === "REVERSIBLE") {
-    disposition = input.reconciliation_ref && isObjectRef(input.reconciliation_ref) ? "ESCALATE" : "RECONCILE_FIRST";
+    disposition = "RECONCILE_FIRST";
     reason_code = "SIDE_EFFECT_REQUIRES_RECONCILIATION";
   } else if (!input.retryable_failure) {
     disposition = "NO_RETRY";
