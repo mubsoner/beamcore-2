@@ -339,7 +339,8 @@ export function createGraphRevision(input: {
   const edges = input.edges.map((edge) => ({ ...edge }));
   for (const node of nodes) {
     if (!isObjectRef(node.node_ref) || !isObjectRef(node.graph_ref) ||
-        node.node_ref.object_kind !== "GRAPH_NODE" || node.graph_ref.object_id !== input.graph_ref.object_id ||
+        node.node_ref.object_kind !== "GRAPH_NODE" || node.graph_ref.object_kind !== "WORK_GRAPH" ||
+        node.graph_ref.object_id !== input.graph_ref.object_id ||
         !sameScope(node.node_ref, input.work_ref) || !node.title.trim() ||
         !allRefsValid([...node.requirement_refs, ...node.input_refs, ...node.capability_requirement_refs,
           ...node.expected_output_refs, ...node.acceptance_criteria_refs, ...node.constraint_refs])) {
@@ -348,7 +349,8 @@ export function createGraphRevision(input: {
   }
   for (const edge of edges) {
     if (!isObjectRef(edge.edge_ref) || edge.edge_ref.object_kind !== "DEPENDENCY_EDGE" ||
-        !isObjectRef(edge.from_node_ref) || !isObjectRef(edge.to_node_ref) ||
+        !isObjectRef(edge.from_node_ref) || edge.from_node_ref.object_kind !== "GRAPH_NODE" ||
+        !isObjectRef(edge.to_node_ref) || edge.to_node_ref.object_kind !== "GRAPH_NODE" ||
         !sameScope(edge.edge_ref, input.work_ref) || !isTimestamp(edge.created_at) ||
         (edge.condition_ref && !isObjectRef(edge.condition_ref)) ||
         (edge.required_output_ref && !isObjectRef(edge.required_output_ref))) {
@@ -406,6 +408,15 @@ export function validateGraphRevision(input: {
     });
   };
 
+  if (input.max_nodes !== undefined && (!Number.isSafeInteger(input.max_nodes) || input.max_nodes < 1)) {
+    return fail("VALIDATION_ERROR", "Configured max_nodes must be a positive integer");
+  }
+  if (input.max_edges !== undefined && (!Number.isSafeInteger(input.max_edges) || input.max_edges < 0)) {
+    return fail("VALIDATION_ERROR", "Configured max_edges must be a non-negative integer");
+  }
+  if (revision.nodes.length === 0) {
+    add("GRAPH_HAS_NO_NODES", "BLOCKER", "A Work Graph revision must contain at least one governed node", [revision.graph_revision_ref]);
+  }
   if (input.max_nodes !== undefined && revision.nodes.length > input.max_nodes) {
     add("GRAPH_NODE_LIMIT_EXCEEDED", "BLOCKER", "Graph exceeds the configured node limit", [revision.graph_revision_ref]);
   }
@@ -521,11 +532,9 @@ export function createGraphActivationRequest(input: {
   if (input.graph_revision.validation_result_ref === undefined) {
     return fail("VALIDATION_ERROR", "Graph revision has no recorded validation result");
   }
-  if (input.graph_revision.approval_decision_ref === undefined &&
-      input.graph_revision.validation_result_ref.object_id &&
-      input.review_decision_ref === undefined) {
-    // A review decision is only mandatory for VALID_WITH_WARNINGS; the validation result
-    // status is resolved by the caller before constructing this request.
+  if (input.review_decision_ref && (!isObjectRef(input.review_decision_ref) ||
+      input.review_decision_ref.object_kind !== "GRAPH_REVIEW_DECISION")) {
+    return fail("VALIDATION_ERROR", "review_decision_ref must be a GRAPH_REVIEW_DECISION");
   }
   if (!allRefsValid(input.approval_refs)) return fail("VALIDATION_ERROR", "Activation approval references are invalid");
   return ok({
