@@ -505,6 +505,80 @@ export function applyGraphValidation(
   });
 }
 
+/**
+ * Computes conservative graph impact from explicit changed references.
+ * Unaffected nodes are marked PRESERVABLE; any directly dependent node is
+ * REVALIDATION_REQUIRED unless an authoritative invalidation decision says
+ * it cannot be reused. This function never claims an output is reusable.
+ */
+export function computeChangeImpactReport(input: {
+  report_ref: ObjectRef;
+  work_ref: ObjectRef;
+  base_graph: WorkGraphRevision;
+  changed_input_refs: ObjectRef[];
+  invalidated_node_refs?: ObjectRef[];
+  created_by: PrincipalRef;
+  created_at: Timestamp;
+}): PlanningResult<ChangeImpactReport> {
+  if (!isObjectRef(input.report_ref) || input.report_ref.object_kind !== "CHANGE_IMPACT_REPORT" ||
+      !isObjectRef(input.work_ref) || input.work_ref.object_kind !== "WORK" ||
+      !sameScope(input.report_ref, input.work_ref) ||
+      input.base_graph.work_ref.object_id !== input.work_ref.object_id ||
+      !isTimestamp(input.created_at) ||
+      !allRefsValid(input.changed_input_refs) ||
+      !allRefsValid(input.invalidated_node_refs ?? [])) {
+    return fail("VALIDATION_ERROR", "Change-impact request references, scope or timestamp are invalid");
+  }
+  const changedKeys = new Set(input.changed_input_refs.map((ref) =>
+    `${ref.object_kind}:${ref.object_id}:${ref.scope_ref.scope_id}`
+  ));
+  const invalidatedIds = new Set((input.invalidated_node_refs ?? []).map((ref) => ref.object_id));
+  const entries: ChangeImpactEntry[] = input.base_graph.nodes.map((node) => {
+    const dependencies = [
+      ...node.input_refs,
+      ...node.requirement_refs,
+      ...node.capability_requirement_refs,
+      ...node.constraint_refs,
+      ...node.expected_output_refs,
+      ...(node.plan_step_proposal_ref ? [node.plan_step_proposal_ref] : []),
+    ];
+    const affectedRefs = dependencies.filter((ref) =>
+      changedKeys.has(`${ref.object_kind}:${ref.object_id}:${ref.scope_ref.scope_id}`)
+    );
+    if (invalidatedIds.has(node.node_ref.object_id)) {
+      return {
+        target_ref: node.node_ref,
+        impact_kind: "INVALIDATED",
+        reason_refs: [...input.changed_input_refs],
+        required_action: "Do not reuse prior output; create a replacement node or output under a new graph revision",
+      };
+    }
+    if (affectedRefs.length > 0) {
+      return {
+        target_ref: node.node_ref,
+        impact_kind: "REVALIDATION_REQUIRED",
+        reason_refs: affectedRefs,
+        required_action: "Revalidate node inputs, constraints, capability compatibility and prior output lineage",
+      };
+    }
+    return {
+      target_ref: node.node_ref,
+      impact_kind: "PRESERVABLE",
+      reason_refs: [],
+      required_action: "Preserve prior node lineage; verify pinned source versions remain current before reuse",
+    };
+  });
+  return ok({
+    impact_report_ref: input.report_ref,
+    work_ref: input.work_ref,
+    base_graph_revision_ref: input.base_graph.graph_revision_ref,
+    changed_input_refs: [...input.changed_input_refs],
+    entries,
+    created_at: input.created_at,
+    created_by: input.created_by,
+  });
+}
+
 export function createGraphActivationRequest(input: {
   context: RequestContext;
   request_ref: ObjectRef;
