@@ -161,6 +161,51 @@ export interface OperationError {
   details_ref?: ObjectRef;
 }
 
+/**
+ * Provider-neutral persistence and delivery ports.
+ * Implementations must enforce tenant scope, optimistic versions and atomicity;
+ * domain engines must not depend on a specific database or queue SDK.
+ */
+export interface VersionedRepository<T> {
+  get(context: RequestContext, ref: ObjectRef): Promise<OperationResult<T>>;
+  create(context: RequestContext, ref: ObjectRef, value: T): Promise<OperationResult<T>>;
+  update(
+    context: RequestContext,
+    ref: ObjectRef,
+    expected_version: Version,
+    value: T,
+  ): Promise<OperationResult<T>>;
+}
+
+export interface AppendOnlyRepository<T> {
+  append(context: RequestContext, value: T): Promise<OperationResult<T>>;
+  get(context: RequestContext, ref: ObjectRef): Promise<OperationResult<T>>;
+}
+
+export interface IdempotencyRecord<T> {
+  idempotency_key: string;
+  request_fingerprint: string;
+  result: OperationResult<T>;
+  recorded_at: Timestamp;
+}
+
+export interface IdempotencyPort {
+  get<T>(context: RequestContext, idempotency_key: string): Promise<OperationResult<IdempotencyRecord<T>>>;
+  record<T>(context: RequestContext, record: IdempotencyRecord<T>): Promise<OperationResult<IdempotencyRecord<T>>>;
+}
+
+export interface EventOutboxPort {
+  append(context: RequestContext, event: DomainEventEnvelope): Promise<OperationResult<{ event_id: ID }>>;
+}
+
+export interface ClockPort {
+  now(): Timestamp;
+}
+
+export interface IdGeneratorPort {
+  next(kind: string, scope_ref: ScopeRef): ID;
+}
+
 export type OperationStatus = "OK" | "PARTIAL" | "REJECTED" | "UNKNOWN";
 
 export function isOperationStatus(value: unknown): value is OperationStatus {
