@@ -489,10 +489,11 @@ export function applyGraphValidation(
       result.graph_revision_ref.scope_ref.scope_id !== revision.graph_revision_ref.scope_ref.scope_id) {
     return fail("VALIDATION_ERROR", "Validation result does not belong to this graph revision");
   }
-  if (result.status === "INVALID" || result.status === "NEEDS_INPUT" || result.status === "DEPENDENCY_UNAVAILABLE") {
+  if (result.status === "INVALID" || result.status === "NEEDS_INPUT" || result.status === "DEPENDENCY_UNAVAILABLE" ||
+      result.findings.some((finding) => finding.severity === "ERROR" || finding.severity === "BLOCKER")) {
     return fail("VALIDATION_ERROR", "Graph validation did not permit activation");
   }
-  if (result.status === "VALID_WITH_WARNINGS" &&
+  if ((result.status === "VALID_WITH_WARNINGS" || result.findings.some((finding) => finding.severity === "WARNING")) &&
       (!review_decision_ref || !isObjectRef(review_decision_ref) || review_decision_ref.object_kind !== "GRAPH_REVIEW_DECISION")) {
     return fail("VALIDATION_ERROR", "A graph review decision is required to accept validation warnings");
   }
@@ -521,6 +522,7 @@ export function createGraphActivationRequest(input: {
   }
   if (!isObjectRef(input.request_ref) || input.request_ref.object_kind !== "GRAPH_ACTIVATION_REQUEST" ||
       !isObjectRef(input.work_ref) || input.work_ref.object_kind !== "WORK" ||
+      !sameScope(input.request_ref, input.work_ref) ||
       input.plan_revision.state !== "ACCEPTED" ||
       input.graph_revision.state !== "VALIDATED" ||
       input.plan_revision.work_ref.object_id !== input.work_ref.object_id ||
@@ -554,8 +556,8 @@ export function reconcileGraphActivation(
   request: GraphActivationRequest,
   receipt: GraphActivationReceipt,
 ): PlanningResult<"ACTIVATED" | "REJECTED" | "RECONCILE"> {
-  if (!isObjectRef(receipt.receipt_ref) || !isObjectRef(receipt.request_ref) ||
-      receipt.request_ref.object_id !== request.request_ref.object_id ||
+  if (!isObjectRef(receipt.receipt_ref) || receipt.receipt_ref.object_kind !== "PLAN_GRAPH_ACTIVATION_RECEIPT" ||
+      !isObjectRef(receipt.request_ref) || receipt.request_ref.object_id !== request.request_ref.object_id ||
       receipt.work_ref.object_id !== request.work_ref.object_id ||
       receipt.plan_revision_ref.object_id !== request.plan_revision_ref.object_id ||
       receipt.graph_revision_ref.object_id !== request.graph_revision_ref.object_id ||
