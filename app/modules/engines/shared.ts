@@ -128,6 +128,14 @@ export interface OperationError {
 
 export type OperationStatus = "OK" | "PARTIAL" | "REJECTED" | "UNKNOWN";
 
+export function isOperationStatus(value: unknown): value is OperationStatus {
+  return value === "OK" || value === "PARTIAL" || value === "REJECTED" || value === "UNKNOWN";
+}
+
+export function isOperationErrorCode(value: unknown): value is OperationErrorCode {
+  return typeof value === "string" && (OPERATION_ERROR_CODES as readonly string[]).includes(value);
+}
+
 export interface OperationResult<T> {
   status: OperationStatus;
   data?: T;
