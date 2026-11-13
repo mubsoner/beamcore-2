@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createOperationResult,
   isObjectRef,
+  isOperationStatus,
   isPrincipalRef,
   isRequestContext,
   isScopeRef,
@@ -150,13 +151,10 @@ describe("canonical operation result envelope", () => {
     });
   });
 
-  it("does not convert domain outcomes into operation statuses", () => {
-    expect(() =>
-      createOperationResult({
-        status: "PASS" as never,
-        correlation_id: "correlation-123",
-      }),
-    ).not.toThrow();
+  it("keeps domain outcomes outside the operation status vocabulary", () => {
+    expect(isOperationStatus("PASS")).toBe(false);
+    expect(isOperationStatus("COMPLETED")).toBe(false);
+    expect(isOperationStatus("UNKNOWN")).toBe(true);
     expect(
       createOperationResult({
         status: "UNKNOWN",
