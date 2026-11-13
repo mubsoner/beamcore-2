@@ -83,7 +83,8 @@ export interface Constraint {
   constraint_id: ID;
   kind: "SCOPE" | "COST" | "TIME" | "PRIVACY" | "SECURITY" | "QUALITY" | "TECHNICAL" | "RESOURCE" | "LEGAL" | "OTHER";
   operator: "EQ" | "NE" | "LT" | "LTE" | "GT" | "GTE" | "IN" | "NOT_IN" | "CONTAINS" | "BEFORE" | "AFTER";
-  value: string | number | boolean | ObjectRef | string[];
+  /** Decimal quantities are represented as exact decimal strings, never binary floats. */
+  value: string | boolean | ObjectRef | string[];
   source_kind: "USER_STATED" | "TRUSTED_CONTEXT" | "POLICY" | "DERIVED_ASSUMPTION" | "EXISTING_WORK";
   mandatory: boolean;
   source_ref?: SourceRef;
