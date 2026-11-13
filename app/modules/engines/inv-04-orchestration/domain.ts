@@ -360,7 +360,8 @@ export function authorizeDispatch(input: DispatchGateInput): OrchestrationResult
     return fail("FORBIDDEN", "Current action-time authorization does not permit dispatch");
   }
   if (input.authorization.disposition === "REQUIRES_APPROVAL") return fail("APPROVAL_REQUIRED", "Dispatch requires approval");
-  if (!isObjectRef(input.capability.capability_ref) || !input.capability.version.trim() || !input.capability.eligible) {
+  if (!isObjectRef(input.capability.capability_ref) || typeof input.capability.version !== "string" ||
+      !input.capability.version.trim() || !input.capability.eligible) {
     return fail("DEPENDENCY_UNAVAILABLE", "Target capability is unavailable or incompatible");
   }
   if (!isObjectRef(input.resource.admission_ref) || input.resource.admission_ref.object_kind !== "RESOURCE_ADMISSION") {
@@ -404,7 +405,7 @@ export function createDispatchAttempt(input: {
       state: input.resource_admission_state,
     },
   });
-  if (!dispatchGate.ok) return dispatchGate;
+  if (!dispatchGate.ok) return { ok: false, issues: dispatchGate.issues };
   if (!isRequestContext(input.context) || !input.context.idempotency_key ||
       !isObjectRef(input.attempt_ref) || input.attempt_ref.object_kind !== "DISPATCH_ATTEMPT" ||
       !isObjectRef(input.capability_ref) || !isObjectRef(input.authorization_decision_ref) ||
