@@ -360,6 +360,7 @@ export function authorizeDispatch(input: DispatchGateInput): OrchestrationResult
     return fail("FORBIDDEN", "Current action-time authorization does not permit dispatch");
   }
   if (input.authorization.disposition === "REQUIRES_APPROVAL") return fail("APPROVAL_REQUIRED", "Dispatch requires approval");
+  if (input.authorization.disposition !== "ALLOWED") return fail("FORBIDDEN", "Dispatch requires an explicit ALLOWED authorization decision");
   if (!isObjectRef(input.capability.capability_ref) || typeof input.capability.version !== "string" ||
       !input.capability.version.trim() || !input.capability.eligible) {
     return fail("DEPENDENCY_UNAVAILABLE", "Target capability is unavailable or incompatible");
@@ -371,6 +372,7 @@ export function authorizeDispatch(input: DispatchGateInput): OrchestrationResult
   if (input.resource.state === "DEFERRED" || input.resource.state === "UNKNOWN") {
     return fail("DEPENDENCY_UNAVAILABLE", "Resource admission is not yet confirmed");
   }
+  if (input.resource.state !== "ADMITTED") return fail("DEPENDENCY_UNAVAILABLE", "Dispatch requires an explicit ADMITTED resource decision");
   return ok(undefined);
 }
 
