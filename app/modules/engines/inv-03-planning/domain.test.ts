@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyGraphValidation,
+  computeChangeImpactReport,
   createGraphActivationRequest,
   createGraphRevision,
   createPlanRevision,
@@ -216,6 +217,29 @@ describe("INV-03 planning and graph domain", () => {
     };
     expect(applyGraphValidation(graph, validation).ok).toBe(false);
     expect(applyGraphValidation(graph, validation, ref("GRAPH_REVIEW_DECISION", "review-graph")).ok).toBe(true);
+  });
+
+  it("marks directly affected nodes for revalidation and preserves unrelated lineage", () => {
+    const changedInput = ref("SOURCE", "source-changed");
+    const nodeA: GraphNode = {
+      ...node("node-a"),
+      input_refs: [changedInput],
+    };
+    const graph = makeGraph([nodeA, node("node-b")]);
+    const report = computeChangeImpactReport({
+      report_ref: ref("CHANGE_IMPACT_REPORT", "impact-1"),
+      work_ref: workRef,
+      base_graph: graph,
+      changed_input_refs: [changedInput],
+      created_by: context.actor_ref,
+      created_at: "2026-11-13T03:00:03Z",
+    });
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    expect(report.value.entries.find((entry) => entry.target_ref.object_id === "node-a")?.impact_kind)
+      .toBe("REVALIDATION_REQUIRED");
+    expect(report.value.entries.find((entry) => entry.target_ref.object_id === "node-b")?.impact_kind)
+      .toBe("PRESERVABLE");
   });
 
   it("requests activation only for exact accepted Plan and validated Graph revisions", () => {
