@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createOperationResult,
   isObjectRef,
+  isDomainEventEnvelope,
   isOperationStatus,
   isPrincipalRef,
   isRequestContext,
@@ -128,6 +129,52 @@ describe("canonical request context contracts", () => {
         deadline: "2026-11-13T02:59:59Z",
       }),
     ).toContain("deadline must be later than issued_at");
+  });
+});
+
+describe("canonical cross-engine event envelope", () => {
+  it("accepts a scoped, correlated versioned event", () => {
+    expect(isDomainEventEnvelope({
+      event_id: "event-1",
+      event_type: "work.created",
+      schema_version: 1,
+      occurred_at: "2026-11-13T03:00:00Z",
+      producer_engine: "INV-02",
+      object_ref: {
+        object_kind: "WORK",
+        object_id: "work-1",
+        object_version: "1",
+        scope_ref: scope,
+      },
+      scope_ref: scope,
+      correlation_id: "corr-1",
+      actor_ref: actor,
+      payload: { title: "A Work item" },
+    })).toBe(true);
+  });
+
+  it("rejects an event with a mismatched scope or unknown producer", () => {
+    const event = {
+      event_id: "event-1",
+      event_type: "work.created",
+      schema_version: 1,
+      occurred_at: "2026-11-13T03:00:00Z",
+      producer_engine: "INV-02",
+      object_ref: {
+        object_kind: "WORK",
+        object_id: "work-1",
+        object_version: "1",
+        scope_ref: scope,
+      },
+      scope_ref: scope,
+      correlation_id: "corr-1",
+      payload: {},
+    };
+    expect(isDomainEventEnvelope({ ...event, producer_engine: "INV-22" })).toBe(false);
+    expect(isDomainEventEnvelope({
+      ...event,
+      scope_ref: { scope_id: "other", scope_kind: "WORK" },
+    })).toBe(false);
   });
 });
 
