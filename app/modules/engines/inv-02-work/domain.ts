@@ -149,6 +149,8 @@ export interface AcceptOutcomeProposalCommand {
   expected_work_version: RevisionNumber;
   authority: WorkAuthorityEvidence;
   has_material_unresolved_unknowns: boolean;
+  policy_interpretation_permitted?: boolean;
+  current_target_revision?: RevisionNumber;
 }
 
 export interface AcceptOutcomeProposalResult {
@@ -265,17 +267,19 @@ export function transitionWork(
       command.authority.decision_ref.object_kind !== "AUTHORITY_DECISION" || !isTimestamp(command.occurred_at)) {
     return fail("VALIDATION_ERROR", "A reason reference, authority decision reference and valid timestamp are required");
   }
-  if (command.authority.disposition === "DENIED" || command.authority.disposition === "UNKNOWN") {
-    return fail("FORBIDDEN", "The authoritative decision does not permit this Work transition");
-  }
-  if (command.authority.disposition === "REQUIRES_APPROVAL") {
-    return fail("APPROVAL_REQUIRED", "Required approval has not been granted");
+  if (command.authority.disposition === "DENIED" || command.authority.disposition === "UNKNOWN" ||
+      command.authority.disposition !== "ALLOWED") {
+    return fail("FORBIDDEN", "The authoritative decision does not explicitly permit this Work transition");
   }
   if (!transitionMap[current.lifecycle_state].includes(command.target_state)) {
     return fail("INVALID_TRANSITION", `Work cannot transition from ${current.lifecycle_state} to ${command.target_state}`);
   }
+  if (!Number.isSafeInteger(command.guards.active_blocker_count) || command.guards.active_blocker_count < 0) {
+    return fail("VALIDATION_ERROR", "active_blocker_count must be a non-negative integer");
+  }
   if (command.target_state === "READY" &&
-      (command.guards.active_blocker_count > 0 || !command.guards.prerequisites_satisfied)) {
+      (command.guards.active_blocker_count > 0 || !command.guards.prerequisites_satisfied ||
+       ((current.lifecycle_state === "PAUSED" || current.lifecycle_state === "RECOVERING") && !command.guards.reconciliation_complete))) {
     return fail("INVALID_TRANSITION", "Work cannot become READY while blockers or unmet prerequisites remain");
   }
   if (command.target_state === "IN_PROGRESS" && !command.guards.orchestrator_eligible) {
@@ -332,9 +336,10 @@ export function acceptOutcomeProposal(
     return fail("VERSION_CONFLICT", "Work changed before the outcome proposal could be accepted");
   }
   if (!sameScope(work.work_ref, { object_kind: "WORK", object_id: work.work_ref.object_id, scope_ref: context.scope_ref }) ||
-      proposal.proposal_ref.scope_ref.scope_id !== work.scope_ref.scope_id ||
+      !isObjectRef(proposal.proposal_ref) || proposal.proposal_ref.object_kind !== "OUTCOME_PROPOSAL" ||
+      !isObjectRef(proposal.intent_ref) || proposal.proposal_ref.scope_ref.scope_id !== work.scope_ref.scope_id ||
       proposal.intent_ref.object_id !== work.origin_intent_ref.object_id ||
-      proposal.state !== "SUBMITTED") {
+      proposal.state !== "SUBMITTED" || proposal.acceptance_criteria.length === 0) {
     return fail("VALIDATION_ERROR", "Proposal, Work and request context are not eligible for acceptance");
   }
   if (!isObjectRef(command.desired_outcome_ref) ||
@@ -347,11 +352,10 @@ export function acceptOutcomeProposal(
       !isTimestamp(command.accepted_at)) {
     return fail("VALIDATION_ERROR", "Acceptance target, receipt, basis and authority references must be valid");
   }
-  if (command.authority.disposition === "DENIED" || command.authority.disposition === "UNKNOWN") {
-    return fail("FORBIDDEN", "INV-06 authority evidence does not permit outcome acceptance");
-  }
-  if (command.authority.disposition === "REQUIRES_APPROVAL") {
-    return fail("APPROVAL_REQUIRED", "Outcome acceptance requires an outstanding approval");
+  if (command.authority.disposition !== "ALLOWED") {
+    return command.authority.disposition === "REQUIRES_APPROVAL"
+      ? fail("APPROVAL_REQUIRED", "Outcome acceptance requires an outstanding approval")
+      : fail("FORBIDDEN", "INV-06 authority evidence does not explicitly permit outcome acceptance");
   }
   if (proposal.unresolved_criterion_refs.length > 0 || command.has_material_unresolved_unknowns) {
     return fail("VALIDATION_ERROR", "Material unresolved criteria or unknowns prevent outcome acceptance");
@@ -365,10 +369,20 @@ export function acceptOutcomeProposal(
     return fail("VALIDATION_ERROR", "Acceptance basis reference does not match the declared acceptance basis");
   }
   if (command.acceptance_basis === "POLICY_PERMITTED_INTERPRETATION" &&
-      (proposal.acceptance_criteria.length === 0 || command.has_material_unresolved_unknowns)) {
-    return fail("VALIDATION_ERROR", "Policy-permitted interpretation requires bounded criteria and no material unresolved uncertainty");
+      (!command.policy_interpretation_permitted || command.has_material_unresolved_unknowns)) {
+    return fail("VALIDATION_ERROR", "Policy-permitted interpretation requires an explicit policy allowance and no material unresolved uncertainty");
   }
-  const nextTargetRevision = work.current_desired_outcome_ref ? 2 : 1;
+  if (command.acceptance_basis === "EXPLICIT_USER_CONFIRMATION" &&
+      (!command.accepted_by || command.accepted_by.principal_id !== context.actor_ref.principal_id ||
+       command.accepted_by.principal_kind !== context.actor_ref.principal_kind)) {
+    return fail("VALIDATION_ERROR", "Explicit user confirmation must be attributable to the authenticated actor");
+  }
+  const nextTargetRevision = work.current_desired_outcome_ref
+    ? command.current_target_revision
+    : 1;
+  if (!isRevisionNumber(nextTargetRevision)) {
+    return fail("VALIDATION_ERROR", "Replacing an existing desired outcome requires its current revision number");
+  }
   const desired_outcome: WorkDesiredOutcomeRevision = {
     desired_outcome_ref: command.desired_outcome_ref,
     work_ref: work.work_ref,
@@ -423,8 +437,8 @@ export function applyPlanGraphActivation(
   if (expectedWorkVersion !== work.current_revision || receipt.expected_work_revision !== expectedWorkVersion) {
     return fail("VERSION_CONFLICT", "Work version changed before graph activation was applied");
   }
-  if (!isObjectRef(receipt.receipt_ref) || !isObjectRef(receipt.work_ref) ||
-      !isObjectRef(receipt.plan_revision_ref) || receipt.plan_revision_ref.object_kind !== "PLAN_REVISION" ||
+  if (!isObjectRef(receipt.receipt_ref) || receipt.receipt_ref.object_kind !== "PLAN_GRAPH_ACTIVATION_RECEIPT" ||
+      !isObjectRef(receipt.work_ref) || !isObjectRef(receipt.plan_revision_ref) || receipt.plan_revision_ref.object_kind !== "PLAN_REVISION" ||
       !isObjectRef(receipt.graph_revision_ref) || receipt.graph_revision_ref.object_kind !== "WORK_GRAPH_REVISION" ||
       receipt.work_ref.object_id !== work.work_ref.object_id ||
       receipt.work_ref.scope_ref.scope_id !== work.work_ref.scope_ref.scope_id ||
