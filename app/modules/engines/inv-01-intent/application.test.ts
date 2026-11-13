@@ -4,13 +4,13 @@ import {
   type EngineTransaction,
   type EngineUnitOfWorkPort,
   type IdempotencyRecord,
-  type NormalizedIntent,
   type ObjectRef,
   type OperationResult,
   type RequestContext,
   type VersionedRepository,
 } from "../shared";
 import { submitIntent, type SubmitIntentCommand } from "./application";
+import type { NormalizedIntent } from "./domain";
 
 const scope = { scope_id: "scope-1", scope_kind: "WORK" as const };
 const context: RequestContext = {
@@ -52,7 +52,7 @@ function makeUnitOfWork() {
   const idempotency = new Map<string, IdempotencyRecord<NormalizedIntent>>();
   const stored = new Map<string, NormalizedIntent>();
   const repo: VersionedRepository<NormalizedIntent> = {
-    get: vi.fn(async () => createOperationResult({
+    get: vi.fn(async () => createOperationResult<NormalizedIntent>({
       status: "REJECTED", correlation_id: context.correlation_id,
     })),
     create: vi.fn(async (_ctx, objectRef, value) => {
@@ -62,17 +62,17 @@ function makeUnitOfWork() {
         object_version: objectRef.object_version,
       });
     }),
-    update: vi.fn(async () => createOperationResult({
+    update: vi.fn(async () => createOperationResult<NormalizedIntent>({
       status: "REJECTED", correlation_id: context.correlation_id,
     })),
   };
   const tx: EngineTransaction = {
     repository: <T>() => repo as unknown as VersionedRepository<T>,
     appendOnly: <T>() => ({
-      append: vi.fn(async () => createOperationResult({
+      append: vi.fn(async () => createOperationResult<T>({
         status: "OK", correlation_id: context.correlation_id,
       })),
-      get: vi.fn(async () => createOperationResult({
+      get: vi.fn(async () => createOperationResult<T>({
         status: "REJECTED", correlation_id: context.correlation_id,
       })),
     }),
