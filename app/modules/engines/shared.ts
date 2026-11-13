@@ -202,6 +202,24 @@ export interface ClockPort {
   now(): Timestamp;
 }
 
+export interface EngineTransaction {
+  repository<T>(key: string): VersionedRepository<T>;
+  appendOnly<T>(key: string): AppendOnlyRepository<T>;
+  idempotency: IdempotencyPort;
+  outbox: EventOutboxPort;
+}
+
+/**
+ * A command runs in one unit of work. The adapter must commit domain writes,
+ * idempotency result and outbox append atomically, or commit none of them.
+ */
+export interface EngineUnitOfWorkPort {
+  execute<T>(
+    context: RequestContext,
+    command: (transaction: EngineTransaction) => Promise<OperationResult<T>>,
+  ): Promise<OperationResult<T>>;
+}
+
 export interface IdGeneratorPort {
   next(kind: string, scope_ref: ScopeRef): ID;
 }
