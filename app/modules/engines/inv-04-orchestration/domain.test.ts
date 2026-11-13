@@ -119,6 +119,21 @@ const makeRun = (fixtures = makeFixtures()): OrchestrationRun => {
   return result.value;
 };
 
+const makeRunningRun = (): OrchestrationRun => {
+  const created = makeRun();
+  const evaluating = transitionOrchestrationRun({
+    run: created, expected_state_version: 1, target_state: "EVALUATING",
+    occurred_at: "2026-11-13T03:00:07Z",
+  });
+  if (!evaluating.ok) throw new Error(evaluating.issues[0].safe_message);
+  const running = transitionOrchestrationRun({
+    run: evaluating.value, expected_state_version: 2, target_state: "RUNNING",
+    occurred_at: "2026-11-13T03:00:08Z",
+  });
+  if (!running.ok) throw new Error(running.issues[0].safe_message);
+  return running.value;
+};
+
 const makeNodeCoordination = (run: OrchestrationRun, nodeRef: ObjectRef, state: NodeCoordinationRecord["state"] = "READY"): NodeCoordinationRecord => ({
   node_coordination_ref: ref("NODE_COORDINATION", `coord-${nodeRef.object_id}`),
   orchestration_ref: run.orchestration_ref,
@@ -227,7 +242,7 @@ describe("INV-04 orchestration domain", () => {
       resource: { admission_ref: ref("RESOURCE_ADMISSION", "admit-1"), state: "ADMITTED" },
     }).ok).toBe(false);
 
-    const run = makeRun();
+    const run = makeRunningRun();
     const node = makeNodeCoordination(run, ref("GRAPH_NODE", "node-a"));
     const attempt = createDispatchAttempt({
       context, run, node,
