@@ -6,6 +6,7 @@ import {
   isTimestamp,
   type ID,
   type ObjectRef,
+  type PrincipalRef,
   type OperationError,
   type RequestContext,
   type RevisionNumber,
@@ -206,7 +207,7 @@ export interface ClarificationRequest {
   state: ClarificationState;
   created_at: Timestamp;
   expires_at?: Timestamp;
-  answered_by_ref?: ObjectRef;
+  answered_by_ref?: PrincipalRef;
   answer_source_ref?: SourceRef;
 }
 
@@ -515,6 +516,7 @@ export function createRouteProposal(input: {
 }
 
 export function createDecisionRecord(input: {
+  context: RequestContext;
   decision_ref: ObjectRef;
   intent: NormalizedIntent;
   disposition: DecisionDisposition;
@@ -525,13 +527,19 @@ export function createDecisionRecord(input: {
   authority_decision_refs?: ObjectRef[];
   capability_refs?: ObjectRef[];
   rationale_summary: string;
+  assumption_refs?: ObjectRef[];
+  constraint_refs?: ObjectRef[];
   created_at: Timestamp;
   supersedes_decision_ref?: ObjectRef;
 }): DomainResult<DecisionRecord> {
   const allowed = canSelectRoute(input.disposition, input.intent);
   if (!allowed.ok) return allowed;
-  if (!isObjectRef(input.decision_ref) || input.decision_ref.object_kind !== "DECISION_RECORD" ||
-      !isTimestamp(input.created_at) || !input.rationale_summary.trim()) {
+  if (!isRequestContext(input.context) ||
+      input.context.scope_ref.scope_id !== input.intent.intent_ref.scope_ref.scope_id ||
+      input.context.scope_ref.scope_kind !== input.intent.intent_ref.scope_ref.scope_kind ||
+      !isObjectRef(input.decision_ref) || input.decision_ref.object_kind !== "DECISION_RECORD" ||
+      !isTimestamp(input.created_at) || !input.rationale_summary.trim() ||
+      !allObjectRefs(input.assumption_refs ?? []) || !allObjectRefs(input.constraint_refs ?? [])) {
     return fail("VALIDATION_ERROR", "Decision record reference, timestamp and redacted rationale are required");
   }
   if (input.route_proposal && input.route_proposal.disposition !== input.disposition) {
@@ -561,10 +569,10 @@ export function createDecisionRecord(input: {
     ...(input.clarification ? { clarification_ref: input.clarification.clarification_ref } : {}),
     lineage: {
       source_refs: [...input.intent.source_refs],
-      requirement_refs: input.intent.explicit_requirements.flatMap((item) => item.source_ref ? [item.source_ref.object_ref] : []),
+      requirement_refs: input.intent.explicit_requirements.flatMap((item) => item.acceptance_criterion_refs),
       contextual_fact_refs: input.intent.contextual_facts.map((item) => item.source_ref.object_ref),
-      assumption_refs: [],
-      constraint_refs: [],
+      assumption_refs: [...(input.assumption_refs ?? [])],
+      constraint_refs: [...(input.constraint_refs ?? [])],
       policy_decision_refs: [...(input.policy_decision_refs ?? [])],
       authority_decision_refs: [...(input.authority_decision_refs ?? [])],
       capability_refs: [...(input.capability_refs ?? [])],
@@ -575,7 +583,7 @@ export function createDecisionRecord(input: {
       rationale_summary: input.rationale_summary,
     },
     created_at: input.created_at,
-    correlation_id: input.intent.intent_ref.object_id,
+    correlation_id: input.context.correlation_id,
     ...(input.supersedes_decision_ref ? { supersedes_decision_ref: input.supersedes_decision_ref } : {}),
   });
 }
