@@ -253,8 +253,10 @@ describe("INV-03 planning and graph domain", () => {
       receipt_state: "ACCEPTED" as const,
       received_at: "2026-11-13T03:00:05Z",
     };
-    expect(reconcileGraphActivation(request.value, receipt).value).toBe("ACTIVATED");
-    expect(reconcileGraphActivation(request.value, { ...receipt, receipt_state: "UNKNOWN" }).value).toBe("RECONCILE");
+    const accepted = reconcileGraphActivation(request.value, receipt);
+    const unknown = reconcileGraphActivation(request.value, { ...receipt, receipt_state: "UNKNOWN" });
+    expect(accepted.ok && accepted.value).toBe("ACTIVATED");
+    expect(unknown.ok && unknown.value).toBe("RECONCILE");
   });
 
   it("rejects stale or mismatched activation receipts", () => {
