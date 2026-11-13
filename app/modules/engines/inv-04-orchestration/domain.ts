@@ -62,6 +62,39 @@ export interface NodeCoordinationRecord {
   error_refs: ObjectRef[];
 }
 
+export interface OrchestrationCheckpoint {
+  checkpoint_ref: ObjectRef;
+  orchestration_ref: ObjectRef;
+  work_ref: ObjectRef;
+  graph_revision_ref: ObjectRef;
+  checkpoint_sequence: number;
+  kind: "NODE_BOUNDARY" | "SAFE_POINT" | "RECOVERY_SNAPSHOT";
+  node_state_refs: ObjectRef[];
+  active_dispatch_refs: ObjectRef[];
+  unresolved_wait_refs: ObjectRef[];
+  reconciliation_refs: ObjectRef[];
+  durable_state_version: RevisionNumber;
+  created_at: Timestamp;
+  created_by: PrincipalRef;
+  integrity_digest?: string;
+  recovery_constraints: string[];
+}
+
+export interface CancellationReport {
+  cancellation_ref: ObjectRef;
+  orchestration_ref: ObjectRef;
+  status: "REQUESTED" | "PROPAGATED" | "PARTIAL" | "COMPLETED" | "UNKNOWN";
+  requested_at: Timestamp;
+  requested_by: PrincipalRef;
+  dispatches_not_started: ObjectRef[];
+  execution_cancel_requests: ObjectRef[];
+  completed_execution_refs: ObjectRef[];
+  unresolved_execution_refs: ObjectRef[];
+  world_state_reconciliation_refs: ObjectRef[];
+  irreversible_or_unknown_effect_refs: ObjectRef[];
+  completed_at?: Timestamp;
+}
+
 export interface DispatchAttempt {
   dispatch_ref: ObjectRef;
   orchestration_ref: ObjectRef;
@@ -246,6 +279,124 @@ export function transitionOrchestrationRun(input: {
     ...(input.target_state === "RUNNING" && !input.run.started_at ? { started_at: input.occurred_at } : {}),
     ...(terminal ? { ended_at: input.occurred_at } : {}),
     ...(input.disposition ? { terminal_disposition: input.disposition } : {}),
+  });
+}
+
+export function createNodeCoordination(input: {
+  context: RequestContext;
+  run: OrchestrationRun;
+  graph: WorkGraphRevision;
+  node: GraphNode;
+  node_coordination_ref: ObjectRef;
+  created_at: Timestamp;
+}): OrchestrationResult<NodeCoordinationRecord> {
+  if (!isRequestContext(input.context) ||
+      !isObjectRef(input.node_coordination_ref) ||
+      input.node_coordination_ref.object_kind !== "NODE_COORDINATION" ||
+      !isTimestamp(input.created_at) ||
+      !sameRef(input.run.graph_revision_ref, input.graph.graph_revision_ref) ||
+      !sameRef(input.run.work_ref, input.graph.work_ref) ||
+      !sameRef(input.node.graph_ref, input.graph.graph_ref) ||
+      !input.graph.nodes.some((candidate) => sameRef(candidate.node_ref, input.node.node_ref))) {
+    return fail("VALIDATION_ERROR", "Node coordination must be created for a node in the exact pinned Work Graph revision");
+  }
+  if (input.context.scope_ref.scope_id !== input.run.scope_ref.scope_id ||
+      input.context.scope_ref.scope_kind !== input.run.scope_ref.scope_kind) {
+    return fail("FORBIDDEN", "Node coordination request is outside the orchestration scope");
+  }
+  return ok({
+    node_coordination_ref: input.node_coordination_ref,
+    orchestration_ref: input.run.orchestration_ref,
+    work_ref: input.run.work_ref,
+    graph_revision_ref: input.run.graph_revision_ref,
+    graph_node_ref: input.node.node_ref,
+    state: "PENDING",
+    state_version: 1,
+    execution_refs: [],
+    last_transition_at: input.created_at,
+    updated_at: input.created_at,
+    error_refs: [],
+  });
+}
+
+export function createOrchestrationCheckpoint(input: {
+  checkpoint_ref: ObjectRef;
+  run: OrchestrationRun;
+  checkpoint_sequence: number;
+  kind: OrchestrationCheckpoint["kind"];
+  node_state_refs: ObjectRef[];
+  active_dispatch_refs: ObjectRef[];
+  unresolved_wait_refs: ObjectRef[];
+  reconciliation_refs: ObjectRef[];
+  durable_state_version: RevisionNumber;
+  created_at: Timestamp;
+  created_by: PrincipalRef;
+  integrity_digest?: string;
+  recovery_constraints: string[];
+}): OrchestrationResult<OrchestrationCheckpoint> {
+  if (!isObjectRef(input.checkpoint_ref) || input.checkpoint_ref.object_kind !== "ORCHESTRATION_CHECKPOINT" ||
+      !Number.isSafeInteger(input.checkpoint_sequence) || input.checkpoint_sequence < 1 ||
+      !isRevisionNumber(input.durable_state_version) || !isTimestamp(input.created_at) ||
+      ![...input.node_state_refs, ...input.active_dispatch_refs, ...input.unresolved_wait_refs, ...input.reconciliation_refs].every(isObjectRef) ||
+      (input.integrity_digest !== undefined && !/^[a-f0-9]{32,128}$/i.test(input.integrity_digest))) {
+    return fail("VALIDATION_ERROR", "Checkpoint identity, sequence, version, timestamp or references are invalid");
+  }
+  return ok({
+    checkpoint_ref: input.checkpoint_ref,
+    orchestration_ref: input.run.orchestration_ref,
+    work_ref: input.run.work_ref,
+    graph_revision_ref: input.run.graph_revision_ref,
+    checkpoint_sequence: input.checkpoint_sequence,
+    kind: input.kind,
+    node_state_refs: [...input.node_state_refs],
+    active_dispatch_refs: [...input.active_dispatch_refs],
+    unresolved_wait_refs: [...input.unresolved_wait_refs],
+    reconciliation_refs: [...input.reconciliation_refs],
+    durable_state_version: input.durable_state_version,
+    created_at: input.created_at,
+    created_by: input.created_by,
+    ...(input.integrity_digest ? { integrity_digest: input.integrity_digest } : {}),
+    recovery_constraints: [...input.recovery_constraints],
+  });
+}
+
+export function createCancellationReport(input: {
+  cancellation_ref: ObjectRef;
+  run: OrchestrationRun;
+  requested_at: Timestamp;
+  requested_by: PrincipalRef;
+  dispatches_not_started: ObjectRef[];
+  execution_cancel_requests: ObjectRef[];
+  completed_execution_refs: ObjectRef[];
+  unresolved_execution_refs: ObjectRef[];
+  world_state_reconciliation_refs: ObjectRef[];
+  irreversible_or_unknown_effect_refs: ObjectRef[];
+}): OrchestrationResult<CancellationReport> {
+  if (!isObjectRef(input.cancellation_ref) || input.cancellation_ref.object_kind !== "CANCELLATION_REPORT" ||
+      !isTimestamp(input.requested_at) ||
+      ![...input.dispatches_not_started, ...input.execution_cancel_requests,
+        ...input.completed_execution_refs, ...input.unresolved_execution_refs,
+        ...input.world_state_reconciliation_refs, ...input.irreversible_or_unknown_effect_refs].every(isObjectRef)) {
+    return fail("VALIDATION_ERROR", "Cancellation report contains invalid identity, timestamp or references");
+  }
+  const unresolved = input.unresolved_execution_refs.length > 0 ||
+    input.irreversible_or_unknown_effect_refs.length > 0;
+  const active = input.execution_cancel_requests.length > 0;
+  const status: CancellationReport["status"] = unresolved ? "UNKNOWN" :
+    active ? "PROPAGATED" : "COMPLETED";
+  return ok({
+    cancellation_ref: input.cancellation_ref,
+    orchestration_ref: input.run.orchestration_ref,
+    status,
+    requested_at: input.requested_at,
+    requested_by: input.requested_by,
+    dispatches_not_started: [...input.dispatches_not_started],
+    execution_cancel_requests: [...input.execution_cancel_requests],
+    completed_execution_refs: [...input.completed_execution_refs],
+    unresolved_execution_refs: [...input.unresolved_execution_refs],
+    world_state_reconciliation_refs: [...input.world_state_reconciliation_refs],
+    irreversible_or_unknown_effect_refs: [...input.irreversible_or_unknown_effect_refs],
+    ...(status === "COMPLETED" ? { completed_at: input.requested_at } : {}),
   });
 }
 
