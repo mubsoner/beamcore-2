@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   authorizeDispatch,
   createDispatchAttempt,
+  createNodeCoordination,
+  createOrchestrationCheckpoint,
+  createCancellationReport,
   createOrchestrationRun,
   decideRetry,
   evaluateNodeReadiness,
@@ -188,6 +191,57 @@ describe("INV-04 orchestration domain", () => {
       run: evaluating.value, expected_state_version: 1, target_state: "RUNNING",
       occurred_at: "2026-11-13T03:00:08Z",
     }).ok).toBe(false);
+  });
+
+  it("creates node coordination only for a node in the pinned graph", () => {
+    const fixtures = makeFixtures();
+    const run = makeRun(fixtures);
+    const coordination = createNodeCoordination({
+      context, run, graph: fixtures.graph, node: fixtures.nodeA,
+      node_coordination_ref: ref("NODE_COORDINATION", "coord-node-a"),
+      created_at: "2026-11-13T03:00:08Z",
+    });
+    expect(coordination.ok).toBe(true);
+    if (coordination.ok) expect(coordination.value.state).toBe("PENDING");
+    expect(createNodeCoordination({
+      context, run, graph: fixtures.graph,
+      node: { ...fixtures.nodeA, node_ref: ref("GRAPH_NODE", "not-in-graph") },
+      node_coordination_ref: ref("NODE_COORDINATION", "coord-invalid"),
+      created_at: "2026-11-13T03:00:08Z",
+    }).ok).toBe(false);
+  });
+
+  it("creates version-pinned checkpoints without claiming external side effects", () => {
+    const run = makeRun();
+    const checkpoint = createOrchestrationCheckpoint({
+      checkpoint_ref: ref("ORCHESTRATION_CHECKPOINT", "checkpoint-1"),
+      run, checkpoint_sequence: 1, kind: "SAFE_POINT",
+      node_state_refs: [ref("NODE_COORDINATION", "coord-1")],
+      active_dispatch_refs: [], unresolved_wait_refs: [],
+      reconciliation_refs: [], durable_state_version: 1,
+      created_at: "2026-11-13T03:00:08Z",
+      created_by: context.actor_ref,
+      recovery_constraints: ["Reconcile active external effects before replay"],
+    });
+    expect(checkpoint.ok).toBe(true);
+    if (checkpoint.ok) expect(checkpoint.value.graph_revision_ref).toEqual(run.graph_revision_ref);
+  });
+
+  it("reports cancellation as UNKNOWN when effects remain unresolved", () => {
+    const run = makeRun();
+    const report = createCancellationReport({
+      cancellation_ref: ref("CANCELLATION_REPORT", "cancel-1"),
+      run, requested_at: "2026-11-13T03:00:08Z",
+      requested_by: context.actor_ref,
+      dispatches_not_started: [],
+      execution_cancel_requests: [],
+      completed_execution_refs: [],
+      unresolved_execution_refs: [],
+      world_state_reconciliation_refs: [],
+      irreversible_or_unknown_effect_refs: [ref("EXTERNAL_EFFECT", "effect-unknown")],
+    });
+    expect(report.ok).toBe(true);
+    if (report.ok) expect(report.value.status).toBe("UNKNOWN");
   });
 
   it("evaluates dependency gates according to their typed meaning", () => {
