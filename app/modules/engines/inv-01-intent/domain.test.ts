@@ -3,6 +3,8 @@ import {
   applyOutcomeAcceptanceReceipt,
   canSelectRoute,
   createOutcomeProposal,
+  createRouteProposal,
+  createDecisionRecord,
   normalizeIntent,
   reviseIntent,
   transitionIntent,
@@ -112,6 +114,58 @@ describe("INV-01 intent domain", () => {
     const withdrawn = transitionIntent(first.value, "WITHDRAWN");
     if (!withdrawn.ok) return;
     expect(transitionIntent(withdrawn.value, "READY_FOR_DECISION").ok).toBe(false);
+  });
+
+  it("records an explicit research route and decision lineage", () => {
+    const normalized = normalizeIntent(baseInput());
+    expect(normalized.ok).toBe(true);
+    if (!normalized.ok) return;
+    const ready = transitionIntent(normalized.value, "READY_FOR_DECISION");
+    expect(ready.ok).toBe(true);
+    if (!ready.ok) return;
+    const route = createRouteProposal({
+      route_ref: ref("ROUTE_PROPOSAL", "route-1"),
+      intent: ready.value,
+      disposition: "RESEARCH",
+      target_engine_id: "INV-13",
+      target_operation: "start_research",
+      input_refs: [ready.value.intent_ref],
+      required_authority_check: false,
+      created_at: "2026-11-13T03:00:02Z",
+    });
+    expect(route.ok).toBe(true);
+    if (!route.ok) return;
+    const decision = createDecisionRecord({
+      context,
+      decision_ref: ref("DECISION_RECORD", "decision-1"),
+      intent: ready.value,
+      disposition: "RESEARCH",
+      route_proposal: route.value,
+      rationale_summary: "Research is needed to resolve the stated question.",
+      created_at: "2026-11-13T03:00:03Z",
+    });
+    expect(decision.ok).toBe(true);
+    if (!decision.ok) return;
+    expect(decision.value.correlation_id).toBe(context.correlation_id);
+    expect(decision.value.state).toBe("ROUTE_SELECTED");
+    expect(decision.value.route_proposal_ref).toEqual(route.value.route_ref);
+  });
+
+  it("rejects a route whose target engine does not own the disposition", () => {
+    const normalized = normalizeIntent(baseInput());
+    if (!normalized.ok) return;
+    const ready = transitionIntent(normalized.value, "READY_FOR_DECISION");
+    if (!ready.ok) return;
+    expect(createRouteProposal({
+      route_ref: ref("ROUTE_PROPOSAL", "route-bad"),
+      intent: ready.value,
+      disposition: "RESEARCH",
+      target_engine_id: "INV-02",
+      target_operation: "create_work",
+      input_refs: [ready.value.intent_ref],
+      required_authority_check: false,
+      created_at: "2026-11-13T03:00:02Z",
+    }).ok).toBe(false);
   });
 
   it("creates only a draft proposal when acceptance criteria remain unresolved", () => {
