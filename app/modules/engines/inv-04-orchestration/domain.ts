@@ -184,8 +184,11 @@ const fail = <T = never>(code: OrchestrationIssue["code"], safe_message: string)
   ok: false, issues: [{ code, safe_message }],
 });
 const sameRef = (a: ObjectRef, b: ObjectRef) =>
-  a.object_kind === b.object_kind && a.object_id === b.object_id &&
-  a.scope_ref.scope_id === b.scope_ref.scope_id && a.scope_ref.scope_kind === b.scope_ref.scope_kind;
+  a.object_kind === b.object_kind &&
+  a.object_id === b.object_id &&
+  a.object_version === b.object_version &&
+  a.scope_ref.scope_id === b.scope_ref.scope_id &&
+  a.scope_ref.scope_kind === b.scope_ref.scope_kind;
 const sameScopeRef = (
   a: RequestContext["scope_ref"],
   b: RequestContext["scope_ref"],
