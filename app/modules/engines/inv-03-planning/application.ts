@@ -95,8 +95,15 @@ export interface GraphActivationCandidate extends GraphActivationRevisionPair {
 }
 /** INV-03-owned read boundary for activation and active-binding queries. */
 export interface GraphActivationCandidateReaderPort {
-  readRevisions(transaction: EngineTransaction, context: RequestContext, plan_revision_ref: ObjectRef, graph_revision_ref: ObjectRef): Promise<OperationResult<GraphActivationRevisionPair>>;
-  readCandidate(transaction: EngineTransaction, context: RequestContext, request_ref: ObjectRef): Promise<OperationResult<GraphActivationCandidate>>;
+  readRevisions(
+    context: RequestContext,
+    plan_revision_ref: ObjectRef,
+    graph_revision_ref: ObjectRef,
+  ): Promise<OperationResult<GraphActivationRevisionPair>>;
+  readCandidate(
+    context: RequestContext,
+    request_ref: ObjectRef,
+  ): Promise<OperationResult<GraphActivationCandidate>>;
 }
 
 function rejected<T>(
@@ -190,33 +197,92 @@ async function readPlanGraphRevisions(transaction: EngineTransaction, context: R
   }
   return createOperationResult({status:"OK",correlation_id:context.correlation_id,data:{plan:plan.data,graph:graph.data}});
 }
-export const graphActivationCandidateReader: GraphActivationCandidateReaderPort = {
-  readRevisions: readPlanGraphRevisions,
-  async readCandidate(transaction, context, request_ref) {
-    if (!isRequestContext(context) || !isObjectRef(request_ref) || request_ref.object_kind !== "GRAPH_ACTIVATION_REQUEST" ||
-        request_ref.scope_ref.scope_id !== context.scope_ref.scope_id || request_ref.scope_ref.scope_kind !== context.scope_ref.scope_kind) {
-      return rejected("VALIDATION_ERROR", "Activation candidate lookup requires an in-scope GRAPH_ACTIVATION_REQUEST reference", context.correlation_id);
-    }
-    const requestResult = await transaction.appendOnly<GraphActivationRequest>("inv-03.graph-activation-requests").get(context, request_ref);
-    if (requestResult.status !== "OK" || !requestResult.data) return propagateFailure<GraphActivationCandidate>(requestResult);
-    const request = requestResult.data;
-    if (!isObjectRef(request.request_ref) || !sameRef(request.request_ref, request_ref) ||
-        !isObjectRef(request.work_ref) || request.work_ref.object_kind !== "WORK" ||
-        !isObjectRef(request.plan_revision_ref) || request.plan_revision_ref.object_kind !== "PLAN_REVISION" ||
-        !isObjectRef(request.graph_revision_ref) || request.graph_revision_ref.object_kind !== "WORK_GRAPH_REVISION" ||
-        request.work_ref.scope_ref.scope_id !== context.scope_ref.scope_id || request.work_ref.scope_ref.scope_kind !== context.scope_ref.scope_kind) {
-      return rejected("INTEGRITY_OR_UNTRUSTED_INPUT", "INV-03 returned an activation request with invalid identity or scope", context.correlation_id);
-    }
-    const revisions = await readPlanGraphRevisions(transaction, context, request.plan_revision_ref, request.graph_revision_ref);
-    if (revisions.status !== "OK" || !revisions.data) return propagateFailure<GraphActivationCandidate>(revisions);
-    const {plan,graph}=revisions.data;
-    const plan_record = await transaction.repository<PlanRecord>("inv-03.plans").get(context, plan.plan_ref);
-    if (plan_record.status !== "OK" || !plan_record.data) return propagateFailure<GraphActivationCandidate>(plan_record);
-    const graph_record = await transaction.repository<WorkGraphRecord>("inv-03.work-graphs").get(context, graph.graph_ref);
-    if (graph_record.status !== "OK" || !graph_record.data) return propagateFailure<GraphActivationCandidate>(graph_record);
-    return createOperationResult({status:"OK",correlation_id:context.correlation_id,data:{request,plan,plan_record:plan_record.data,graph,graph_record:graph_record.data}});
-  },
-};
+export function createGraphActivationCandidateReader(
+  unitOfWork: EngineUnitOfWorkPort,
+): GraphActivationCandidateReaderPort {
+  return {
+    readRevisions(context, plan_revision_ref, graph_revision_ref) {
+      return unitOfWork.execute(context, (transaction) =>
+        readPlanGraphRevisions(transaction, context, plan_revision_ref, graph_revision_ref),
+      );
+    },
+    readCandidate(context, request_ref) {
+      return unitOfWork.execute(context, async (transaction) => {
+        if (
+          !isRequestContext(context) ||
+          !isObjectRef(request_ref) ||
+          request_ref.object_kind !== "GRAPH_ACTIVATION_REQUEST" ||
+          request_ref.scope_ref.scope_id !== context.scope_ref.scope_id ||
+          request_ref.scope_ref.scope_kind !== context.scope_ref.scope_kind
+        ) {
+          return rejected(
+            "VALIDATION_ERROR",
+            "Activation candidate lookup requires an in-scope GRAPH_ACTIVATION_REQUEST reference",
+            context.correlation_id,
+          );
+        }
+        const requestResult = await transaction
+          .appendOnly<GraphActivationRequest>("inv-03.graph-activation-requests")
+          .get(context, request_ref);
+        if (requestResult.status !== "OK" || !requestResult.data) {
+          return propagateFailure<GraphActivationCandidate>(requestResult);
+        }
+        const request = requestResult.data;
+        if (
+          !isObjectRef(request.request_ref) ||
+          !sameRef(request.request_ref, request_ref) ||
+          !isObjectRef(request.work_ref) ||
+          request.work_ref.object_kind !== "WORK" ||
+          !isObjectRef(request.plan_revision_ref) ||
+          request.plan_revision_ref.object_kind !== "PLAN_REVISION" ||
+          !isObjectRef(request.graph_revision_ref) ||
+          request.graph_revision_ref.object_kind !== "WORK_GRAPH_REVISION" ||
+          request.work_ref.scope_ref.scope_id !== context.scope_ref.scope_id ||
+          request.work_ref.scope_ref.scope_kind !== context.scope_ref.scope_kind
+        ) {
+          return rejected(
+            "INTEGRITY_OR_UNTRUSTED_INPUT",
+            "INV-03 returned an activation request with invalid identity or scope",
+            context.correlation_id,
+          );
+        }
+        const revisions = await readPlanGraphRevisions(
+          transaction,
+          context,
+          request.plan_revision_ref,
+          request.graph_revision_ref,
+        );
+        if (revisions.status !== "OK" || !revisions.data) {
+          return propagateFailure<GraphActivationCandidate>(revisions);
+        }
+        const { plan, graph } = revisions.data;
+        const plan_record = await transaction
+          .repository<PlanRecord>("inv-03.plans")
+          .get(context, plan.plan_ref);
+        if (plan_record.status !== "OK" || !plan_record.data) {
+          return propagateFailure<GraphActivationCandidate>(plan_record);
+        }
+        const graph_record = await transaction
+          .repository<WorkGraphRecord>("inv-03.work-graphs")
+          .get(context, graph.graph_ref);
+        if (graph_record.status !== "OK" || !graph_record.data) {
+          return propagateFailure<GraphActivationCandidate>(graph_record);
+        }
+        return createOperationResult({
+          status: "OK",
+          correlation_id: context.correlation_id,
+          data: {
+            request,
+            plan,
+            plan_record: plan_record.data,
+            graph,
+            graph_record: graph_record.data,
+          },
+        });
+      });
+    },
+  };
+}
 
 function makeEvent(
   event_ref: ObjectRef,

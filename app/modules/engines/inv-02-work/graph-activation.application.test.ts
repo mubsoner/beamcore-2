@@ -16,7 +16,7 @@ import {
   applyRequestedPlanGraphActivation,
   getActivePlanGraphBinding,
 } from "./application";
-import { graphActivationCandidateReader } from "../inv-03-planning/application";
+import { createGraphActivationCandidateReader } from "../inv-03-planning/application";
 import { createWork, type WorkRecord } from "./domain";
 import type {
   GraphActivationRequest,
@@ -352,10 +352,14 @@ function makeFixture(approval_refs: ObjectRef[] = []) {
   return { state, work, activation_request, command };
 }
 
+function activationReader(state: ReturnType<typeof makeState>) {
+  return createGraphActivationCandidateReader(state.unitOfWork);
+}
+
 describe("INV-02 Plan/Graph activation application", () => {
   it("consumes an INV-03 request and atomically records the authoritative Work binding", async () => {
     const { state, command } = makeFixture();
-    const result = await applyRequestedPlanGraphActivation(state.unitOfWork, graphActivationCandidateReader, command);
+    const result = await applyRequestedPlanGraphActivation(state.unitOfWork, activationReader(state), command);
 
     expect(result.status).toBe("OK");
     expect(result.data?.current_revision).toBe(2);
@@ -376,7 +380,7 @@ describe("INV-02 Plan/Graph activation application", () => {
       "work.plan_graph_binding_activated",
     ]);
 
-    const replay = await applyRequestedPlanGraphActivation(state.unitOfWork, graphActivationCandidateReader, command);
+    const replay = await applyRequestedPlanGraphActivation(state.unitOfWork, activationReader(state), command);
     expect(replay.status).toBe("OK");
     expect(state.appended("inv-02.work-revisions")).toHaveLength(1);
     expect(state.appended("inv-02.plan-graph-activation-receipts")).toHaveLength(1);
@@ -389,7 +393,7 @@ describe("INV-02 Plan/Graph activation application", () => {
     async (failurePoint) => {
       const {state,command}=makeFixture();
       state.failAt(failurePoint);
-      const result=await applyRequestedPlanGraphActivation(state.unitOfWork,graphActivationCandidateReader,command);
+      const result=await applyRequestedPlanGraphActivation(state.unitOfWork,activationReader(state),command);
       expect(result.status).toBe("REJECTED");
       expect(state.read<WorkRecord>("inv-02.works","work-1")?.current_revision).toBe(1);
       expect(state.appended("inv-02.work-revisions")).toHaveLength(0);
@@ -401,7 +405,7 @@ describe("INV-02 Plan/Graph activation application", () => {
 
   it("does not bind a request that carries unverified approval references", async () => {
     const { state, command } = makeFixture([ref("APPROVAL", "approval-1")]);
-    const result = await applyRequestedPlanGraphActivation(state.unitOfWork, graphActivationCandidateReader, command);
+    const result = await applyRequestedPlanGraphActivation(state.unitOfWork, activationReader(state), command);
 
     expect(result.status).toBe("REJECTED");
     expect(result.errors[0]?.code).toBe("APPROVAL_REQUIRED");
@@ -418,7 +422,7 @@ describe("INV-02 Plan/Graph activation application", () => {
       latest_revision_ref: ref("WORK_GRAPH_REVISION", "graph-r2"),
     }, "2");
 
-    const result = await applyRequestedPlanGraphActivation(state.unitOfWork, graphActivationCandidateReader, command);
+    const result = await applyRequestedPlanGraphActivation(state.unitOfWork, activationReader(state), command);
     expect(result.status).toBe("REJECTED");
     expect(result.errors[0]?.code).toBe("VERSION_CONFLICT");
     expect(state.read<WorkRecord>("inv-02.works", "work-1")?.current_revision).toBe(1);
@@ -429,17 +433,17 @@ describe("INV-02 Plan/Graph activation application", () => {
     const { state, command } = makeFixture();
     const before = await getActivePlanGraphBinding(
       state.unitOfWork,
-      graphActivationCandidateReader,
+      activationReader(state),
       context(),
       ref("WORK", "work-1"),
     );
     expect(before.status).toBe("OK");
     expect(before.data?.binding_state).toBe("UNBOUND");
 
-    await applyRequestedPlanGraphActivation(state.unitOfWork, graphActivationCandidateReader, command);
+    await applyRequestedPlanGraphActivation(state.unitOfWork, activationReader(state), command);
     const after = await getActivePlanGraphBinding(
       state.unitOfWork,
-      graphActivationCandidateReader,
+      activationReader(state),
       context(),
       ref("WORK", "work-1"),
     );
@@ -452,7 +456,7 @@ describe("INV-02 Plan/Graph activation application", () => {
 
   it("keeps the Work binding authoritative when a later planning revision is prepared", async () => {
     const { state, command } = makeFixture();
-    await applyRequestedPlanGraphActivation(state.unitOfWork, graphActivationCandidateReader, command);
+    await applyRequestedPlanGraphActivation(state.unitOfWork, activationReader(state), command);
     const plan = state.read<PlanRevision>("inv-03.plan-revisions", "plan-r1")!;
     const graph = state.read<WorkGraphRevision>("inv-03.graph-revisions", "graph-r1")!;
     state.seed("inv-03.plan-revisions", "plan-r1", { ...plan, state: "SUPERSEDED" }, "2");
@@ -460,7 +464,7 @@ describe("INV-02 Plan/Graph activation application", () => {
 
     const binding = await getActivePlanGraphBinding(
       state.unitOfWork,
-      graphActivationCandidateReader,
+      activationReader(state),
       context(),
       ref("WORK", "work-1"),
     );
