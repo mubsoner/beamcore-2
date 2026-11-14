@@ -1,5 +1,6 @@
 import {
   isObjectRef,
+  isPrincipalRef,
   isRequestContext,
   isRevisionNumber,
   isTimestamp,
@@ -209,7 +210,7 @@ export function createOrchestrationRun(input: {
       work.scope_ref.scope_kind !== context.scope_ref.scope_kind) {
     return fail("FORBIDDEN", "Orchestration request scope does not match Work scope");
   }
-  if (graph.state !== "VALIDATED" || graph.work_ref.object_id !== work.work_ref.object_id ||
+  if (graph.state !== "VALIDATED" || !sameRef(graph.work_ref, work.work_ref) ||
       !work.current_plan_ref || !work.current_work_graph_ref ||
       !sameRef(work.current_plan_ref, graph.source_plan_revision_ref) ||
       !sameRef(work.current_work_graph_ref, graph.graph_revision_ref)) {
@@ -218,10 +219,12 @@ export function createOrchestrationRun(input: {
   if (activation_receipt.receipt_state === "UNKNOWN") {
     return fail("OUTCOME_UNKNOWN_OR_RECONCILIATION_REQUIRED", "Graph activation is unknown; reconcile Work binding before orchestration");
   }
-  if (activation_receipt.receipt_state !== "ACCEPTED" ||
-      activation_receipt.work_ref.object_id !== work.work_ref.object_id ||
-      activation_receipt.plan_revision_ref.object_id !== graph.source_plan_revision_ref.object_id ||
-      activation_receipt.graph_revision_ref.object_id !== graph.graph_revision_ref.object_id ||
+  if (!isObjectRef(activation_receipt.receipt_ref) ||
+      activation_receipt.receipt_ref.object_kind !== "PLAN_GRAPH_ACTIVATION_RECEIPT" ||
+      activation_receipt.receipt_state !== "ACCEPTED" ||
+      !sameRef(activation_receipt.work_ref, work.work_ref) ||
+      !sameRef(activation_receipt.plan_revision_ref, graph.source_plan_revision_ref) ||
+      !sameRef(activation_receipt.graph_revision_ref, graph.graph_revision_ref) ||
       activation_receipt.resulting_work_revision !== work.current_revision ||
       activation_receipt.resulting_work_revision !== activation_receipt.expected_work_revision + 1) {
     return fail("VALIDATION_ERROR", "Activation receipt does not confirm the exact current Work/Plan/Graph binding");
@@ -378,15 +381,22 @@ export function createCancellationReport(input: {
 }): OrchestrationResult<CancellationReport> {
   if (!isObjectRef(input.cancellation_ref) || input.cancellation_ref.object_kind !== "CANCELLATION_REPORT" ||
       !isTimestamp(input.requested_at) || !isObjectRef(input.run.orchestration_ref) ||
-      !input.requested_by.principal_id.trim() ||
+      !isPrincipalRef(input.requested_by) ||
       ![...input.dispatches_not_started, ...input.execution_cancel_requests,
         ...input.completed_execution_refs, ...input.unresolved_execution_refs,
         ...input.world_state_reconciliation_refs, ...input.irreversible_or_unknown_effect_refs].every(isObjectRef) ||
       (input.completed_at !== undefined && !isTimestamp(input.completed_at))) {
     return fail("VALIDATION_ERROR", "Cancellation report contains invalid identity, timestamp or references");
   }
-  if (input.execution_states_confirmed === true && !input.completed_at) {
-    return fail("VALIDATION_ERROR", "Confirmed cancellation requires the authoritative completion timestamp");
+  if (input.execution_states_confirmed === true && (
+      !input.completed_at ||
+      input.unresolved_execution_refs.length > 0 ||
+      input.irreversible_or_unknown_effect_refs.length > 0
+  )) {
+    return fail("VALIDATION_ERROR", "Confirmed cancellation requires a completion timestamp and no unresolved or unknown effects");
+  }
+  if (input.completed_at !== undefined && Date.parse(input.completed_at) <= Date.parse(input.requested_at)) {
+    return fail("VALIDATION_ERROR", "Cancellation completion must occur after the request");
   }
   if (input.execution_states_confirmed !== true && input.completed_at !== undefined) {
     return fail("VALIDATION_ERROR", "Completion timestamp cannot be supplied without authoritative execution confirmation");
