@@ -3,6 +3,7 @@ import {
   createOperationResult,
   isObjectRef,
   isRequestContext,
+  isTimestamp,
   type DomainEventEnvelope,
   type EngineUnitOfWorkPort,
   type IdempotencyRecord,
@@ -13,6 +14,7 @@ import {
 } from "../shared";
 import {
   acceptOutcomeProposal as acceptOutcomeProposalDomain,
+  applyPlanGraphActivation,
   createWork,
   transitionWork,
   type AcceptOutcomeProposalCommand,
@@ -22,7 +24,15 @@ import {
   type WorkRevision,
   type WorkTransitionCommand,
   type WorkDomainIssue,
+  type PlanGraphActivationBindingReceipt,
 } from "./domain";
+import type {
+  GraphActivationRequest,
+  PlanRecord,
+  PlanRevision,
+  WorkGraphRecord,
+  WorkGraphRevision,
+} from "../inv-03-planning/domain";
 
 export interface CreateWorkCommand {
   context: RequestContext;
@@ -352,6 +362,428 @@ export async function changeWorkState(
   });
 }
 
+
+export interface ApplyPlanGraphActivationCommand {
+  context: RequestContext;
+  request_ref: ObjectRef;
+  receipt_ref: ObjectRef;
+  received_at: string;
+  request_fingerprint: string;
+  event_ref: ObjectRef;
+}
+
+export interface ActivePlanGraphBinding {
+  work_ref: ObjectRef;
+  work_revision: number;
+  binding_state: "UNBOUND" | "BOUND";
+  plan_revision_ref?: ObjectRef;
+  graph_revision_ref?: ObjectRef;
+}
+
+function sameObjectRef(a: ObjectRef, b: ObjectRef): boolean {
+  return a.object_kind === b.object_kind &&
+    a.object_id === b.object_id &&
+    a.object_version === b.object_version &&
+    a.scope_ref.scope_id === b.scope_ref.scope_id &&
+    a.scope_ref.scope_kind === b.scope_ref.scope_kind;
+}
+
+/**
+ * Consumes an INV-03 activation request. INV-02 remains the sole owner of
+ * Work's active Plan/Graph pointers and commits the Work revision, activation
+ * receipt, outbox event and idempotency result in one unit of work.
+ *
+ * Approval references are deliberately fail-closed until an INV-06 approval
+ * decision reader is wired into this transaction boundary.
+ */
+export async function applyRequestedPlanGraphActivation(
+  unitOfWork: EngineUnitOfWorkPort,
+  command: ApplyPlanGraphActivationCommand,
+): Promise<OperationResult<WorkRecord>> {
+  const correlation_id = command.context.correlation_id;
+  const envelopeIssue = validateCommandEnvelope(
+    command.context,
+    command.request_fingerprint,
+    command.event_ref,
+  );
+  if (envelopeIssue) {
+    return rejected("VALIDATION_ERROR", envelopeIssue, correlation_id);
+  }
+  if (
+    !isObjectRef(command.request_ref) ||
+    command.request_ref.object_kind !== "GRAPH_ACTIVATION_REQUEST" ||
+    !isObjectRef(command.receipt_ref) ||
+    command.receipt_ref.object_kind !== "PLAN_GRAPH_ACTIVATION_RECEIPT" ||
+    !isTimestamp(command.received_at) ||
+    command.request_ref.scope_ref.scope_id !== command.context.scope_ref.scope_id ||
+    command.request_ref.scope_ref.scope_kind !== command.context.scope_ref.scope_kind ||
+    command.receipt_ref.scope_ref.scope_id !== command.context.scope_ref.scope_id ||
+    command.receipt_ref.scope_ref.scope_kind !== command.context.scope_ref.scope_kind
+  ) {
+    return rejected(
+      "VALIDATION_ERROR",
+      "Activation requires in-scope request and receipt references and a valid receipt timestamp",
+      correlation_id,
+    );
+  }
+
+  return unitOfWork.execute(command.context, async (transaction) => {
+    const prior = await transaction.idempotency.get<WorkRecord>(
+      command.context,
+      command.context.idempotency_key!,
+    );
+    if (prior.status !== "OK") return propagateFailure<WorkRecord>(prior);
+    if (prior.data) {
+      if (prior.data.request_fingerprint !== command.request_fingerprint) {
+        return rejected(
+          "IDEMPOTENCY_CONFLICT",
+          "Idempotency key was already used for a different Plan/Graph activation",
+          correlation_id,
+        );
+      }
+      return prior.data.result;
+    }
+
+    const requestResult = await transaction
+      .appendOnly<GraphActivationRequest>("inv-03.graph-activation-requests")
+      .get(command.context, command.request_ref);
+    if (requestResult.status !== "OK" || !requestResult.data) {
+      return propagateFailure<WorkRecord>(requestResult);
+    }
+    const request = requestResult.data;
+    if (
+      !sameObjectRef(request.request_ref, command.request_ref) ||
+      !isObjectRef(request.work_ref) ||
+      request.work_ref.object_kind !== "WORK" ||
+      !isObjectRef(request.plan_revision_ref) ||
+      request.plan_revision_ref.object_kind !== "PLAN_REVISION" ||
+      !isObjectRef(request.graph_revision_ref) ||
+      request.graph_revision_ref.object_kind !== "WORK_GRAPH_REVISION" ||
+      !Number.isSafeInteger(request.expected_work_revision) ||
+      request.expected_work_revision < 1 ||
+      !Array.isArray(request.approval_refs) ||
+      !request.approval_refs.every((approval_ref) =>
+        isObjectRef(approval_ref) &&
+        approval_ref.scope_ref.scope_id === request.work_ref.scope_ref.scope_id &&
+        approval_ref.scope_ref.scope_kind === request.work_ref.scope_ref.scope_kind
+      ) ||
+      request.work_ref.scope_ref.scope_id !== command.context.scope_ref.scope_id ||
+      request.work_ref.scope_ref.scope_kind !== command.context.scope_ref.scope_kind ||
+      !isTimestamp(request.requested_at) ||
+      Date.parse(command.received_at) <= Date.parse(request.requested_at)
+    ) {
+      return rejected(
+        "INTEGRITY_OR_UNTRUSTED_INPUT",
+        "Stored activation request is invalid, out of scope, or does not match its reference",
+        correlation_id,
+      );
+    }
+
+    if (request.approval_refs.length > 0) {
+      return rejected(
+        "APPROVAL_REQUIRED",
+        "Activation references approval evidence that INV-06 has not yet verified; Work binding was not changed",
+        correlation_id,
+      );
+    }
+
+    const current = await transaction.repository<WorkRecord>("inv-02.works")
+      .get(command.context, request.work_ref);
+    if (current.status !== "OK" || !current.data) {
+      return propagateFailure<WorkRecord>(current);
+    }
+    if (!current.object_version) {
+      return rejected(
+        "INTERNAL_ERROR",
+        "Work repository did not provide the storage version required for a safe activation update",
+        correlation_id,
+      );
+    }
+    if (
+      !sameObjectRef(current.data.work_ref, request.work_ref) ||
+      current.data.current_revision !== request.expected_work_revision ||
+      current.object_version !== String(request.expected_work_revision)
+    ) {
+      return rejected(
+        "VERSION_CONFLICT",
+        "Work identity or revision changed after the Plan/Graph activation request",
+        correlation_id,
+      );
+    }
+
+    const plan = await transaction.repository<PlanRevision>("inv-03.plan-revisions")
+      .get(command.context, request.plan_revision_ref);
+    if (plan.status !== "OK" || !plan.data) {
+      return propagateFailure<WorkRecord>(plan);
+    }
+    const planRecord = await transaction.repository<PlanRecord>("inv-03.plans")
+      .get(command.context, plan.data.plan_ref);
+    if (planRecord.status !== "OK" || !planRecord.data) {
+      return propagateFailure<WorkRecord>(planRecord);
+    }
+    const graph = await transaction.repository<WorkGraphRevision>("inv-03.graph-revisions")
+      .get(command.context, request.graph_revision_ref);
+    if (graph.status !== "OK" || !graph.data) {
+      return propagateFailure<WorkRecord>(graph);
+    }
+    const graphRecord = await transaction.repository<WorkGraphRecord>("inv-03.work-graphs")
+      .get(command.context, graph.data.graph_ref);
+    if (graphRecord.status !== "OK" || !graphRecord.data) {
+      return propagateFailure<WorkRecord>(graphRecord);
+    }
+
+    if (
+      !sameObjectRef(plan.data.plan_revision_ref, request.plan_revision_ref) ||
+      !sameObjectRef(plan.data.work_ref, request.work_ref) ||
+      plan.data.state !== "ACCEPTED" ||
+      !sameObjectRef(planRecord.data.plan_ref, plan.data.plan_ref) ||
+      !sameObjectRef(planRecord.data.work_ref, request.work_ref) ||
+      !sameObjectRef(planRecord.data.latest_revision_ref, plan.data.plan_revision_ref) ||
+      !sameObjectRef(graph.data.graph_revision_ref, request.graph_revision_ref) ||
+      !sameObjectRef(graph.data.work_ref, request.work_ref) ||
+      graph.data.state !== "VALIDATED" ||
+      !sameObjectRef(graph.data.source_plan_revision_ref, plan.data.plan_revision_ref) ||
+      !sameObjectRef(graphRecord.data.graph_ref, graph.data.graph_ref) ||
+      !sameObjectRef(graphRecord.data.work_ref, request.work_ref) ||
+      !sameObjectRef(graphRecord.data.latest_revision_ref, graph.data.graph_revision_ref)
+    ) {
+      return rejected(
+        "VERSION_CONFLICT",
+        "Activation no longer references the latest accepted Plan and validated Graph for this Work",
+        correlation_id,
+      );
+    }
+
+    const receipt: PlanGraphActivationBindingReceipt = {
+      receipt_ref: command.receipt_ref,
+      request_ref: request.request_ref,
+      work_ref: request.work_ref,
+      plan_revision_ref: request.plan_revision_ref,
+      graph_revision_ref: request.graph_revision_ref,
+      expected_work_revision: request.expected_work_revision,
+      resulting_work_revision: request.expected_work_revision + 1,
+      receipt_state: "ACCEPTED",
+      received_at: command.received_at,
+    };
+    const applied = applyPlanGraphActivation(
+      current.data,
+      receipt,
+      request.expected_work_revision,
+    );
+    if (!applied.ok) {
+      return rejected(
+        mapDomainCode(applied.issues[0].code),
+        applied.issues.map((issue) => issue.safe_message).join("; "),
+        correlation_id,
+      );
+    }
+
+    const updated = await transaction.repository<WorkRecord>("inv-02.works")
+      .update(
+        command.context,
+        request.work_ref,
+        current.object_version,
+        applied.value,
+      );
+    if (updated.status !== "OK" || !updated.data) {
+      return propagateFailure<WorkRecord>(updated);
+    }
+    if (
+      !sameObjectRef(updated.data.work_ref, request.work_ref) ||
+      updated.data.current_revision !== receipt.resulting_work_revision ||
+      !updated.data.current_plan_ref ||
+      !sameObjectRef(updated.data.current_plan_ref, request.plan_revision_ref) ||
+      !updated.data.current_work_graph_ref ||
+      !sameObjectRef(updated.data.current_work_graph_ref, request.graph_revision_ref)
+    ) {
+      return rejected(
+        "INTEGRITY_OR_UNTRUSTED_INPUT",
+        "Work repository did not confirm the exact activated Plan/Graph binding",
+        correlation_id,
+      );
+    }
+
+    const revision: WorkRevision = {
+      revision_ref: {
+        object_kind: "WORK_REVISION",
+        object_id: `${request.work_ref.object_id}:r${receipt.resulting_work_revision}`,
+        object_version: String(receipt.resulting_work_revision),
+        scope_ref: request.work_ref.scope_ref,
+      },
+      work_ref: request.work_ref,
+      revision_number: receipt.resulting_work_revision,
+      prior_revision_ref: {
+        object_kind: "WORK_REVISION",
+        object_id: `${request.work_ref.object_id}:r${request.expected_work_revision}`,
+        object_version: String(request.expected_work_revision),
+        scope_ref: request.work_ref.scope_ref,
+      },
+      changed_field_paths: ["current_plan_ref", "current_work_graph_ref"],
+      plan_ref: request.plan_revision_ref,
+      work_graph_ref: request.graph_revision_ref,
+      changed_by: command.context.actor_ref,
+      change_reason: "Accepted the requested Plan/Work Graph activation binding",
+      created_at: command.received_at,
+    };
+    const revisionResult = await transaction
+      .appendOnly<WorkRevision>("inv-02.work-revisions")
+      .append(command.context, revision);
+    if (revisionResult.status !== "OK") {
+      return propagateFailure<WorkRecord>(revisionResult);
+    }
+
+    const receiptResult = await transaction
+      .appendOnly<PlanGraphActivationBindingReceipt>("inv-02.plan-graph-activation-receipts")
+      .append(command.context, receipt);
+    if (receiptResult.status !== "OK") {
+      return propagateFailure<WorkRecord>(receiptResult);
+    }
+
+    const event: DomainEventEnvelope = {
+      event_id: command.event_ref.object_id,
+      event_type: "work.plan_graph_binding_activated",
+      schema_version: 1,
+      occurred_at: command.received_at,
+      producer_engine: "INV-02",
+      object_ref: updated.data.work_ref,
+      scope_ref: updated.data.scope_ref,
+      correlation_id,
+      actor_ref: command.context.actor_ref,
+      payload: {
+        request_ref: request.request_ref,
+        receipt_ref: receipt.receipt_ref,
+        work_revision_ref: revision.revision_ref,
+        plan_revision_ref: request.plan_revision_ref,
+        graph_revision_ref: request.graph_revision_ref,
+        prior_work_revision: request.expected_work_revision,
+        resulting_work_revision: receipt.resulting_work_revision,
+      },
+    };
+    const emitted = await transaction.outbox.append(command.context, event);
+    if (emitted.status !== "OK") return propagateFailure<WorkRecord>(emitted);
+
+    const result = createOperationResult({
+      status: "OK",
+      correlation_id,
+      data: updated.data,
+      object_version: String(updated.data.current_revision),
+    });
+    const recorded = await transaction.idempotency.record(command.context, {
+      idempotency_key: command.context.idempotency_key!,
+      request_fingerprint: command.request_fingerprint,
+      result,
+      recorded_at: command.received_at,
+    } satisfies IdempotencyRecord<WorkRecord>);
+    if (recorded.status !== "OK") return propagateFailure<WorkRecord>(recorded);
+    return result;
+  });
+}
+
+/**
+ * Reads the active Plan/Graph pointers from the authoritative INV-02 Work
+ * record. A newer draft may exist, but it does not replace this binding until
+ * INV-02 accepts and applies a later activation request.
+ */
+export async function getActivePlanGraphBinding(
+  unitOfWork: EngineUnitOfWorkPort,
+  context: RequestContext,
+  work_ref: ObjectRef,
+): Promise<OperationResult<ActivePlanGraphBinding>> {
+  const correlation_id = context.correlation_id;
+  if (
+    !isRequestContext(context) ||
+    !isObjectRef(work_ref) ||
+    work_ref.object_kind !== "WORK" ||
+    work_ref.scope_ref.scope_id !== context.scope_ref.scope_id ||
+    work_ref.scope_ref.scope_kind !== context.scope_ref.scope_kind
+  ) {
+    return rejected(
+      "VALIDATION_ERROR",
+      "Active Plan/Graph binding lookup requires an in-scope Work reference",
+      correlation_id,
+    );
+  }
+
+  return unitOfWork.execute(context, async (transaction) => {
+    const current = await transaction.repository<WorkRecord>("inv-02.works")
+      .get(context, work_ref);
+    if (current.status !== "OK" || !current.data) {
+      return propagateFailure<ActivePlanGraphBinding>(current);
+    }
+    if (!sameObjectRef(current.data.work_ref, work_ref)) {
+      return rejected(
+        "INTEGRITY_OR_UNTRUSTED_INPUT",
+        "Work repository returned a different identity than the requested Work",
+        correlation_id,
+      );
+    }
+
+    const plan = current.data.current_plan_ref;
+    const graph = current.data.current_work_graph_ref;
+    if (!plan && !graph) {
+      return createOperationResult<ActivePlanGraphBinding>({
+        status: "OK",
+        correlation_id,
+        data: {
+          work_ref: current.data.work_ref,
+          work_revision: current.data.current_revision,
+          binding_state: "UNBOUND",
+        },
+        object_version: current.object_version,
+      });
+    }
+    if (!plan || !graph ||
+        !isObjectRef(plan) || plan.object_kind !== "PLAN_REVISION" ||
+        !isObjectRef(graph) || graph.object_kind !== "WORK_GRAPH_REVISION" ||
+        plan.scope_ref.scope_id !== current.data.scope_ref.scope_id ||
+        plan.scope_ref.scope_kind !== current.data.scope_ref.scope_kind ||
+        graph.scope_ref.scope_id !== current.data.scope_ref.scope_id ||
+        graph.scope_ref.scope_kind !== current.data.scope_ref.scope_kind) {
+      return rejected(
+        "INTEGRITY_OR_UNTRUSTED_INPUT",
+        "Work contains an incomplete or invalid active Plan/Graph binding",
+        correlation_id,
+      );
+    }
+
+    const planResult = await transaction.repository<PlanRevision>("inv-03.plan-revisions")
+      .get(context, plan);
+    if (planResult.status !== "OK" || !planResult.data) {
+      return propagateFailure<ActivePlanGraphBinding>(planResult);
+    }
+    const graphResult = await transaction.repository<WorkGraphRevision>("inv-03.graph-revisions")
+      .get(context, graph);
+    if (graphResult.status !== "OK" || !graphResult.data) {
+      return propagateFailure<ActivePlanGraphBinding>(graphResult);
+    }
+    if (
+      !sameObjectRef(planResult.data.plan_revision_ref, plan) ||
+      !sameObjectRef(planResult.data.work_ref, work_ref) ||
+      !sameObjectRef(graphResult.data.graph_revision_ref, graph) ||
+      !sameObjectRef(graphResult.data.work_ref, work_ref) ||
+      !sameObjectRef(graphResult.data.source_plan_revision_ref, plan)
+    ) {
+      return rejected(
+        "INTEGRITY_OR_UNTRUSTED_INPUT",
+        "Active Work pointers do not resolve to a consistent Plan/Graph revision pair",
+        correlation_id,
+      );
+    }
+
+    return createOperationResult<ActivePlanGraphBinding>({
+      status: "OK",
+      correlation_id,
+      data: {
+        work_ref: current.data.work_ref,
+        work_revision: current.data.current_revision,
+        binding_state: "BOUND",
+        plan_revision_ref: plan,
+        graph_revision_ref: graph,
+      },
+      object_version: current.object_version,
+    });
+  });
+}
 
 /**
  * Accepts an INV-01 outcome proposal and atomically updates the Work target.

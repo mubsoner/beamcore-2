@@ -251,6 +251,7 @@ describe("INV-02 Work domain", () => {
     const work = makeWork();
     const receipt = {
       receipt_ref: ref("PLAN_GRAPH_ACTIVATION_RECEIPT", "activation-1"),
+      request_ref: ref("GRAPH_ACTIVATION_REQUEST", "activation-request-1"),
       work_ref: work.work_ref,
       plan_revision_ref: ref("PLAN_REVISION", "plan-r1"),
       graph_revision_ref: ref("WORK_GRAPH_REVISION", "graph-r1"),
@@ -266,6 +267,10 @@ describe("INV-02 Work domain", () => {
       expect(applied.value.current_work_graph_ref).toEqual(receipt.graph_revision_ref);
     }
     expect(applyPlanGraphActivation(work, { ...receipt, receipt_state: "UNKNOWN" }, 1).ok).toBe(false);
+    expect(applyPlanGraphActivation(work, {
+      ...receipt,
+      request_ref: ref("ORCHESTRATION_REQUEST", "wrong-request"),
+    }, 1).ok).toBe(false);
     expect(applyPlanGraphActivation(work, {
       ...receipt,
       work_ref: { ...work.work_ref, object_version: "2" },

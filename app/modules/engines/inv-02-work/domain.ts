@@ -163,6 +163,7 @@ export interface AcceptOutcomeProposalResult {
 
 export interface PlanGraphActivationBindingReceipt {
   receipt_ref: ObjectRef;
+  request_ref: ObjectRef;
   work_ref: ObjectRef;
   plan_revision_ref: ObjectRef;
   graph_revision_ref: ObjectRef;
@@ -457,6 +458,9 @@ export function applyPlanGraphActivation(
       !isObjectRef(receipt.receipt_ref) ||
       receipt.receipt_ref.object_kind !== "PLAN_GRAPH_ACTIVATION_RECEIPT" ||
       !sameScope(receipt.receipt_ref, work.work_ref) ||
+      !isObjectRef(receipt.request_ref) ||
+      receipt.request_ref.object_kind !== "GRAPH_ACTIVATION_REQUEST" ||
+      !sameScope(receipt.request_ref, work.work_ref) ||
       !isObjectRef(receipt.work_ref) ||
       !sameRef(receipt.work_ref, work.work_ref) ||
       !isObjectRef(receipt.plan_revision_ref) ||
