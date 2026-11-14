@@ -371,19 +371,34 @@ export function createCancellationReport(input: {
   unresolved_execution_refs: ObjectRef[];
   world_state_reconciliation_refs: ObjectRef[];
   irreversible_or_unknown_effect_refs: ObjectRef[];
+  /** True only when INV-05 has confirmed every execution is stopped or terminal. */
+  execution_states_confirmed?: boolean;
+  /** Must be the timestamp returned with the authoritative completion confirmation. */
+  completed_at?: Timestamp;
 }): OrchestrationResult<CancellationReport> {
   if (!isObjectRef(input.cancellation_ref) || input.cancellation_ref.object_kind !== "CANCELLATION_REPORT" ||
-      !isTimestamp(input.requested_at) ||
+      !isTimestamp(input.requested_at) || !isObjectRef(input.run.orchestration_ref) ||
+      !input.requested_by.principal_id.trim() ||
       ![...input.dispatches_not_started, ...input.execution_cancel_requests,
         ...input.completed_execution_refs, ...input.unresolved_execution_refs,
-        ...input.world_state_reconciliation_refs, ...input.irreversible_or_unknown_effect_refs].every(isObjectRef)) {
+        ...input.world_state_reconciliation_refs, ...input.irreversible_or_unknown_effect_refs].every(isObjectRef) ||
+      (input.completed_at !== undefined && !isTimestamp(input.completed_at))) {
     return fail("VALIDATION_ERROR", "Cancellation report contains invalid identity, timestamp or references");
   }
+  if (input.execution_states_confirmed === true && !input.completed_at) {
+    return fail("VALIDATION_ERROR", "Confirmed cancellation requires the authoritative completion timestamp");
+  }
+  if (input.execution_states_confirmed !== true && input.completed_at !== undefined) {
+    return fail("VALIDATION_ERROR", "Completion timestamp cannot be supplied without authoritative execution confirmation");
+  }
+
   const unresolved = input.unresolved_execution_refs.length > 0 ||
     input.irreversible_or_unknown_effect_refs.length > 0;
-  const active = input.execution_cancel_requests.length > 0;
+  const propagated = input.execution_cancel_requests.length > 0;
   const status: CancellationReport["status"] = unresolved ? "UNKNOWN" :
-    active ? "PROPAGATED" : "COMPLETED";
+    input.execution_states_confirmed === true ? "COMPLETED" :
+    propagated ? "PROPAGATED" : "REQUESTED";
+
   return ok({
     cancellation_ref: input.cancellation_ref,
     orchestration_ref: input.run.orchestration_ref,
@@ -396,7 +411,7 @@ export function createCancellationReport(input: {
     unresolved_execution_refs: [...input.unresolved_execution_refs],
     world_state_reconciliation_refs: [...input.world_state_reconciliation_refs],
     irreversible_or_unknown_effect_refs: [...input.irreversible_or_unknown_effect_refs],
-    ...(status === "COMPLETED" ? { completed_at: input.requested_at } : {}),
+    ...(status === "COMPLETED" ? { completed_at: input.completed_at } : {}),
   });
 }
 
