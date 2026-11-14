@@ -183,7 +183,6 @@ export async function submitPlan(
     return rejected("VALIDATION_ERROR", referenceIssue, correlation_id);
   }
 
-  return unitOfWork.execute(command.context, async (transaction) => {
   const readIdempotency = await unitOfWork.execute(command.context, async (transaction) => {
     const prior = await transaction.idempotency.get<OrchestrationRun>(
       command.context,
