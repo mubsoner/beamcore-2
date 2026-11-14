@@ -346,18 +346,23 @@ export function acceptOutcomeProposal(
   }
   if (!sameScope(work.work_ref, { object_kind: "WORK", object_id: work.work_ref.object_id, scope_ref: context.scope_ref }) ||
       !isObjectRef(proposal.proposal_ref) || proposal.proposal_ref.object_kind !== "OUTCOME_PROPOSAL" ||
-      !isObjectRef(proposal.intent_ref) || proposal.proposal_ref.scope_ref.scope_id !== work.scope_ref.scope_id ||
-      proposal.intent_ref.object_id !== work.origin_intent_ref.object_id ||
+      !sameScope(proposal.proposal_ref, work.work_ref) ||
+      !isObjectRef(proposal.intent_ref) || !sameRef(proposal.intent_ref, work.origin_intent_ref) ||
       proposal.state !== "SUBMITTED" || proposal.acceptance_criteria.length === 0) {
     return fail("VALIDATION_ERROR", "Proposal, Work and request context are not eligible for acceptance");
   }
   if (!isObjectRef(command.desired_outcome_ref) ||
       command.desired_outcome_ref.object_kind !== "WORK_DESIRED_OUTCOME_REVISION" ||
+      !sameScope(command.desired_outcome_ref, work.work_ref) ||
       !isObjectRef(command.receipt_ref) ||
       command.receipt_ref.object_kind !== "OUTCOME_ACCEPTANCE_RECEIPT" ||
+      !sameScope(command.receipt_ref, work.work_ref) ||
       !isObjectRef(command.acceptance_basis_ref) ||
+      !sameScope(command.acceptance_basis_ref, work.work_ref) ||
       !isObjectRef(command.authority.decision_ref) ||
       command.authority.decision_ref.object_kind !== "AUTHORITY_DECISION" ||
+      !sameScope(command.authority.decision_ref, work.work_ref) ||
+      (command.accepted_by !== undefined && !isPrincipalRef(command.accepted_by)) ||
       !isTimestamp(command.accepted_at)) {
     return fail("VALIDATION_ERROR", "Acceptance target, receipt, basis and authority references must be valid");
   }
