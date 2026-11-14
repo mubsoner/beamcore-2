@@ -20,6 +20,7 @@ import {
 import {
   createGraphActivationCandidateReader,
   reconcileRequestedGraphActivation,
+  requestGraphActivation,
 } from "../inv-03-planning/application";
 import { createWork, type PlanGraphActivationBindingReceipt, type WorkRecord } from "./domain";
 import type {
@@ -261,7 +262,10 @@ function makeState() {
   };
 }
 
-function makeFixture(approval_refs: ObjectRef[] = []) {
+function makeFixture(
+  approval_refs: ObjectRef[] = [],
+  options: { seed_activation_request?: boolean } = {},
+) {
   const state = makeState();
   const requestContext = context("idem-work-created");
   const created = createWork({
@@ -348,7 +352,9 @@ function makeFixture(approval_refs: ObjectRef[] = []) {
   state.seed("inv-03.plans", "plan-1", plan_record, "1");
   state.seed("inv-03.graph-revisions", "graph-r1", graph_revision, "1");
   state.seed("inv-03.work-graphs", "graph-1", graph_record, "1");
-  state.seedAppend("inv-03.graph-activation-requests", "activation-request-1", activation_request);
+  if (options.seed_activation_request !== false) {
+    state.seedAppend("inv-03.graph-activation-requests", "activation-request-1", activation_request);
+  }
 
   const command = {
     context: context("idem-bind-1"),
@@ -358,7 +364,16 @@ function makeFixture(approval_refs: ObjectRef[] = []) {
     request_fingerprint: fingerprint,
     event_ref: ref("DOMAIN_EVENT", "event-binding-1"),
   };
-  return { state, work, activation_request, command };
+  return {
+    state,
+    work,
+    plan_revision,
+    plan_record,
+    graph_revision,
+    graph_record,
+    activation_request,
+    command,
+  };
 }
 
 function activationReader(state: ReturnType<typeof makeState>) {
@@ -418,6 +433,58 @@ describe("INV-02 Plan/Graph activation application", () => {
       expect(state.idempotencyCount()).toBe(0);
     },
   );
+
+  it("runs the full INV-03 request → INV-02 activation → INV-03 reconciliation handoff", async () => {
+    const { state, work, plan_revision, graph_revision, command } = makeFixture(
+      [],
+      { seed_activation_request: false },
+    );
+
+    const requested = await requestGraphActivation(state.unitOfWork, {
+      context: context("idem-planning-activation"),
+      request_ref: command.request_ref,
+      work_ref: work.work_ref,
+      plan_revision,
+      graph_revision,
+      expected_work_revision: 1,
+      approval_refs: [],
+      requested_at: "2026-11-14T02:00:04Z",
+      expected_plan_version: "1",
+      expected_graph_version: "1",
+      request_fingerprint: fingerprint,
+      event_ref: ref("DOMAIN_EVENT", "event-planning-activation"),
+    });
+    expect(requested.status).toBe("OK");
+    expect(requested.data?.plan_revision_ref).toEqual(plan_revision.plan_revision_ref);
+    expect(requested.data?.graph_revision_ref).toEqual(graph_revision.graph_revision_ref);
+
+    const activated = await applyRequestedPlanGraphActivation(
+      state.unitOfWork,
+      activationReader(state),
+      command,
+    );
+    expect(activated.status).toBe("OK");
+    expect(activated.data?.current_revision).toBe(2);
+
+    const reconciliation = await reconcileRequestedGraphActivation(
+      state.unitOfWork,
+      activationReceiptReader(state),
+      {
+        context: context(),
+        request_ref: command.request_ref,
+        receipt_ref: command.receipt_ref,
+      },
+    );
+    expect(reconciliation.status).toBe("OK");
+    expect(reconciliation.data?.state).toBe("ACTIVATED");
+    expect(reconciliation.data?.resulting_work_revision).toBe(2);
+
+    expect(state.events.map((event) => event.event_type)).toEqual([
+      "planning.graph_activation_requested",
+      "work.plan_graph_binding_activated",
+    ]);
+    expect(state.appended("inv-02.plan-graph-activation-receipts")).toHaveLength(1);
+  });
 
   it("reads the exact immutable activation receipt by its owner-issued reference", async () => {
     const { state, command } = makeFixture();
