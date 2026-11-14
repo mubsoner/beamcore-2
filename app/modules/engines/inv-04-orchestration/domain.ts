@@ -38,6 +38,7 @@ export interface OrchestrationRun {
   state_version: RevisionNumber;
   scope_ref: RequestContext["scope_ref"];
   request_ref: ObjectRef;
+  activation_request_ref: ObjectRef;
   started_by: PrincipalRef;
   created_at: Timestamp;
   started_at?: Timestamp;
@@ -198,6 +199,7 @@ export function createOrchestrationRun(input: {
   context: RequestContext;
   orchestration_ref: ObjectRef;
   request_ref: ObjectRef;
+  activation_request_ref: ObjectRef;
   work: WorkRecord;
   graph: WorkGraphRevision;
   activation_receipt: GraphActivationReceipt;
@@ -208,7 +210,9 @@ export function createOrchestrationRun(input: {
       !isTimestamp(input.created_at) || !isObjectRef(input.orchestration_ref) ||
       input.orchestration_ref.object_kind !== "ORCHESTRATION_RUN" ||
       !isObjectRef(input.request_ref) ||
-      input.request_ref.object_kind !== "ORCHESTRATION_REQUEST") {
+      input.request_ref.object_kind !== "ORCHESTRATION_REQUEST" ||
+      !isObjectRef(input.activation_request_ref) ||
+      input.activation_request_ref.object_kind !== "GRAPH_ACTIVATION_REQUEST") {
     return fail("VALIDATION_ERROR", "Orchestration run requires trusted context, idempotency and valid run/request references");
   }
   if (!isObjectRef(work.work_ref) || work.lifecycle_state !== "READY") {
@@ -217,6 +221,7 @@ export function createOrchestrationRun(input: {
   if (work.scope_ref.scope_id !== context.scope_ref.scope_id ||
       work.scope_ref.scope_kind !== context.scope_ref.scope_kind ||
       !sameScopeRef(input.request_ref.scope_ref, work.scope_ref) ||
+      !sameScopeRef(input.activation_request_ref.scope_ref, work.scope_ref) ||
       !sameScopeRef(input.orchestration_ref.scope_ref, work.scope_ref)) {
     return fail("FORBIDDEN", "Orchestration request scope does not match Work scope");
   }
@@ -236,6 +241,7 @@ export function createOrchestrationRun(input: {
       !isObjectRef(activation_receipt.request_ref) ||
       activation_receipt.request_ref.object_kind !== "GRAPH_ACTIVATION_REQUEST" ||
       !sameScopeRef(activation_receipt.request_ref.scope_ref, work.scope_ref) ||
+      !sameRef(activation_receipt.request_ref, input.activation_request_ref) ||
       !isRevisionNumber(activation_receipt.expected_work_revision) ||
       !isRevisionNumber(activation_receipt.resulting_work_revision) ||
       !isTimestamp(activation_receipt.received_at) ||
@@ -244,7 +250,8 @@ export function createOrchestrationRun(input: {
       !sameRef(activation_receipt.plan_revision_ref, graph.source_plan_revision_ref) ||
       !sameRef(activation_receipt.graph_revision_ref, graph.graph_revision_ref) ||
       activation_receipt.resulting_work_revision !== work.current_revision ||
-      activation_receipt.resulting_work_revision !== activation_receipt.expected_work_revision + 1) {
+      activation_receipt.resulting_work_revision !== activation_receipt.expected_work_revision + 1 ||
+      Date.parse(input.created_at) < Date.parse(activation_receipt.received_at)) {
     return fail("VALIDATION_ERROR", "Activation receipt does not confirm the exact current Work/Plan/Graph binding");
   }
   return ok({
@@ -258,6 +265,7 @@ export function createOrchestrationRun(input: {
     state_version: 1,
     scope_ref: work.scope_ref,
     request_ref: input.request_ref,
+    activation_request_ref: input.activation_request_ref,
     started_by: context.actor_ref,
     created_at: input.created_at,
     updated_at: input.created_at,
@@ -315,6 +323,7 @@ export function createNodeCoordination(input: {
       !isObjectRef(input.node_coordination_ref) ||
       input.node_coordination_ref.object_kind !== "NODE_COORDINATION" ||
       !isTimestamp(input.created_at) ||
+      !sameScopeRef(input.node_coordination_ref.scope_ref, input.run.scope_ref) ||
       !sameRef(input.run.graph_revision_ref, input.graph.graph_revision_ref) ||
       !sameRef(input.run.work_ref, input.graph.work_ref) ||
       !sameRef(input.node.graph_ref, input.graph.graph_ref) ||

@@ -113,6 +113,7 @@ const makeRun = (fixtures = makeFixtures()): OrchestrationRun => {
     context,
     orchestration_ref: ref("ORCHESTRATION_RUN", "run-1"),
     request_ref: ref("ORCHESTRATION_REQUEST", "request-1"),
+    activation_request_ref: fixtures.receipt.request_ref,
     work: fixtures.work,
     graph: fixtures.graph,
     activation_receipt: fixtures.receipt,
@@ -166,6 +167,7 @@ describe("INV-04 orchestration domain", () => {
     expect(createOrchestrationRun({
       context, orchestration_ref: ref("ORCHESTRATION_RUN", "run-unknown"),
       request_ref: ref("ORCHESTRATION_REQUEST", "request-unknown"),
+      activation_request_ref: fixtures.receipt.request_ref,
       work: fixtures.work, graph: fixtures.graph,
       activation_receipt: { ...fixtures.receipt, receipt_state: "UNKNOWN" },
       created_at: "2026-11-13T03:00:06Z",
@@ -173,6 +175,7 @@ describe("INV-04 orchestration domain", () => {
     expect(createOrchestrationRun({
       context, orchestration_ref: ref("ORCHESTRATION_RUN", "run-mismatch"),
       request_ref: ref("ORCHESTRATION_REQUEST", "request-mismatch"),
+      activation_request_ref: fixtures.receipt.request_ref,
       work: { ...fixtures.work, current_work_graph_ref: ref("WORK_GRAPH_REVISION", "other") },
       graph: fixtures.graph, activation_receipt: fixtures.receipt,
       created_at: "2026-11-13T03:00:06Z",
@@ -185,6 +188,7 @@ describe("INV-04 orchestration domain", () => {
       context,
       orchestration_ref: ref("ORCHESTRATION_RUN", "run-ref-check"),
       request_ref: ref("ORCHESTRATION_REQUEST", "request-ref-check"),
+      activation_request_ref: fixtures.receipt.request_ref,
       work: fixtures.work,
       graph: fixtures.graph,
       activation_receipt: fixtures.receipt,
@@ -211,6 +215,16 @@ describe("INV-04 orchestration domain", () => {
           object_kind: "ORCHESTRATION_REQUEST",
         },
       },
+    }).ok).toBe(false);
+
+    expect(createOrchestrationRun({
+      ...base,
+      activation_request_ref: ref("GRAPH_ACTIVATION_REQUEST", "different-activation-request"),
+    }).ok).toBe(false);
+
+    expect(createOrchestrationRun({
+      ...base,
+      created_at: "2026-11-13T03:00:04Z",
     }).ok).toBe(false);
 
     expect(createOrchestrationRun({
@@ -253,6 +267,14 @@ describe("INV-04 orchestration domain", () => {
       context, run, graph: fixtures.graph,
       node: { ...fixtures.nodeA, node_ref: ref("GRAPH_NODE", "not-in-graph") },
       node_coordination_ref: ref("NODE_COORDINATION", "coord-invalid"),
+      created_at: "2026-11-13T03:00:08Z",
+    }).ok).toBe(false);
+    expect(createNodeCoordination({
+      context, run, graph: fixtures.graph, node: fixtures.nodeA,
+      node_coordination_ref: {
+        ...ref("NODE_COORDINATION", "coord-cross-scope"),
+        scope_ref: { scope_id: "other-scope", scope_kind: "WORK" },
+      },
       created_at: "2026-11-13T03:00:08Z",
     }).ok).toBe(false);
   });

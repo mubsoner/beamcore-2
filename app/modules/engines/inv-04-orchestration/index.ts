@@ -2,3 +2,6 @@ import type {Ref,Result} from "../shared"; import {ok,err,problem} from "../shar
 
 /** Canonical provider-neutral domain implementation; legacy prototype exports remain temporarily for migration compatibility. */
 export * as CanonicalDomain from "./domain";
+
+/** Canonical transactional orchestration use cases. */
+export * as Application from "./application";
