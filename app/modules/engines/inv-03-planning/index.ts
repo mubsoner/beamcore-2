@@ -2,3 +2,6 @@ import {Ref,Result,ok,err,problem} from "../shared"; export interface PlanRevisi
 
 /** Canonical provider-neutral domain implementation; legacy prototype exports remain temporarily for migration compatibility. */
 export * as CanonicalDomain from "./domain";
+
+/** Canonical transactional Planning use cases. */
+export * as Application from "./application";
