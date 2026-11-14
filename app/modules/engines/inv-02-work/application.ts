@@ -170,30 +170,6 @@ export async function submitWork(
     created_at: work.created_at,
   };
 
-  const priorResult = await unitOfWork.execute(command.context, (transaction) =>
-    transaction.idempotency.get<WorkRecord>(command.context, command.context.idempotency_key!),
-  );
-  if (priorResult.status !== "OK" || priorResult.data === undefined) {
-    return propagateFailure<WorkRecord>(priorResult);
-  }
-  if (priorResult.data) {
-    if (priorResult.data.request_fingerprint !== command.request_fingerprint) {
-      return rejected(
-        "IDEMPOTENCY_CONFLICT",
-        "Idempotency key was already used for a different Plan/Graph activation",
-        correlation_id,
-      );
-    }
-    return priorResult.data.result;
-  }
-
-  // INV-03 performs this read inside its own transaction. Do not pass INV-02's
-  // transaction across the engine boundary.
-  const candidateResult = await activationReader.readCandidate(command.context, command.request_ref);
-  if (candidateResult.status !== "OK" || !candidateResult.data) {
-    return propagateFailure<WorkRecord>(candidateResult);
-  }
-
   return unitOfWork.execute(command.context, async (transaction) => {
     const prior = await transaction.idempotency.get<WorkRecord>(
       command.context,
@@ -444,6 +420,30 @@ export async function applyRequestedPlanGraphActivation(
       "Activation requires in-scope request and receipt references and a valid receipt timestamp",
       correlation_id,
     );
+  }
+
+  const priorResult = await unitOfWork.execute(command.context, (transaction) =>
+    transaction.idempotency.get<WorkRecord>(command.context, command.context.idempotency_key!),
+  );
+  if (priorResult.status !== "OK" || priorResult.data === undefined) {
+    return propagateFailure<WorkRecord>(priorResult);
+  }
+  if (priorResult.data) {
+    if (priorResult.data.request_fingerprint !== command.request_fingerprint) {
+      return rejected(
+        "IDEMPOTENCY_CONFLICT",
+        "Idempotency key was already used for a different Plan/Graph activation",
+        correlation_id,
+      );
+    }
+    return priorResult.data.result;
+  }
+
+  // INV-03 reads through its own owner-managed Unit of Work. The caller's
+  // transaction never crosses the engine boundary.
+  const candidateResult = await activationReader.readCandidate(command.context, command.request_ref);
+  if (candidateResult.status !== "OK" || !candidateResult.data) {
+    return propagateFailure<WorkRecord>(candidateResult);
   }
 
   return unitOfWork.execute(command.context, async (transaction) => {
@@ -697,8 +697,6 @@ export async function getActivePlanGraphBinding(
     );
   }
 
-  // Read the Work owner first. INV-03 resolves its referenced immutable
-  // revisions through its own owner boundary and its own transaction.
   const current = await unitOfWork.execute(context, (transaction) =>
     transaction.repository<WorkRecord>("inv-02.works").get(context, work_ref),
   );
@@ -776,5 +774,215 @@ export async function getActivePlanGraphBinding(
       graph_revision_ref: graph,
     },
     object_version: current.object_version,
+  });
+}
+/**
+ * Accepts an INV-01 outcome proposal and atomically updates the Work target.
+ * When replacing a target, the old target is first marked SUPERSEDED in the
+ * same unit of work; the new target, Work revision, receipt, event and
+ * idempotency result commit together.
+ */
+export async function acceptWorkOutcome(
+  unitOfWork: EngineUnitOfWorkPort,
+  command: AcceptWorkOutcomeApplicationCommand,
+): Promise<OperationResult<WorkRecord>> {
+  const correlation_id = command.context.correlation_id;
+  const envelopeIssue = validateCommandEnvelope(
+    command.context,
+    command.request_fingerprint,
+    command.event_ref,
+  );
+  if (envelopeIssue) {
+    return rejected("VALIDATION_ERROR", envelopeIssue, correlation_id);
+  }
+  if (
+    !isObjectRef(command.work_ref) ||
+    command.work_ref.object_kind !== "WORK" ||
+    command.work_ref.scope_ref.scope_id !== command.context.scope_ref.scope_id ||
+    command.work_ref.scope_ref.scope_kind !== command.context.scope_ref.scope_kind
+  ) {
+    return rejected("VALIDATION_ERROR", "work_ref must identify a WORK object in the request scope", correlation_id);
+  }
+
+  return unitOfWork.execute(command.context, async (transaction) => {
+    const prior = await transaction.idempotency.get<WorkRecord>(
+      command.context,
+      command.context.idempotency_key!,
+    );
+    if (prior.status !== "OK") return propagateFailure<WorkRecord>(prior);
+    if (prior.data) {
+      if (prior.data.request_fingerprint !== command.request_fingerprint) {
+        return rejected(
+          "IDEMPOTENCY_CONFLICT",
+          "Idempotency key was already used for a different outcome acceptance",
+          correlation_id,
+        );
+      }
+      return prior.data.result;
+    }
+
+    const current = await transaction.repository<WorkRecord>("inv-02.works")
+      .get(command.context, command.work_ref);
+    if (current.status !== "OK" || !current.data) {
+      return propagateFailure<WorkRecord>(current);
+    }
+    if (
+      current.data.work_ref.object_kind !== command.work_ref.object_kind ||
+      current.data.work_ref.object_id !== command.work_ref.object_id ||
+      current.data.work_ref.scope_ref.scope_id !== command.work_ref.scope_ref.scope_id ||
+      current.data.work_ref.scope_ref.scope_kind !== command.work_ref.scope_ref.scope_kind
+    ) {
+      return rejected("INTEGRITY_OR_UNTRUSTED_INPUT", "Repository returned a Work object that does not match the requested identity", correlation_id);
+    }
+
+    const accepted = acceptOutcomeProposalDomain({
+      context: command.context,
+      work: current.data,
+      proposal: command.proposal,
+      desired_outcome_ref: command.desired_outcome_ref,
+      receipt_ref: command.receipt_ref,
+      acceptance_basis: command.acceptance_basis,
+      acceptance_basis_ref: command.acceptance_basis_ref,
+      accepted_by: command.accepted_by,
+      accepted_at: command.accepted_at,
+      expected_work_version: command.expected_work_version,
+      authority: command.authority,
+      has_material_unresolved_unknowns: command.has_material_unresolved_unknowns,
+      policy_interpretation_permitted: command.policy_interpretation_permitted,
+      current_target_revision: command.current_target_revision,
+    });
+    if (!accepted.ok) {
+      return rejected(
+        mapDomainCode(accepted.issues[0].code),
+        accepted.issues.map((issue) => issue.safe_message).join("; "),
+        correlation_id,
+      );
+    }
+
+    const outcomeRepository = transaction.repository<WorkDesiredOutcomeRevision>("inv-02.desired-outcomes");
+    if (current.data.current_desired_outcome_ref) {
+      const existing = await outcomeRepository.get(
+        command.context,
+        current.data.current_desired_outcome_ref,
+      );
+      if (existing.status !== "OK" || !existing.data) {
+        return propagateFailure<WorkRecord>(existing);
+      }
+      const oldTarget = existing.data;
+      if (
+        oldTarget.desired_outcome_ref.object_kind !== current.data.current_desired_outcome_ref.object_kind ||
+        oldTarget.desired_outcome_ref.object_id !== current.data.current_desired_outcome_ref.object_id ||
+        oldTarget.desired_outcome_ref.object_version !== current.data.current_desired_outcome_ref.object_version ||
+        oldTarget.desired_outcome_ref.scope_ref.scope_id !== current.data.current_desired_outcome_ref.scope_ref.scope_id ||
+        oldTarget.desired_outcome_ref.scope_ref.scope_kind !== current.data.current_desired_outcome_ref.scope_ref.scope_kind ||
+        oldTarget.state !== "ACTIVE" ||
+        oldTarget.work_ref.object_kind !== current.data.work_ref.object_kind ||
+        oldTarget.work_ref.object_id !== current.data.work_ref.object_id ||
+        oldTarget.work_ref.scope_ref.scope_id !== current.data.work_ref.scope_ref.scope_id ||
+        oldTarget.work_ref.scope_ref.scope_kind !== current.data.work_ref.scope_ref.scope_kind
+      ) {
+        return rejected("INTEGRITY_OR_UNTRUSTED_INPUT", "Current Desired Outcome pointer does not match its active stored revision", correlation_id);
+      }
+      if (command.current_target_revision !== oldTarget.revision_number + 1) {
+        return rejected("VERSION_CONFLICT", "Desired Outcome revision changed; reload the current target before replacing it", correlation_id);
+      }
+      if (accepted.value.desired_outcome.desired_outcome_ref.object_id === oldTarget.desired_outcome_ref.object_id) {
+        return rejected("VALIDATION_ERROR", "A replacement must create a new Desired Outcome revision reference", correlation_id);
+      }
+      const superseded = await outcomeRepository.update(
+        command.context,
+        oldTarget.desired_outcome_ref,
+        oldTarget.desired_outcome_ref.object_version ?? String(oldTarget.revision_number),
+        { ...oldTarget, state: "SUPERSEDED" },
+      );
+      if (superseded.status !== "OK" || superseded.data?.state !== "SUPERSEDED") {
+        return superseded.status !== "OK"
+          ? propagateFailure<WorkRecord>(superseded)
+          : rejected("INTEGRITY_OR_UNTRUSTED_INPUT", "Repository did not confirm Desired Outcome supersession", correlation_id);
+      }
+    }
+
+    const savedTarget = await outcomeRepository.create(
+      command.context,
+      accepted.value.desired_outcome.desired_outcome_ref,
+      accepted.value.desired_outcome,
+    );
+    if (savedTarget.status !== "OK" || !savedTarget.data) {
+      return propagateFailure<WorkRecord>(savedTarget);
+    }
+    if (
+      savedTarget.data.desired_outcome_ref.object_id !== accepted.value.desired_outcome.desired_outcome_ref.object_id ||
+      savedTarget.data.revision_number !== accepted.value.desired_outcome.revision_number ||
+      savedTarget.data.state !== "ACTIVE"
+    ) {
+      return rejected("INTEGRITY_OR_UNTRUSTED_INPUT", "Repository returned a different Desired Outcome revision than the one accepted", correlation_id);
+    }
+
+    const updated = await transaction.repository<WorkRecord>("inv-02.works")
+      .update(
+        command.context,
+        command.work_ref,
+        String(command.expected_work_version),
+        accepted.value.work,
+      );
+    if (updated.status !== "OK" || !updated.data) {
+      return propagateFailure<WorkRecord>(updated);
+    }
+    if (
+      updated.data.work_ref.object_id !== current.data.work_ref.object_id ||
+      updated.data.current_revision !== accepted.value.work.current_revision ||
+      updated.data.current_desired_outcome_ref?.object_id !== accepted.value.desired_outcome.desired_outcome_ref.object_id
+    ) {
+      return rejected("INTEGRITY_OR_UNTRUSTED_INPUT", "Repository did not confirm the accepted Work revision and Desired Outcome pointer", correlation_id);
+    }
+
+    const revisionResult = await transaction.appendOnly<WorkRevision>("inv-02.work-revisions")
+      .append(command.context, accepted.value.revision);
+    if (revisionResult.status !== "OK") {
+      return propagateFailure<WorkRecord>(revisionResult);
+    }
+
+    const receiptResult = await transaction.appendOnly<AcceptOutcomeProposalResult["receipt"]>(
+      "inv-02.outcome-acceptance-receipts",
+    ).append(command.context, accepted.value.receipt);
+    if (receiptResult.status !== "OK") {
+      return propagateFailure<WorkRecord>(receiptResult);
+    }
+
+    const event: DomainEventEnvelope = {
+      event_id: command.event_ref.object_id,
+      event_type: "work.outcome_accepted",
+      schema_version: 1,
+      occurred_at: command.accepted_at,
+      producer_engine: "INV-02",
+      object_ref: updated.data.work_ref,
+      scope_ref: updated.data.scope_ref,
+      correlation_id,
+      actor_ref: command.context.actor_ref,
+      payload: {
+        desired_outcome_ref: accepted.value.desired_outcome.desired_outcome_ref,
+        acceptance_receipt_ref: accepted.value.receipt.receipt_ref,
+        source_proposal_ref: accepted.value.receipt.proposal_ref,
+        acceptance_basis: accepted.value.receipt.acceptance_basis,
+        work_revision_ref: accepted.value.revision.revision_ref,
+      },
+    };
+    const emitted = await transaction.outbox.append(command.context, event);
+    if (emitted.status !== "OK") return propagateFailure<WorkRecord>(emitted);
+
+    const result = createOperationResult({
+      status: "OK",
+      correlation_id,
+      data: updated.data,
+      object_version: String(updated.data.current_revision),
+    });
+    const recorded = await transaction.idempotency.record(command.context, {
+      idempotency_key: command.context.idempotency_key!,
+      request_fingerprint: command.request_fingerprint,
+      result,
+      recorded_at: command.accepted_at,
+    });
+    if (recorded.status !== "OK") return propagateFailure<WorkRecord>(recorded);
+    return result;
   });
 }
