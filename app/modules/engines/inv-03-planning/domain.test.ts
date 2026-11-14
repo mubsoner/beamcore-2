@@ -311,6 +311,36 @@ describe("INV-03 planning and graph domain", () => {
     expect(unknown.ok && unknown.value).toBe("RECONCILE");
   });
 
+  it("fails closed on malformed validation status and finding severity", () => {
+    const graph = makeGraph();
+    const validation = validateGraphRevision({
+      revision: graph,
+      validation_ref: ref("GRAPH_VALIDATION_RESULT", "validation-malformed"),
+      validated_at: "2026-11-13T03:00:03Z",
+      validator_version: "1.0.0",
+    });
+    expect(validation.ok).toBe(true);
+    if (!validation.ok) return;
+
+    const malformedStatus = {
+      ...validation.value,
+      status: "APPROVED",
+    } as unknown as typeof validation.value;
+    expect(applyGraphValidation(graph, malformedStatus).ok).toBe(false);
+
+    const malformedSeverity = {
+      ...validation.value,
+      findings: [{
+        finding_ref: ref("GRAPH_VALIDATION_FINDING", "finding-malformed"),
+        code: "UNRECOGNISED_FINDING",
+        severity: "FATAL",
+        summary: "Unknown severity must not be trusted",
+        affected_refs: [],
+      }],
+    } as unknown as typeof validation.value;
+    expect(applyGraphValidation(graph, malformedSeverity).ok).toBe(false);
+  });
+
   it("rejects stale or mismatched activation receipts", () => {
     const request = {
       request_ref: ref("GRAPH_ACTIVATION_REQUEST", "request-1"),
@@ -334,5 +364,17 @@ describe("INV-03 planning and graph domain", () => {
       received_at: "2026-11-13T03:00:05Z",
     };
     expect(reconcileGraphActivation(request, receipt).ok).toBe(false);
+    expect(reconcileGraphActivation(request, {
+      ...receipt,
+      graph_revision_ref: { ...request.graph_revision_ref, object_version: "2" },
+    }).ok).toBe(false);
+    expect(reconcileGraphActivation(request, {
+      ...receipt,
+      receipt_state: "UNRECOGNISED" as "ACCEPTED",
+    }).ok).toBe(false);
+    expect(reconcileGraphActivation(request, {
+      ...receipt,
+      received_at: "2026-11-13T03:00:03Z",
+    }).ok).toBe(false);
   });
 });
