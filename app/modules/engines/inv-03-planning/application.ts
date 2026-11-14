@@ -269,10 +269,14 @@ export async function reconcileRequestedGraphActivation(
         ...stored.data.work_ref,
         scope_ref: context.scope_ref,
       }) ||
+      !isObjectRef(stored.data.plan_revision_ref) ||
+      stored.data.plan_revision_ref.object_kind !== "PLAN_REVISION" ||
       !sameRef(stored.data.plan_revision_ref, {
         ...stored.data.plan_revision_ref,
         scope_ref: context.scope_ref,
       }) ||
+      !isObjectRef(stored.data.graph_revision_ref) ||
+      stored.data.graph_revision_ref.object_kind !== "WORK_GRAPH_REVISION" ||
       !sameRef(stored.data.graph_revision_ref, {
         ...stored.data.graph_revision_ref,
         scope_ref: context.scope_ref,

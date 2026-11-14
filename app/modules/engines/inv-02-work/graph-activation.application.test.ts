@@ -474,6 +474,26 @@ describe("INV-02 Plan/Graph activation application", () => {
     expect(result.data?.resulting_work_revision).toBe(2);
   });
 
+  it("fails closed on a malformed persisted Plan/Graph activation reference", async () => {
+    const { state, activation_request, command } = makeFixture();
+    state.seedAppend("inv-03.graph-activation-requests", "activation-request-1", {
+      ...activation_request,
+      plan_revision_ref: undefined,
+    } as unknown as GraphActivationRequest);
+
+    const result = await reconcileRequestedGraphActivation(
+      state.unitOfWork,
+      activationReceiptReader(state),
+      {
+        context: context(),
+        request_ref: command.request_ref,
+        receipt_ref: command.receipt_ref,
+      },
+    );
+    expect(result.status).toBe("REJECTED");
+    expect(result.errors[0]?.code).toBe("INTEGRITY_OR_UNTRUSTED_INPUT");
+  });
+
   it("keeps activation UNKNOWN when the authoritative receipt is not yet visible", async () => {
     const { state, command } = makeFixture();
 
