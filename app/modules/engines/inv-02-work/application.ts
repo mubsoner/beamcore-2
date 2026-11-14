@@ -64,7 +64,7 @@ function rejected<T>(
   });
 }
 
-function propagateFailure<T, U>(source: OperationResult<U>): OperationResult<T> {
+function propagateFailure<T>(source: OperationResult<unknown>): OperationResult<T> {
   const isUnexpectedSuccess = source.status === "OK";
   return createOperationResult<T>({
     status: isUnexpectedSuccess ? "UNKNOWN" : source.status,
