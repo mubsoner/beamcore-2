@@ -411,6 +411,20 @@ export function createGraphRevision(input: {
       return fail("VALIDATION_ERROR", "Graph contains an invalid dependency edge");
     }
   }
+  const nodeAnnotations = [
+    ...(input.affected_node_refs ?? []),
+    ...(input.preserved_node_refs ?? []),
+    ...(input.invalidated_node_refs ?? []),
+    ...(input.revalidation_required_node_refs ?? []),
+  ];
+  if (nodeAnnotations.some((ref) =>
+    !isObjectRef(ref) ||
+    ref.object_kind !== "GRAPH_NODE" ||
+    !sameScope(ref, input.work_ref) ||
+    !nodes.some((node) => sameRef(node.node_ref, ref))
+  )) {
+    return fail("VALIDATION_ERROR", "Graph change annotations must reference exact nodes in this graph revision");
+  }
   return ok({
     graph_revision_ref: input.graph_revision_ref,
     graph_ref: input.graph_ref,
@@ -442,6 +456,7 @@ export function validateGraphRevision(input: {
 }): PlanningResult<GraphValidationResult> {
   const { revision } = input;
   if (!isObjectRef(input.validation_ref) || input.validation_ref.object_kind !== "GRAPH_VALIDATION_RESULT" ||
+      !sameScope(input.validation_ref, revision.work_ref) ||
       !isTimestamp(input.validated_at) || !input.validator_version.trim()) {
     return fail("VALIDATION_ERROR", "Graph validation requires a valid result reference, timestamp and validator version");
   }
@@ -494,6 +509,11 @@ export function validateGraphRevision(input: {
     const to = nodeById.get(edge.to_node_ref.object_id);
     if (!from || !to) {
       add("MISSING_EDGE_ENDPOINT", "ERROR", "Dependency edge must reference two nodes in this graph revision", [edge.edge_ref]);
+      continue;
+    }
+    if (!sameRef(edge.from_node_ref, from.node_ref) ||
+        !sameRef(edge.to_node_ref, to.node_ref)) {
+      add("EDGE_ENDPOINT_VERSION_MISMATCH", "ERROR", "Dependency edge must pin the exact node reference versions in this graph", [edge.edge_ref]);
       continue;
     }
     if (from.node_ref.object_id === to.node_ref.object_id) {
