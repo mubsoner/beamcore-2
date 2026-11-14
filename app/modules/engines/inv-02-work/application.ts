@@ -90,6 +90,9 @@ function validateCommandEnvelope(
   if (!context.idempotency_key?.trim()) {
     return "Work mutation requires an idempotency key";
   }
+  if (!isObjectRef(event_ref) || event_ref.object_kind !== "DOMAIN_EVENT") {
+    return "Work mutation requires a valid DOMAIN_EVENT reference";
+  }
   if (
     event_ref.scope_ref.scope_id !== context.scope_ref.scope_id ||
     event_ref.scope_ref.scope_kind !== context.scope_ref.scope_kind
@@ -98,9 +101,6 @@ function validateCommandEnvelope(
   }
   if (!/^[a-f0-9]{64}$/i.test(request_fingerprint)) {
     return "request_fingerprint must be a SHA-256 hex digest";
-  }
-  if (!isObjectRef(event_ref) || event_ref.object_kind !== "DOMAIN_EVENT") {
-    return "Work mutation requires a valid DOMAIN_EVENT reference";
   }
   return undefined;
 }
