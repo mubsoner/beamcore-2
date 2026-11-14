@@ -64,7 +64,7 @@ function makeUnitOfWork() {
             data: value,
             object_version: String(value.current_revision),
           })
-        : createOperationResult({
+        : createOperationResult<WorkRecord>({
             status: "REJECTED",
             correlation_id: context.correlation_id,
             errors: [createOperationError("NOT_FOUND_OR_NOT_VISIBLE", "Work was not found")],
@@ -89,7 +89,7 @@ function makeUnitOfWork() {
     update: async (_context, objectRef, expectedVersion, value) => {
       const current = works.get(objectRef.object_id);
       if (!current) {
-        return createOperationResult({
+        return createOperationResult<WorkRecord>({
           status: "REJECTED",
           correlation_id: context.correlation_id,
           errors: [createOperationError("NOT_FOUND_OR_NOT_VISIBLE", "Work was not found")],
@@ -122,7 +122,7 @@ function makeUnitOfWork() {
       });
     },
     get: async () =>
-      createOperationResult({
+      createOperationResult<WorkRevision>({
         status: "REJECTED",
         correlation_id: context.correlation_id,
         errors: [createOperationError("NOT_FOUND_OR_NOT_VISIBLE", "Revision was not found")],
