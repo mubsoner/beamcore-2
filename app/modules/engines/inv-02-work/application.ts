@@ -442,7 +442,8 @@ export async function applyRequestedPlanGraphActivation(
   // INV-03 reads through its own owner-managed Unit of Work. The caller's
   // transaction never crosses the engine boundary.
   const candidateResult = await activationReader.readCandidate(command.context, command.request_ref);
-  if (candidateResult.status !== "OK" || !candidateResult.data) {
+  const candidate = candidateResult.data;
+  if (candidateResult.status !== "OK" || !candidate) {
     return propagateFailure<WorkRecord>(candidateResult);
   }
 
@@ -463,7 +464,7 @@ export async function applyRequestedPlanGraphActivation(
       return prior.data.result;
     }
 
-    const { request, plan, plan_record: planRecord, graph, graph_record: graphRecord } = candidateResult.data;
+    const { request, plan, plan_record: planRecord, graph, graph_record: graphRecord } = candidate;
     if (
       !sameObjectRef(request.request_ref, command.request_ref) ||
       !isObjectRef(request.work_ref) ||
