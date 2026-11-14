@@ -40,6 +40,7 @@ export type SubmitGraphRevisionCommand =
   Parameters<typeof createGraphRevision>[0] & {
     request_fingerprint: string;
     event_ref: ObjectRef;
+    expected_plan_version: string;
     expected_graph_version?: string;
   };
 
@@ -91,6 +92,19 @@ function rejected<T>(
     status: "REJECTED",
     correlation_id,
     errors: [createOperationError(code, safe_message, false)],
+  });
+}
+
+function propagateFailure<T, U>(source: OperationResult<U>): OperationResult<T> {
+  const isUnexpectedSuccess = source.status === "OK";
+  return createOperationResult<T>({
+    status: isUnexpectedSuccess ? "UNKNOWN" : source.status,
+    correlation_id: source.correlation_id,
+    errors: isUnexpectedSuccess
+      ? [createOperationError("INTERNAL_ERROR", "A dependency returned success without the required record", false)]
+      : source.errors,
+    warnings: source.warnings,
+    ...(source.object_version !== undefined ? { object_version: source.object_version } : {}),
   });
 }
 
@@ -200,7 +214,7 @@ export async function submitPlanRevision(
       command.context,
       command.context.idempotency_key!,
     );
-    if (priorResult.status !== "OK") return priorResult as OperationResult<PlanRevision>;
+    if (priorResult.status !== "OK") return propagateFailure<PlanRevision>(priorResult);
     if (priorResult.data) {
       if (priorResult.data.request_fingerprint !== command.request_fingerprint) {
         return rejected("IDEMPOTENCY_CONFLICT", "Idempotency key was reused for a different Plan revision", correlation_id);
@@ -224,7 +238,7 @@ export async function submitPlanRevision(
       };
       const recordCreated = await plans.create(command.context, revision.plan_ref, nextPlanRecord);
       if (recordCreated.status !== "OK" || !recordCreated.data) {
-        return recordCreated as OperationResult<PlanRevision>;
+        return propagateFailure<PlanRevision>(recordCreated);
       }
       if (!recordCreated.object_version) {
         return rejected("INTERNAL_ERROR", "Plan repository did not return its initial storage version", correlation_id);
@@ -236,7 +250,7 @@ export async function submitPlanRevision(
       }
       const currentPlan = await plans.get(command.context, revision.plan_ref);
       if (currentPlan.status !== "OK" || !currentPlan.data) {
-        return currentPlan as OperationResult<PlanRevision>;
+        return propagateFailure<PlanRevision>(currentPlan);
       }
       if (
         !sameRef(currentPlan.data.plan_ref, revision.plan_ref) ||
@@ -247,7 +261,7 @@ export async function submitPlanRevision(
       }
       const priorRevision = await revisions.get(command.context, revision.prior_revision_ref);
       if (priorRevision.status !== "OK" || !priorRevision.data) {
-        return priorRevision as OperationResult<PlanRevision>;
+        return propagateFailure<PlanRevision>(priorRevision);
       }
       const replaceableStates: readonly PlanRevisionState[] = [
         "ACCEPTED",
@@ -276,7 +290,7 @@ export async function submitPlanRevision(
           priorRevision.object_version,
           superseded.value,
         );
-        if (savedPrior.status !== "OK") return savedPrior as OperationResult<PlanRevision>;
+        if (savedPrior.status !== "OK") return propagateFailure<PlanRevision>(savedPrior);
       }
 
       nextPlanRecord = {
@@ -290,7 +304,7 @@ export async function submitPlanRevision(
         nextPlanRecord,
       );
       if (savedPlan.status !== "OK" || !savedPlan.data) {
-        return savedPlan as OperationResult<PlanRevision>;
+        return propagateFailure<PlanRevision>(savedPlan);
       }
       if (!savedPlan.object_version) {
         return rejected("INTERNAL_ERROR", "Plan repository did not return its updated storage version", correlation_id);
@@ -304,7 +318,7 @@ export async function submitPlanRevision(
       revision,
     );
     if (persisted.status !== "OK" || !persisted.data) {
-      return persisted as OperationResult<PlanRevision>;
+      return propagateFailure<PlanRevision>(persisted);
     }
 
     const event = makeEvent(
@@ -323,7 +337,7 @@ export async function submitPlanRevision(
       },
     );
     const emitted = await transaction.outbox.append(command.context, event);
-    if (emitted.status !== "OK") return emitted as OperationResult<PlanRevision>;
+    if (emitted.status !== "OK") return propagateFailure<PlanRevision>(emitted);
 
     const result = createOperationResult({
       status: "OK",
@@ -337,7 +351,7 @@ export async function submitPlanRevision(
       result,
       recorded_at: revision.created_at,
     } satisfies IdempotencyRecord<PlanRevision>);
-    if (recorded.status !== "OK") return recorded as OperationResult<PlanRevision>;
+    if (recorded.status !== "OK") return propagateFailure<PlanRevision>(recorded);
     return result;
   });
 }
@@ -380,7 +394,7 @@ export async function reviewPlanRevision(
       command.context,
       command.context.idempotency_key!,
     );
-    if (priorResult.status !== "OK") return priorResult as OperationResult<PlanRevision>;
+    if (priorResult.status !== "OK") return propagateFailure<PlanRevision>(priorResult);
     if (priorResult.data) {
       if (priorResult.data.request_fingerprint !== command.request_fingerprint) {
         return rejected("IDEMPOTENCY_CONFLICT", "Idempotency key was reused for a different Plan review decision", correlation_id);
@@ -391,7 +405,7 @@ export async function reviewPlanRevision(
     const revisions = transaction.repository<PlanRevision>("inv-03.plan-revisions");
     const current = await revisions.get(command.context, command.plan_revision_ref);
     if (current.status !== "OK" || !current.data) {
-      return current as OperationResult<PlanRevision>;
+      return propagateFailure<PlanRevision>(current);
     }
     if (!sameRef(current.data.plan_revision_ref, command.plan_revision_ref)) {
       return rejected("INTEGRITY_OR_UNTRUSTED_INPUT", "Repository returned a different Plan revision than requested", correlation_id);
@@ -426,7 +440,7 @@ export async function reviewPlanRevision(
       transitioned.value,
     );
     if (updated.status !== "OK" || !updated.data) {
-      return updated as OperationResult<PlanRevision>;
+      return propagateFailure<PlanRevision>(updated);
     }
     if (!updated.object_version) {
       return rejected("INTERNAL_ERROR", "Plan revision repository did not return its updated storage version", correlation_id);
@@ -448,7 +462,7 @@ export async function reviewPlanRevision(
       },
     );
     const emitted = await transaction.outbox.append(command.context, event);
-    if (emitted.status !== "OK") return emitted as OperationResult<PlanRevision>;
+    if (emitted.status !== "OK") return propagateFailure<PlanRevision>(emitted);
 
     const result = createOperationResult({
       status: "OK",
@@ -462,7 +476,7 @@ export async function reviewPlanRevision(
       result,
       recorded_at: command.occurred_at,
     });
-    if (recorded.status !== "OK") return recorded as OperationResult<PlanRevision>;
+    if (recorded.status !== "OK") return propagateFailure<PlanRevision>(recorded);
     return result;
   });
 }
@@ -503,7 +517,7 @@ export async function submitGraphRevision(
       command.context,
       command.context.idempotency_key!,
     );
-    if (priorResult.status !== "OK") return priorResult as OperationResult<WorkGraphRevision>;
+    if (priorResult.status !== "OK") return propagateFailure<WorkGraphRevision>(priorResult);
     if (priorResult.data) {
       if (priorResult.data.request_fingerprint !== command.request_fingerprint) {
         return rejected("IDEMPOTENCY_CONFLICT", "Idempotency key was reused for a different Graph revision", correlation_id);
@@ -514,7 +528,7 @@ export async function submitGraphRevision(
     const plan = await transaction.repository<PlanRevision>("inv-03.plan-revisions")
       .get(command.context, revision.source_plan_revision_ref);
     if (plan.status !== "OK" || !plan.data) {
-      return plan as OperationResult<WorkGraphRevision>;
+      return propagateFailure<WorkGraphRevision>(plan);
     }
     if (
       !sameRef(plan.data.plan_revision_ref, revision.source_plan_revision_ref) ||
@@ -527,7 +541,7 @@ export async function submitGraphRevision(
     const plans = await transaction.repository<PlanRecord>("inv-03.plans")
       .get(command.context, plan.data.plan_ref);
     if (plans.status !== "OK" || !plans.data) {
-      return plans as OperationResult<WorkGraphRevision>;
+      return propagateFailure<WorkGraphRevision>(plans);
     }
     if (
       plans.object_version !== command.expected_plan_version ||
@@ -552,7 +566,7 @@ export async function submitGraphRevision(
       };
       const savedRecord = await graphRecords.create(command.context, revision.graph_ref, record);
       if (savedRecord.status !== "OK" || !savedRecord.data) {
-        return savedRecord as OperationResult<WorkGraphRevision>;
+        return propagateFailure<WorkGraphRevision>(savedRecord);
       }
       if (!savedRecord.object_version) {
         return rejected("INTERNAL_ERROR", "Work Graph repository did not return its initial storage version", correlation_id);
@@ -564,7 +578,7 @@ export async function submitGraphRevision(
       }
       const currentRecord = await graphRecords.get(command.context, revision.graph_ref);
       if (currentRecord.status !== "OK" || !currentRecord.data) {
-        return currentRecord as OperationResult<WorkGraphRevision>;
+        return propagateFailure<WorkGraphRevision>(currentRecord);
       }
       if (
         !sameRef(currentRecord.data.graph_ref, revision.graph_ref) ||
@@ -575,7 +589,7 @@ export async function submitGraphRevision(
       }
       const priorGraph = await graphRevisions.get(command.context, revision.prior_revision_ref);
       if (priorGraph.status !== "OK" || !priorGraph.data) {
-        return priorGraph as OperationResult<WorkGraphRevision>;
+        return propagateFailure<WorkGraphRevision>(priorGraph);
       }
       if (
         !sameRef(priorGraph.data.graph_ref, revision.graph_ref) ||
@@ -596,7 +610,7 @@ export async function submitGraphRevision(
         nextRecord,
       );
       if (savedRecord.status !== "OK" || !savedRecord.data) {
-        return savedRecord as OperationResult<WorkGraphRevision>;
+        return propagateFailure<WorkGraphRevision>(savedRecord);
       }
       if (!savedRecord.object_version) {
         return rejected("INTERNAL_ERROR", "Work Graph repository did not return its updated storage version", correlation_id);
@@ -610,7 +624,7 @@ export async function submitGraphRevision(
       revision,
     );
     if (persisted.status !== "OK" || !persisted.data) {
-      return persisted as OperationResult<WorkGraphRevision>;
+      return propagateFailure<WorkGraphRevision>(persisted);
     }
 
     const event = makeEvent(
@@ -631,7 +645,7 @@ export async function submitGraphRevision(
       },
     );
     const emitted = await transaction.outbox.append(command.context, event);
-    if (emitted.status !== "OK") return emitted as OperationResult<WorkGraphRevision>;
+    if (emitted.status !== "OK") return propagateFailure<WorkGraphRevision>(emitted);
 
     const result = createOperationResult({
       status: "OK",
@@ -645,7 +659,7 @@ export async function submitGraphRevision(
       result,
       recorded_at: revision.created_at,
     });
-    if (recorded.status !== "OK") return recorded as OperationResult<WorkGraphRevision>;
+    if (recorded.status !== "OK") return propagateFailure<WorkGraphRevision>(recorded);
     return result;
   });
 }
@@ -681,7 +695,7 @@ export async function validateAndRecordGraph(
       command.context,
       command.context.idempotency_key!,
     );
-    if (priorResult.status !== "OK") return priorResult as OperationResult<GraphValidationApplicationResult>;
+    if (priorResult.status !== "OK") return propagateFailure<GraphValidationApplicationResult>(priorResult);
     if (priorResult.data) {
       if (priorResult.data.request_fingerprint !== command.request_fingerprint) {
         return rejected("IDEMPOTENCY_CONFLICT", "Idempotency key was reused for a different Graph validation", correlation_id);
@@ -692,7 +706,7 @@ export async function validateAndRecordGraph(
     const graphs = transaction.repository<WorkGraphRevision>("inv-03.graph-revisions");
     const current = await graphs.get(command.context, command.graph_revision_ref);
     if (current.status !== "OK" || !current.data) {
-      return current as OperationResult<GraphValidationApplicationResult>;
+      return propagateFailure<GraphValidationApplicationResult>(current);
     }
     if (!sameRef(current.data.graph_revision_ref, command.graph_revision_ref)) {
       return rejected("INTEGRITY_OR_UNTRUSTED_INPUT", "Repository returned a different Graph revision than requested", correlation_id);
@@ -704,7 +718,7 @@ export async function validateAndRecordGraph(
     const graphRecord = await transaction.repository<WorkGraphRecord>("inv-03.work-graphs")
       .get(command.context, current.data.graph_ref);
     if (graphRecord.status !== "OK" || !graphRecord.data) {
-      return graphRecord as OperationResult<GraphValidationApplicationResult>;
+      return propagateFailure<GraphValidationApplicationResult>(graphRecord);
     }
     if (!sameRef(graphRecord.data.latest_revision_ref, current.data.graph_revision_ref)) {
       return rejected("VERSION_CONFLICT", "Only the current latest Graph revision can be validated", correlation_id);
@@ -741,7 +755,7 @@ export async function validateAndRecordGraph(
         applied.value,
       );
       if (updated.status !== "OK" || !updated.data) {
-        return updated as OperationResult<GraphValidationApplicationResult>;
+        return propagateFailure<GraphValidationApplicationResult>(updated);
       }
       nextGraph = updated.data;
     }
@@ -750,7 +764,7 @@ export async function validateAndRecordGraph(
       "inv-03.graph-validation-results",
     ).append(command.context, validation.value);
     if (storedValidation.status !== "OK") {
-      return storedValidation as OperationResult<GraphValidationApplicationResult>;
+      return propagateFailure<GraphValidationApplicationResult>(storedValidation);
     }
 
     const event = makeEvent(
@@ -769,7 +783,7 @@ export async function validateAndRecordGraph(
       },
     );
     const emitted = await transaction.outbox.append(command.context, event);
-    if (emitted.status !== "OK") return emitted as OperationResult<GraphValidationApplicationResult>;
+    if (emitted.status !== "OK") return propagateFailure<GraphValidationApplicationResult>(emitted);
 
     const data: GraphValidationApplicationResult = {
       graph_revision: nextGraph,
@@ -794,7 +808,7 @@ export async function validateAndRecordGraph(
       result,
       recorded_at: command.validated_at,
     });
-    if (recorded.status !== "OK") return recorded as OperationResult<GraphValidationApplicationResult>;
+    if (recorded.status !== "OK") return propagateFailure<GraphValidationApplicationResult>(recorded);
     return result;
   });
 }
@@ -834,7 +848,7 @@ export async function requestGraphActivation(
       command.context,
       command.context.idempotency_key!,
     );
-    if (priorResult.status !== "OK") return priorResult as OperationResult<GraphActivationRequest>;
+    if (priorResult.status !== "OK") return propagateFailure<GraphActivationRequest>(priorResult);
     if (priorResult.data) {
       if (priorResult.data.request_fingerprint !== command.request_fingerprint) {
         return rejected("IDEMPOTENCY_CONFLICT", "Idempotency key was reused for a different Graph activation request", correlation_id);
@@ -845,22 +859,22 @@ export async function requestGraphActivation(
     const plan = await transaction.repository<PlanRevision>("inv-03.plan-revisions")
       .get(command.context, command.plan_revision.plan_revision_ref);
     if (plan.status !== "OK" || !plan.data) {
-      return plan as OperationResult<GraphActivationRequest>;
+      return propagateFailure<GraphActivationRequest>(plan);
     }
     const graph = await transaction.repository<WorkGraphRevision>("inv-03.graph-revisions")
       .get(command.context, command.graph_revision.graph_revision_ref);
     if (graph.status !== "OK" || !graph.data) {
-      return graph as OperationResult<GraphActivationRequest>;
+      return propagateFailure<GraphActivationRequest>(graph);
     }
     const planRecord = await transaction.repository<PlanRecord>("inv-03.plans")
       .get(command.context, command.plan_revision.plan_ref);
     if (planRecord.status !== "OK" || !planRecord.data) {
-      return planRecord as OperationResult<GraphActivationRequest>;
+      return propagateFailure<GraphActivationRequest>(planRecord);
     }
     const graphRecord = await transaction.repository<WorkGraphRecord>("inv-03.work-graphs")
       .get(command.context, command.graph_revision.graph_ref);
     if (graphRecord.status !== "OK" || !graphRecord.data) {
-      return graphRecord as OperationResult<GraphActivationRequest>;
+      return propagateFailure<GraphActivationRequest>(graphRecord);
     }
 
     if (
@@ -901,7 +915,7 @@ export async function requestGraphActivation(
       "inv-03.graph-activation-requests",
     ).append(command.context, request.value);
     if (stored.status !== "OK" || !stored.data) {
-      return stored as OperationResult<GraphActivationRequest>;
+      return propagateFailure<GraphActivationRequest>(stored);
     }
 
     const event = makeEvent(
@@ -922,7 +936,7 @@ export async function requestGraphActivation(
       },
     );
     const emitted = await transaction.outbox.append(command.context, event);
-    if (emitted.status !== "OK") return emitted as OperationResult<GraphActivationRequest>;
+    if (emitted.status !== "OK") return propagateFailure<GraphActivationRequest>(emitted);
 
     const result = createOperationResult({
       status: "OK",
@@ -936,7 +950,7 @@ export async function requestGraphActivation(
       result,
       recorded_at: command.requested_at,
     });
-    if (recorded.status !== "OK") return recorded as OperationResult<GraphActivationRequest>;
+    if (recorded.status !== "OK") return propagateFailure<GraphActivationRequest>(recorded);
     return result;
   });
 }
