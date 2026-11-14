@@ -26,13 +26,7 @@ import {
   type WorkDomainIssue,
   type PlanGraphActivationBindingReceipt,
 } from "./domain";
-import type {
-  GraphActivationRequest,
-  PlanRecord,
-  PlanRevision,
-  WorkGraphRecord,
-  WorkGraphRevision,
-} from "../inv-03-planning/domain";
+import type { GraphActivationCandidateReaderPort } from "../inv-03-planning/application";
 
 export interface CreateWorkCommand {
   context: RequestContext;
@@ -398,6 +392,7 @@ function sameObjectRef(a: ObjectRef, b: ObjectRef): boolean {
  */
 export async function applyRequestedPlanGraphActivation(
   unitOfWork: EngineUnitOfWorkPort,
+  activationReader: GraphActivationCandidateReaderPort,
   command: ApplyPlanGraphActivationCommand,
 ): Promise<OperationResult<WorkRecord>> {
   const correlation_id = command.context.correlation_id;
@@ -444,13 +439,9 @@ export async function applyRequestedPlanGraphActivation(
       return prior.data.result;
     }
 
-    const requestResult = await transaction
-      .appendOnly<GraphActivationRequest>("inv-03.graph-activation-requests")
-      .get(command.context, command.request_ref);
-    if (requestResult.status !== "OK" || !requestResult.data) {
-      return propagateFailure<WorkRecord>(requestResult);
-    }
-    const request = requestResult.data;
+    const candidateResult = await activationReader.readCandidate(transaction, command.context, command.request_ref);
+    if (candidateResult.status !== "OK" || !candidateResult.data) return propagateFailure<WorkRecord>(candidateResult);
+    const {request,plan,plan_record:planRecord,graph,graph_record:graphRecord}=candidateResult.data;
     if (
       !sameObjectRef(request.request_ref, command.request_ref) ||
       !isObjectRef(request.work_ref) ||
@@ -511,41 +502,20 @@ export async function applyRequestedPlanGraphActivation(
       );
     }
 
-    const plan = await transaction.repository<PlanRevision>("inv-03.plan-revisions")
-      .get(command.context, request.plan_revision_ref);
-    if (plan.status !== "OK" || !plan.data) {
-      return propagateFailure<WorkRecord>(plan);
-    }
-    const planRecord = await transaction.repository<PlanRecord>("inv-03.plans")
-      .get(command.context, plan.data.plan_ref);
-    if (planRecord.status !== "OK" || !planRecord.data) {
-      return propagateFailure<WorkRecord>(planRecord);
-    }
-    const graph = await transaction.repository<WorkGraphRevision>("inv-03.graph-revisions")
-      .get(command.context, request.graph_revision_ref);
-    if (graph.status !== "OK" || !graph.data) {
-      return propagateFailure<WorkRecord>(graph);
-    }
-    const graphRecord = await transaction.repository<WorkGraphRecord>("inv-03.work-graphs")
-      .get(command.context, graph.data.graph_ref);
-    if (graphRecord.status !== "OK" || !graphRecord.data) {
-      return propagateFailure<WorkRecord>(graphRecord);
-    }
-
     if (
-      !sameObjectRef(plan.data.plan_revision_ref, request.plan_revision_ref) ||
-      !sameObjectRef(plan.data.work_ref, request.work_ref) ||
-      plan.data.state !== "ACCEPTED" ||
-      !sameObjectRef(planRecord.data.plan_ref, plan.data.plan_ref) ||
-      !sameObjectRef(planRecord.data.work_ref, request.work_ref) ||
-      !sameObjectRef(planRecord.data.latest_revision_ref, plan.data.plan_revision_ref) ||
-      !sameObjectRef(graph.data.graph_revision_ref, request.graph_revision_ref) ||
-      !sameObjectRef(graph.data.work_ref, request.work_ref) ||
-      graph.data.state !== "VALIDATED" ||
-      !sameObjectRef(graph.data.source_plan_revision_ref, plan.data.plan_revision_ref) ||
-      !sameObjectRef(graphRecord.data.graph_ref, graph.data.graph_ref) ||
-      !sameObjectRef(graphRecord.data.work_ref, request.work_ref) ||
-      !sameObjectRef(graphRecord.data.latest_revision_ref, graph.data.graph_revision_ref)
+      !sameObjectRef(plan.plan_revision_ref, request.plan_revision_ref) ||
+      !sameObjectRef(plan.work_ref, request.work_ref) ||
+      plan.state !== "ACCEPTED" ||
+      !sameObjectRef(planRecord.plan_ref, plan.plan_ref) ||
+      !sameObjectRef(planRecord.work_ref, request.work_ref) ||
+      !sameObjectRef(planRecord.latest_revision_ref, plan.plan_revision_ref) ||
+      !sameObjectRef(graph.graph_revision_ref, request.graph_revision_ref) ||
+      !sameObjectRef(graph.work_ref, request.work_ref) ||
+      graph.state !== "VALIDATED" ||
+      !sameObjectRef(graph.source_plan_revision_ref, plan.plan_revision_ref) ||
+      !sameObjectRef(graphRecord.graph_ref, graph.graph_ref) ||
+      !sameObjectRef(graphRecord.work_ref, request.work_ref) ||
+      !sameObjectRef(graphRecord.latest_revision_ref, graph.graph_revision_ref)
     ) {
       return rejected(
         "VERSION_CONFLICT",
@@ -686,6 +656,7 @@ export async function applyRequestedPlanGraphActivation(
  */
 export async function getActivePlanGraphBinding(
   unitOfWork: EngineUnitOfWorkPort,
+  activationReader: GraphActivationCandidateReaderPort,
   context: RequestContext,
   work_ref: ObjectRef,
 ): Promise<OperationResult<ActivePlanGraphBinding>> {
@@ -746,22 +717,15 @@ export async function getActivePlanGraphBinding(
       );
     }
 
-    const planResult = await transaction.repository<PlanRevision>("inv-03.plan-revisions")
-      .get(context, plan);
-    if (planResult.status !== "OK" || !planResult.data) {
-      return propagateFailure<ActivePlanGraphBinding>(planResult);
-    }
-    const graphResult = await transaction.repository<WorkGraphRevision>("inv-03.graph-revisions")
-      .get(context, graph);
-    if (graphResult.status !== "OK" || !graphResult.data) {
-      return propagateFailure<ActivePlanGraphBinding>(graphResult);
-    }
+    const revisionsResult = await activationReader.readRevisions(transaction, context, plan, graph);
+    if (revisionsResult.status !== "OK" || !revisionsResult.data) return propagateFailure<ActivePlanGraphBinding>(revisionsResult);
+    const {plan:planRevision,graph:graphRevision}=revisionsResult.data;
     if (
-      !sameObjectRef(planResult.data.plan_revision_ref, plan) ||
-      !sameObjectRef(planResult.data.work_ref, work_ref) ||
-      !sameObjectRef(graphResult.data.graph_revision_ref, graph) ||
-      !sameObjectRef(graphResult.data.work_ref, work_ref) ||
-      !sameObjectRef(graphResult.data.source_plan_revision_ref, plan)
+      !sameObjectRef(planRevision.plan_revision_ref, plan) ||
+      !sameObjectRef(planRevision.work_ref, work_ref) ||
+      !sameObjectRef(graphRevision.graph_revision_ref, graph) ||
+      !sameObjectRef(graphRevision.work_ref, work_ref) ||
+      !sameObjectRef(graphRevision.source_plan_revision_ref, plan)
     ) {
       return rejected(
         "INTEGRITY_OR_UNTRUSTED_INPUT",
