@@ -266,5 +266,24 @@ describe("INV-02 Work domain", () => {
       expect(applied.value.current_work_graph_ref).toEqual(receipt.graph_revision_ref);
     }
     expect(applyPlanGraphActivation(work, { ...receipt, receipt_state: "UNKNOWN" }, 1).ok).toBe(false);
+    expect(applyPlanGraphActivation(work, {
+      ...receipt,
+      work_ref: { ...work.work_ref, object_version: "2" },
+    }, 1).ok).toBe(false);
+    expect(applyPlanGraphActivation(work, {
+      ...receipt,
+      plan_revision_ref: {
+        ...receipt.plan_revision_ref,
+        scope_ref: { scope_id: "scope-foreign", scope_kind: "WORK" },
+      },
+    }, 1).ok).toBe(false);
+    expect(applyPlanGraphActivation(work, {
+      ...receipt,
+      receipt_state: "UNRECOGNISED" as "ACCEPTED",
+    }, 1).ok).toBe(false);
+    expect(applyPlanGraphActivation(work, {
+      ...receipt,
+      received_at: work.updated_at,
+    }, 1).ok).toBe(false);
   });
 });
