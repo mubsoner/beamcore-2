@@ -2,6 +2,7 @@ import {
   createOperationError,
   createOperationResult,
   isObjectRef,
+  isRequestContext,
   type DomainEventEnvelope,
   type EngineUnitOfWorkPort,
   type IdempotencyRecord,
@@ -87,6 +88,9 @@ function validateCommandEnvelope(
   request_fingerprint: string,
   event_ref: ObjectRef,
 ): string | undefined {
+  if (!isRequestContext(context)) {
+    return "Work mutation requires a valid canonical request context";
+  }
   if (!context.idempotency_key?.trim()) {
     return "Work mutation requires an idempotency key";
   }
