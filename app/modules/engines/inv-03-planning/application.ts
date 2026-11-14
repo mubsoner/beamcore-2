@@ -253,24 +253,26 @@ export async function submitPlanRevision(
         !sameRef(priorRevision.data.plan_ref, revision.plan_ref) ||
         !sameRef(priorRevision.data.work_ref, revision.work_ref) ||
         priorRevision.data.revision_number + 1 !== revision.revision_number ||
-        priorRevision.data.state !== "ACCEPTED"
+        !["ACCEPTED", "REJECTED", "WITHDRAWN"].includes(priorRevision.data.state)
       ) {
-        return rejected("VERSION_CONFLICT", "New Plan revision must supersede the exact latest accepted revision", correlation_id);
+        return rejected("VERSION_CONFLICT", "New Plan revision must follow the exact latest accepted, rejected or withdrawn revision", correlation_id);
       }
-      const superseded = transitionPlanRevision(priorRevision.data, "SUPERSEDED");
-      if (!superseded.ok) {
-        return rejected("VALIDATION_ERROR", superseded.issues[0].safe_message, correlation_id);
+      if (priorRevision.data.state === "ACCEPTED") {
+        const superseded = transitionPlanRevision(priorRevision.data, "SUPERSEDED");
+        if (!superseded.ok) {
+          return rejected("VALIDATION_ERROR", superseded.issues[0].safe_message, correlation_id);
+        }
+        if (!priorRevision.object_version) {
+          return rejected("INTERNAL_ERROR", "Plan revision repository did not return its current storage version", correlation_id);
+        }
+        const savedPrior = await revisions.update(
+          command.context,
+          revision.prior_revision_ref,
+          priorRevision.object_version,
+          superseded.value,
+        );
+        if (savedPrior.status !== "OK") return savedPrior as OperationResult<PlanRevision>;
       }
-      if (!priorRevision.object_version) {
-        return rejected("INTERNAL_ERROR", "Plan revision repository did not return its current storage version", correlation_id);
-      }
-      const savedPrior = await revisions.update(
-        command.context,
-        revision.prior_revision_ref,
-        priorRevision.object_version,
-        superseded.value,
-      );
-      if (savedPrior.status !== "OK") return savedPrior as OperationResult<PlanRevision>;
 
       nextPlanRecord = {
         ...currentPlan.data,
@@ -357,7 +359,6 @@ export async function reviewPlanRevision(
     "ACCEPTED",
     "REJECTED",
     "WITHDRAWN",
-    "SUPERSEDED",
   ];
   if (
     !isObjectRef(command.plan_revision_ref) ||
@@ -389,6 +390,12 @@ export async function reviewPlanRevision(
     }
     if (!sameRef(current.data.plan_revision_ref, command.plan_revision_ref)) {
       return rejected("INTEGRITY_OR_UNTRUSTED_INPUT", "Repository returned a different Plan revision than requested", correlation_id);
+    }
+    if (
+      current.data.work_ref.scope_ref.scope_id !== command.context.scope_ref.scope_id ||
+      current.data.work_ref.scope_ref.scope_kind !== command.context.scope_ref.scope_kind
+    ) {
+      return rejected("FORBIDDEN", "Plan revision is outside the authenticated request scope", correlation_id);
     }
     if (current.object_version !== command.expected_revision_version) {
       return rejected("VERSION_CONFLICT", "Plan revision changed before review; reload before retrying", correlation_id);
