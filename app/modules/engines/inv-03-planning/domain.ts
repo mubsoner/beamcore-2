@@ -507,6 +507,19 @@ export function applyGraphValidation(
   result: GraphValidationResult,
   review_decision_ref?: ObjectRef,
 ): PlanningResult<WorkGraphRevision> {
+  const allowedStatuses: readonly GraphValidationStatus[] = [
+    "VALID",
+    "VALID_WITH_WARNINGS",
+    "INVALID",
+    "NEEDS_INPUT",
+    "DEPENDENCY_UNAVAILABLE",
+  ];
+  const allowedSeverities: readonly GraphFindingSeverity[] = [
+    "ERROR",
+    "BLOCKER",
+    "WARNING",
+    "INFO",
+  ];
   if (
     !isObjectRef(result.validation_ref) ||
     result.validation_ref.object_kind !== "GRAPH_VALIDATION_RESULT" ||
@@ -515,19 +528,26 @@ export function applyGraphValidation(
     !sameRef(result.graph_revision_ref, revision.graph_revision_ref) ||
     !isTimestamp(result.validated_at) ||
     !result.validator_version.trim() ||
+    !allowedStatuses.includes(result.status) ||
     !Array.isArray(result.findings) ||
     result.findings.some((finding) =>
+      !finding ||
+      typeof finding !== "object" ||
       !isObjectRef(finding.finding_ref) ||
       finding.finding_ref.object_kind !== "GRAPH_VALIDATION_FINDING" ||
       !sameScope(finding.finding_ref, revision.work_ref) ||
+      !allowedSeverities.includes(finding.severity) ||
+      !Array.isArray(finding.affected_refs) ||
       !allRefsValid(finding.affected_refs)
     )
   ) {
-    return fail("VALIDATION_ERROR", "Validation result identity, graph binding, timestamp or findings are invalid");
+    return fail("VALIDATION_ERROR", "Validation result identity, graph binding, status, timestamp or findings are invalid");
   }
-  if (result.status === "INVALID" || result.status === "NEEDS_INPUT" || result.status === "DEPENDENCY_UNAVAILABLE" ||
-      result.findings.some((finding) => finding.severity === "ERROR" || finding.severity === "BLOCKER")) {
+  if (result.status !== "VALID" && result.status !== "VALID_WITH_WARNINGS") {
     return fail("VALIDATION_ERROR", "Graph validation did not permit activation");
+  }
+  if (result.findings.some((finding) => finding.severity === "ERROR" || finding.severity === "BLOCKER")) {
+    return fail("VALIDATION_ERROR", "Graph validation contains blocking findings");
   }
   if ((result.status === "VALID_WITH_WARNINGS" || result.findings.some((finding) => finding.severity === "WARNING")) &&
       (!review_decision_ref || !isObjectRef(review_decision_ref) ||
