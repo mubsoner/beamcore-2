@@ -396,8 +396,20 @@ export async function acceptWorkOutcome(
     }
 
     const accepted = acceptOutcomeProposalDomain({
-      ...command,
+      context: command.context,
       work: current.data,
+      proposal: command.proposal,
+      desired_outcome_ref: command.desired_outcome_ref,
+      receipt_ref: command.receipt_ref,
+      acceptance_basis: command.acceptance_basis,
+      acceptance_basis_ref: command.acceptance_basis_ref,
+      accepted_by: command.accepted_by,
+      accepted_at: command.accepted_at,
+      expected_work_version: command.expected_work_version,
+      authority: command.authority,
+      has_material_unresolved_unknowns: command.has_material_unresolved_unknowns,
+      policy_interpretation_permitted: command.policy_interpretation_permitted,
+      current_target_revision: command.current_target_revision,
     });
     if (!accepted.ok) {
       return rejected(
@@ -420,10 +432,16 @@ export async function acceptWorkOutcome(
       if (
         oldTarget.desired_outcome_ref.object_kind !== current.data.current_desired_outcome_ref.object_kind ||
         oldTarget.desired_outcome_ref.object_id !== current.data.current_desired_outcome_ref.object_id ||
+        oldTarget.desired_outcome_ref.object_version !== current.data.current_desired_outcome_ref.object_version ||
         oldTarget.desired_outcome_ref.scope_ref.scope_id !== current.data.current_desired_outcome_ref.scope_ref.scope_id ||
         oldTarget.desired_outcome_ref.scope_ref.scope_kind !== current.data.current_desired_outcome_ref.scope_ref.scope_kind ||
         oldTarget.state !== "ACTIVE" ||
-        oldTarget.work_ref.object_id !== current.data.work_ref.object_id
+        oldTarget.work_ref.object_kind !== current.data.work_ref.object_kind ||
+        oldTarget.work_ref.object_id !== current.data.work_ref.object_id ||
+        oldTarget.work_ref.scope_ref.scope_id !== current.data.work_ref.scope_ref.scope_id ||
+        oldTarget.work_ref.scope_ref.scope_kind !== current.data.work_ref.scope_ref.scope_kind ||
+        command.current_target_revision !== oldTarget.revision_number + 1 ||
+        accepted.value.desired_outcome.desired_outcome_ref.object_id === oldTarget.desired_outcome_ref.object_id
       ) {
         return rejected("INTEGRITY_OR_UNTRUSTED_INPUT", "Current Desired Outcome pointer does not match its active stored revision", correlation_id);
       }
