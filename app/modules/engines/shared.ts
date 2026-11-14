@@ -300,16 +300,61 @@ function isNonEmptyString(value: unknown): value is string {
 
 export function isTimestamp(value: unknown): value is Timestamp {
   if (typeof value !== "string") return false;
-  const rfc3339WithOffset =
-    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-](?:0\d|1[0-4]):[0-5]\d)$/;
-  if (!rfc3339WithOffset.test(value) || !Number.isFinite(Date.parse(value))) {
+
+  // Parse components explicitly: Date.parse alone accepts some invalid calendar
+  // dates by normalising them into the following month.
+  const match = value.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|([+-])(\d{2}):(\d{2}))$/,
+  );
+  if (!match) return false;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+
+  if (
+    year < 1 ||
+    month < 1 ||
+    month > 12 ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59
+  ) {
     return false;
   }
 
-  const offset = value.match(/([+-])(\d{2}):(\d{2})$/);
-  if (offset && Number(offset[2]) === 14 && Number(offset[3]) !== 0) {
-    return false;
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [
+    31,
+    leapYear ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  ][month - 1];
+  if (day < 1 || day > daysInMonth) return false;
+
+  if (match[7] !== "Z") {
+    const offsetHours = Number(match[9]);
+    const offsetMinutes = Number(match[10]);
+    if (
+      offsetHours > 14 ||
+      offsetMinutes > 59 ||
+      (offsetHours === 14 && offsetMinutes !== 0)
+    ) {
+      return false;
+    }
   }
+
   return true;
 }
 
