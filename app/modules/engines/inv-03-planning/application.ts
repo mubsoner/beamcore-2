@@ -253,7 +253,7 @@ export async function reconcileRequestedGraphActivation(
     );
   }
 
-  const requestResult = await unitOfWork.execute(context, async (transaction) => {
+  const requestResult = await unitOfWork.execute<GraphActivationRequest>(context, async (transaction) => {
     const stored = await transaction
       .appendOnly<GraphActivationRequest>("inv-03.graph-activation-requests")
       .get(context, request_ref);
@@ -284,7 +284,7 @@ export async function reconcileRequestedGraphActivation(
         correlation_id,
       );
     }
-    return createOperationResult({
+    return createOperationResult<GraphActivationRequest>({
       status: "OK",
       correlation_id,
       data: stored.data,
