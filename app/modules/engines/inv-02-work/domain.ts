@@ -451,13 +451,28 @@ export function applyPlanGraphActivation(
   if (expectedWorkVersion !== work.current_revision || receipt.expected_work_revision !== expectedWorkVersion) {
     return fail("VERSION_CONFLICT", "Work version changed before graph activation was applied");
   }
-  if (!isObjectRef(receipt.receipt_ref) || receipt.receipt_ref.object_kind !== "PLAN_GRAPH_ACTIVATION_RECEIPT" ||
-      !isObjectRef(receipt.work_ref) || !isObjectRef(receipt.plan_revision_ref) || receipt.plan_revision_ref.object_kind !== "PLAN_REVISION" ||
-      !isObjectRef(receipt.graph_revision_ref) || receipt.graph_revision_ref.object_kind !== "WORK_GRAPH_REVISION" ||
-      receipt.work_ref.object_id !== work.work_ref.object_id ||
-      receipt.work_ref.scope_ref.scope_id !== work.work_ref.scope_ref.scope_id ||
-      !isTimestamp(receipt.received_at)) {
+  if (!isRevisionNumber(expectedWorkVersion) ||
+      !isRevisionNumber(receipt.expected_work_revision) ||
+      !isRevisionNumber(receipt.resulting_work_revision) ||
+      !isObjectRef(receipt.receipt_ref) ||
+      receipt.receipt_ref.object_kind !== "PLAN_GRAPH_ACTIVATION_RECEIPT" ||
+      !sameScope(receipt.receipt_ref, work.work_ref) ||
+      !isObjectRef(receipt.work_ref) ||
+      !sameRef(receipt.work_ref, work.work_ref) ||
+      !isObjectRef(receipt.plan_revision_ref) ||
+      receipt.plan_revision_ref.object_kind !== "PLAN_REVISION" ||
+      !sameScope(receipt.plan_revision_ref, work.work_ref) ||
+      !isObjectRef(receipt.graph_revision_ref) ||
+      receipt.graph_revision_ref.object_kind !== "WORK_GRAPH_REVISION" ||
+      !sameScope(receipt.graph_revision_ref, work.work_ref) ||
+      !isTimestamp(receipt.received_at) ||
+      Date.parse(receipt.received_at) <= Date.parse(work.updated_at)) {
     return fail("VALIDATION_ERROR", "Plan/Graph activation receipt is invalid or not bound to this Work");
+  }
+  if (receipt.receipt_state !== "ACCEPTED" &&
+      receipt.receipt_state !== "REJECTED" &&
+      receipt.receipt_state !== "UNKNOWN") {
+    return fail("VALIDATION_ERROR", "Plan/Graph activation receipt has an unknown state");
   }
   if (receipt.receipt_state === "UNKNOWN") {
     return fail("OUTCOME_UNKNOWN_OR_RECONCILIATION_REQUIRED", "Activation result is unknown; reconcile the active Work binding before retrying");
