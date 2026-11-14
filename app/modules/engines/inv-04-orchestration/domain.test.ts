@@ -208,7 +208,7 @@ describe("INV-04 orchestration domain", () => {
         ...fixtures.receipt,
         request_ref: {
           ...fixtures.receipt.request_ref,
-          object_version: "2",
+          object_kind: "ORCHESTRATION_REQUEST",
         },
       },
     }).ok).toBe(false);
