@@ -77,18 +77,18 @@ function makeUnitOfWork() {
       })),
     }),
     idempotency: {
-      get: vi.fn(async <T>(_ctx: RequestContext, key: string) => {
+      get: vi.fn(async <T>(_ctx: RequestContext, key: string): Promise<OperationResult<IdempotencyRecord<T> | null>> => {
         const record = idempotency.get(key) as IdempotencyRecord<T> | undefined;
         return createOperationResult<IdempotencyRecord<T> | null>({
           status: "OK", correlation_id: context.correlation_id, data: record ?? null,
         });
-      }),
-      record: vi.fn(async <T>(_ctx: RequestContext, record: IdempotencyRecord<T>) => {
+      }) as EngineTransaction["idempotency"]["get"],
+      record: vi.fn(async <T>(_ctx: RequestContext, record: IdempotencyRecord<T>): Promise<OperationResult<IdempotencyRecord<T>>> => {
         idempotency.set(record.idempotency_key, record as IdempotencyRecord<NormalizedIntent>);
         return createOperationResult<IdempotencyRecord<T>>({
           status: "OK", correlation_id: context.correlation_id, data: record,
         });
-      }),
+      }) as EngineTransaction["idempotency"]["record"],
     },
     outbox: {
       append: vi.fn(async () => createOperationResult({
