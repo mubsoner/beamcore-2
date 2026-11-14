@@ -22,6 +22,7 @@ import {
   type GraphValidationResult,
   type PlanRecord,
   type PlanRevision,
+  type PlanRevisionState,
   type WorkGraphRecord,
   type WorkGraphRevision,
   type PlanningIssue,
@@ -40,6 +41,17 @@ export type SubmitGraphRevisionCommand =
     event_ref: ObjectRef;
     expected_graph_version?: string;
   };
+
+export interface ReviewPlanRevisionCommand {
+  context: RequestContext;
+  plan_revision_ref: ObjectRef;
+  expected_revision_version: string;
+  target_state: PlanRevisionState;
+  review_decision_ref?: ObjectRef;
+  request_fingerprint: string;
+  event_ref: ObjectRef;
+  occurred_at: string;
+}
 
 export interface ValidateGraphApplicationCommand {
   context: RequestContext;
@@ -317,6 +329,118 @@ export async function submitPlanRevision(
       result,
       recorded_at: revision.created_at,
     } satisfies IdempotencyRecord<PlanRevision>);
+    if (recorded.status !== "OK") return recorded as OperationResult<PlanRevision>;
+    return result;
+  });
+}
+
+/**
+ * Persists a Plan review/lifecycle transition with an optimistic storage
+ * version. ACCEPTED and REJECTED outcomes require the domain's review decision.
+ */
+export async function reviewPlanRevision(
+  unitOfWork: EngineUnitOfWorkPort,
+  command: ReviewPlanRevisionCommand,
+): Promise<OperationResult<PlanRevision>> {
+  const correlation_id = command.context.correlation_id;
+  const envelopeIssue = validateEnvelope(
+    command.context,
+    command.request_fingerprint,
+    command.event_ref,
+  );
+  if (envelopeIssue) {
+    return rejected("VALIDATION_ERROR", envelopeIssue, correlation_id);
+  }
+  if (
+    !isObjectRef(command.plan_revision_ref) ||
+    command.plan_revision_ref.object_kind !== "PLAN_REVISION" ||
+    !command.expected_revision_version.trim() ||
+    !["UNDER_REVIEW", "ACCEPTED", "REJECTED", "WITHDRAWN", "SUPERSEDED"].includes(command.target_state)
+  ) {
+    return rejected("VALIDATION_ERROR", "Plan review requires a valid revision, expected version and supported target state", correlation_id);
+  }
+
+  return unitOfWork.execute(command.context, async (transaction) => {
+    const priorResult = await transaction.idempotency.get<PlanRevision>(
+      command.context,
+      command.context.idempotency_key!,
+    );
+    if (priorResult.status !== "OK") return priorResult as OperationResult<PlanRevision>;
+    if (priorResult.data) {
+      if (priorResult.data.request_fingerprint !== command.request_fingerprint) {
+        return rejected("IDEMPOTENCY_CONFLICT", "Idempotency key was reused for a different Plan review decision", correlation_id);
+      }
+      return priorResult.data.result;
+    }
+
+    const revisions = transaction.repository<PlanRevision>("inv-03.plan-revisions");
+    const current = await revisions.get(command.context, command.plan_revision_ref);
+    if (current.status !== "OK" || !current.data) {
+      return current as OperationResult<PlanRevision>;
+    }
+    if (!sameRef(current.data.plan_revision_ref, command.plan_revision_ref)) {
+      return rejected("INTEGRITY_OR_UNTRUSTED_INPUT", "Repository returned a different Plan revision than requested", correlation_id);
+    }
+    if (current.object_version !== command.expected_revision_version) {
+      return rejected("VERSION_CONFLICT", "Plan revision changed before review; reload before retrying", correlation_id);
+    }
+
+    const transitioned = transitionPlanRevision(
+      current.data,
+      command.target_state,
+      command.review_decision_ref,
+    );
+    if (!transitioned.ok) {
+      return rejected(
+        mapDomainCode(transitioned.issues[0].code),
+        transitioned.issues.map((issue) => issue.safe_message).join("; "),
+        correlation_id,
+      );
+    }
+
+    const updated = await revisions.update(
+      command.context,
+      command.plan_revision_ref,
+      command.expected_revision_version,
+      transitioned.value,
+    );
+    if (updated.status !== "OK" || !updated.data) {
+      return updated as OperationResult<PlanRevision>;
+    }
+    if (!updated.object_version) {
+      return rejected("INTERNAL_ERROR", "Plan revision repository did not return its updated storage version", correlation_id);
+    }
+
+    const event = makeEvent(
+      command.event_ref,
+      "planning.plan_revision_state_changed",
+      "INV-03",
+      updated.data.plan_revision_ref,
+      updated.data.work_ref.scope_ref,
+      command.context,
+      command.occurred_at,
+      {
+        plan_ref: updated.data.plan_ref,
+        prior_state: current.data.state,
+        state: updated.data.state,
+        review_decision_ref: command.review_decision_ref,
+      },
+    );
+    const emitted = await transaction.outbox.append(command.context, event);
+    if (emitted.status !== "OK") return emitted as OperationResult<PlanRevision>;
+
+    const result = createOperationResult({
+      status: "OK",
+      correlation_id,
+      data: updated.data,
+      object_version: updated.object_version,
+    });
+    const recorded = await transaction.idempotency.record(command.context, {
+      idempotency_key: command.context.idempotency_key!,
+      request_fingerprint: command.request_fingerprint,
+      result,
+      recorded_at: command.occurred_at,
+    });
     if (recorded.status !== "OK") return recorded as OperationResult<PlanRevision>;
     return result;
   });
