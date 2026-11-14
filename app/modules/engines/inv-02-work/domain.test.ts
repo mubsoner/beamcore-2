@@ -183,6 +183,47 @@ describe("INV-02 Work domain", () => {
     expect(result.value.receipt.acceptance_state).toBe("ACCEPTED");
   });
 
+  it("rejects outcome evidence that crosses scope or changes the originating intent version", () => {
+    const work = makeWork();
+    const crossScope = { scope_id: "scope-2", scope_kind: "WORK" as const };
+
+    expect(acceptOutcomeProposal({
+      context,
+      work,
+      proposal: {
+        ...proposal,
+        intent_ref: ref("INTENT", "intent-1", "2"),
+      },
+      desired_outcome_ref: ref("WORK_DESIRED_OUTCOME_REVISION", "target-2"),
+      receipt_ref: ref("OUTCOME_ACCEPTANCE_RECEIPT", "receipt-2"),
+      acceptance_basis: "EXPLICIT_USER_CONFIRMATION",
+      acceptance_basis_ref: ref("USER_CONFIRMATION", "confirmation-2"),
+      accepted_by: context.actor_ref,
+      accepted_at: "2026-11-13T03:03:00Z",
+      expected_work_version: 1,
+      authority,
+      has_material_unresolved_unknowns: false,
+    }).ok).toBe(false);
+
+    expect(acceptOutcomeProposal({
+      context,
+      work,
+      proposal,
+      desired_outcome_ref: {
+        ...ref("WORK_DESIRED_OUTCOME_REVISION", "target-3"),
+        scope_ref: crossScope,
+      },
+      receipt_ref: ref("OUTCOME_ACCEPTANCE_RECEIPT", "receipt-3"),
+      acceptance_basis: "EXPLICIT_USER_CONFIRMATION",
+      acceptance_basis_ref: ref("USER_CONFIRMATION", "confirmation-3"),
+      accepted_by: context.actor_ref,
+      accepted_at: "2026-11-13T03:03:00Z",
+      expected_work_version: 1,
+      authority,
+      has_material_unresolved_unknowns: false,
+    }).ok).toBe(false);
+  });
+
   it("blocks policy interpretation with unresolved uncertainty and rejects mismatched basis refs", () => {
     const work = makeWork();
     const base = {
