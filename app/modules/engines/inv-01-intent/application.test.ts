@@ -79,13 +79,13 @@ function makeUnitOfWork() {
     idempotency: {
       get: vi.fn(async <T>(_ctx: RequestContext, key: string) => {
         const record = idempotency.get(key) as IdempotencyRecord<T> | undefined;
-        return createOperationResult({
+        return createOperationResult<IdempotencyRecord<T> | null>({
           status: "OK", correlation_id: context.correlation_id, data: record ?? null,
         });
       }),
       record: vi.fn(async <T>(_ctx: RequestContext, record: IdempotencyRecord<T>) => {
         idempotency.set(record.idempotency_key, record as IdempotencyRecord<NormalizedIntent>);
-        return createOperationResult({
+        return createOperationResult<IdempotencyRecord<T>>({
           status: "OK", correlation_id: context.correlation_id, data: record,
         });
       }),
