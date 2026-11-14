@@ -1,5 +1,6 @@
 import {
   isObjectRef,
+  isPrincipalRef,
   isRequestContext,
   isRevisionNumber,
   isTimestamp,
@@ -190,6 +191,11 @@ const fail = <T = never>(code: WorkDomainIssue["code"], safe_message: string, fi
 });
 const sameScope = (a: ObjectRef, b: ObjectRef) =>
   a.scope_ref.scope_id === b.scope_ref.scope_id && a.scope_ref.scope_kind === b.scope_ref.scope_kind;
+const sameRef = (a: ObjectRef, b: ObjectRef) =>
+  a.object_kind === b.object_kind &&
+  a.object_id === b.object_id &&
+  a.object_version === b.object_version &&
+  sameScope(a, b);
 const transitionMap: Record<WorkLifecycleState, readonly WorkLifecycleState[]> = {
   PROPOSED: ["READY", "WAITING", "BLOCKED", "PAUSED", "CANCELLED"],
   READY: ["IN_PROGRESS", "WAITING", "BLOCKED", "PAUSED", "CANCELLED"],
@@ -263,8 +269,11 @@ export function transitionWork(
   if (command.expected_version !== current.current_revision) {
     return fail("VERSION_CONFLICT", "Work changed since it was read; reload before retrying");
   }
-  if (!isObjectRef(command.reason_ref) || !isObjectRef(command.authority.decision_ref) ||
-      command.authority.decision_ref.object_kind !== "AUTHORITY_DECISION" || !isTimestamp(command.occurred_at)) {
+  if (!isObjectRef(command.reason_ref) || !sameScope(command.reason_ref, current.work_ref) ||
+      !isObjectRef(command.authority.decision_ref) ||
+      command.authority.decision_ref.object_kind !== "AUTHORITY_DECISION" ||
+      !sameScope(command.authority.decision_ref, current.work_ref) ||
+      !isTimestamp(command.occurred_at)) {
     return fail("VALIDATION_ERROR", "A reason reference, authority decision reference and valid timestamp are required");
   }
   if (command.authority.disposition === "DENIED" || command.authority.disposition === "UNKNOWN" ||
