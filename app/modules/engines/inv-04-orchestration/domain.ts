@@ -207,14 +207,17 @@ export function createOrchestrationRun(input: {
   if (!isRequestContext(context) || !context.idempotency_key ||
       !isTimestamp(input.created_at) || !isObjectRef(input.orchestration_ref) ||
       input.orchestration_ref.object_kind !== "ORCHESTRATION_RUN" ||
-      !isObjectRef(input.request_ref)) {
+      !isObjectRef(input.request_ref) ||
+      input.request_ref.object_kind !== "ORCHESTRATION_REQUEST") {
     return fail("VALIDATION_ERROR", "Orchestration run requires trusted context, idempotency and valid run/request references");
   }
   if (!isObjectRef(work.work_ref) || work.lifecycle_state !== "READY") {
     return fail("VALIDATION_ERROR", "A new orchestration run requires Work in READY state");
   }
   if (work.scope_ref.scope_id !== context.scope_ref.scope_id ||
-      work.scope_ref.scope_kind !== context.scope_ref.scope_kind) {
+      work.scope_ref.scope_kind !== context.scope_ref.scope_kind ||
+      !sameScopeRef(input.request_ref.scope_ref, work.scope_ref) ||
+      !sameScopeRef(input.orchestration_ref.scope_ref, work.scope_ref)) {
     return fail("FORBIDDEN", "Orchestration request scope does not match Work scope");
   }
   if (graph.state !== "VALIDATED" || !sameRef(graph.work_ref, work.work_ref) ||
