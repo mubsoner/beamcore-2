@@ -439,11 +439,15 @@ export async function acceptWorkOutcome(
         oldTarget.work_ref.object_kind !== current.data.work_ref.object_kind ||
         oldTarget.work_ref.object_id !== current.data.work_ref.object_id ||
         oldTarget.work_ref.scope_ref.scope_id !== current.data.work_ref.scope_ref.scope_id ||
-        oldTarget.work_ref.scope_ref.scope_kind !== current.data.work_ref.scope_ref.scope_kind ||
-        command.current_target_revision !== oldTarget.revision_number + 1 ||
-        accepted.value.desired_outcome.desired_outcome_ref.object_id === oldTarget.desired_outcome_ref.object_id
+        oldTarget.work_ref.scope_ref.scope_kind !== current.data.work_ref.scope_ref.scope_kind
       ) {
         return rejected("INTEGRITY_OR_UNTRUSTED_INPUT", "Current Desired Outcome pointer does not match its active stored revision", correlation_id);
+      }
+      if (command.current_target_revision !== oldTarget.revision_number + 1) {
+        return rejected("VERSION_CONFLICT", "Desired Outcome revision changed; reload the current target before replacing it", correlation_id);
+      }
+      if (accepted.value.desired_outcome.desired_outcome_ref.object_id === oldTarget.desired_outcome_ref.object_id) {
+        return rejected("VALIDATION_ERROR", "A replacement must create a new Desired Outcome revision reference", correlation_id);
       }
       const superseded = await outcomeRepository.update(
         command.context,
@@ -451,8 +455,10 @@ export async function acceptWorkOutcome(
         oldTarget.desired_outcome_ref.object_version ?? String(oldTarget.revision_number),
         { ...oldTarget, state: "SUPERSEDED" },
       );
-      if (superseded.status !== "OK") {
-        return superseded as OperationResult<WorkRecord>;
+      if (superseded.status !== "OK" || superseded.data?.state !== "SUPERSEDED") {
+        return superseded.status !== "OK"
+          ? superseded as OperationResult<WorkRecord>
+          : rejected("INTEGRITY_OR_UNTRUSTED_INPUT", "Repository did not confirm Desired Outcome supersession", correlation_id);
       }
     }
 
@@ -464,6 +470,13 @@ export async function acceptWorkOutcome(
     if (savedTarget.status !== "OK" || !savedTarget.data) {
       return savedTarget as OperationResult<WorkRecord>;
     }
+    if (
+      savedTarget.data.desired_outcome_ref.object_id !== accepted.value.desired_outcome.desired_outcome_ref.object_id ||
+      savedTarget.data.revision_number !== accepted.value.desired_outcome.revision_number ||
+      savedTarget.data.state !== "ACTIVE"
+    ) {
+      return rejected("INTEGRITY_OR_UNTRUSTED_INPUT", "Repository returned a different Desired Outcome revision than the one accepted", correlation_id);
+    }
 
     const updated = await transaction.repository<WorkRecord>("inv-02.works")
       .update(
@@ -474,6 +487,13 @@ export async function acceptWorkOutcome(
       );
     if (updated.status !== "OK" || !updated.data) {
       return updated as OperationResult<WorkRecord>;
+    }
+    if (
+      updated.data.work_ref.object_id !== current.data.work_ref.object_id ||
+      updated.data.current_revision !== accepted.value.work.current_revision ||
+      updated.data.current_desired_outcome_ref?.object_id !== accepted.value.desired_outcome.desired_outcome_ref.object_id
+    ) {
+      return rejected("INTEGRITY_OR_UNTRUSTED_INPUT", "Repository did not confirm the accepted Work revision and Desired Outcome pointer", correlation_id);
     }
 
     const revisionResult = await transaction.appendOnly<WorkRevision>("inv-02.work-revisions")
