@@ -663,14 +663,24 @@ export function createGraphActivationRequest(input: {
       !sameScope(input.work_ref, { object_kind: "WORK", object_id: input.work_ref.object_id, scope_ref: input.context.scope_ref })) {
     return fail("VALIDATION_ERROR", "Activation requires an accepted Plan and validated Graph bound to the same Work and exact Plan revision");
   }
-  if (input.graph_revision.validation_result_ref === undefined) {
-    return fail("VALIDATION_ERROR", "Graph revision has no recorded validation result");
+  if (
+    !isObjectRef(input.graph_revision.validation_result_ref) ||
+    input.graph_revision.validation_result_ref.object_kind !== "GRAPH_VALIDATION_RESULT" ||
+    !sameScope(input.graph_revision.validation_result_ref, input.work_ref)
+  ) {
+    return fail("VALIDATION_ERROR", "Graph revision has no valid in-scope validation result");
   }
-  if (input.review_decision_ref && (!isObjectRef(input.review_decision_ref) ||
-      input.review_decision_ref.object_kind !== "GRAPH_REVIEW_DECISION")) {
-    return fail("VALIDATION_ERROR", "review_decision_ref must be a GRAPH_REVIEW_DECISION");
+  if (input.review_decision_ref && (
+      !isObjectRef(input.review_decision_ref) ||
+      input.review_decision_ref.object_kind !== "GRAPH_REVIEW_DECISION" ||
+      !sameScope(input.review_decision_ref, input.work_ref)
+  )) {
+    return fail("VALIDATION_ERROR", "review_decision_ref must be a GRAPH_REVIEW_DECISION in the Work scope");
   }
-  if (!allRefsValid(input.approval_refs)) return fail("VALIDATION_ERROR", "Activation approval references are invalid");
+  if (!allRefsValid(input.approval_refs) ||
+      input.approval_refs.some((ref) => !sameScope(ref, input.work_ref))) {
+    return fail("VALIDATION_ERROR", "Activation approval references must be valid and in the Work scope");
+  }
   return ok({
     request_ref: input.request_ref,
     work_ref: input.work_ref,
@@ -692,6 +702,9 @@ export function reconcileGraphActivation(
       !isObjectRef(request.work_ref) || request.work_ref.object_kind !== "WORK" ||
       !isObjectRef(request.plan_revision_ref) || request.plan_revision_ref.object_kind !== "PLAN_REVISION" ||
       !isObjectRef(request.graph_revision_ref) || request.graph_revision_ref.object_kind !== "WORK_GRAPH_REVISION" ||
+      !sameScope(request.request_ref, request.work_ref) ||
+      !sameScope(request.plan_revision_ref, request.work_ref) ||
+      !sameScope(request.graph_revision_ref, request.work_ref) ||
       !isRevisionNumber(request.expected_work_revision) ||
       !isObjectRef(receipt.receipt_ref) || receipt.receipt_ref.object_kind !== "PLAN_GRAPH_ACTIVATION_RECEIPT" ||
       !sameScope(receipt.receipt_ref, request.work_ref) ||
@@ -700,7 +713,10 @@ export function reconcileGraphActivation(
       !isObjectRef(receipt.plan_revision_ref) || !sameRef(receipt.plan_revision_ref, request.plan_revision_ref) ||
       !isObjectRef(receipt.graph_revision_ref) || !sameRef(receipt.graph_revision_ref, request.graph_revision_ref) ||
       receipt.expected_work_revision !== request.expected_work_revision ||
-      !isTimestamp(receipt.received_at)) {
+      (receipt.receipt_state !== "ACCEPTED" && receipt.receipt_state !== "REJECTED" && receipt.receipt_state !== "UNKNOWN") ||
+      !isTimestamp(request.requested_at) ||
+      !isTimestamp(receipt.received_at) ||
+      Date.parse(receipt.received_at) <= Date.parse(request.requested_at)) {
     return fail("VALIDATION_ERROR", "Activation receipt does not match the exact request, Work, Plan and Graph revisions");
   }
   if (receipt.receipt_state === "UNKNOWN") return ok("RECONCILE", ["Query INV-02 active binding before any retry"]);
