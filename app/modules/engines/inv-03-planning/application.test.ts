@@ -265,7 +265,9 @@ describe("INV-03 Planning application services", () => {
     expect(state.version("inv-03.plans", "plan-1")).toBe("1");
 
     const acceptedPrior = { ...first.data!, state: "ACCEPTED" as const };
-    state.seed("inv-03.plan-revisions", "plan-r1", acceptedPrior, "1");
+    // A review transition changes the PlanRevision storage version, while
+    // its immutable revision reference remains pinned to version 1.
+    state.seed("inv-03.plan-revisions", "plan-r1", acceptedPrior, "2");
 
     const second = await submitPlanRevision(state.unitOfWork, {
       ...planInput,
