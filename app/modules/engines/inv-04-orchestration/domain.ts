@@ -186,6 +186,10 @@ const fail = <T = never>(code: OrchestrationIssue["code"], safe_message: string)
 const sameRef = (a: ObjectRef, b: ObjectRef) =>
   a.object_kind === b.object_kind && a.object_id === b.object_id &&
   a.scope_ref.scope_id === b.scope_ref.scope_id && a.scope_ref.scope_kind === b.scope_ref.scope_kind;
+const sameScopeRef = (
+  a: RequestContext["scope_ref"],
+  b: RequestContext["scope_ref"],
+) => a.scope_id === b.scope_id && a.scope_kind === b.scope_kind;
 
 export function createOrchestrationRun(input: {
   context: RequestContext;
@@ -221,6 +225,14 @@ export function createOrchestrationRun(input: {
   }
   if (!isObjectRef(activation_receipt.receipt_ref) ||
       activation_receipt.receipt_ref.object_kind !== "PLAN_GRAPH_ACTIVATION_RECEIPT" ||
+      activation_receipt.receipt_ref.scope_ref.scope_id !== work.scope_ref.scope_id ||
+      activation_receipt.receipt_ref.scope_ref.scope_kind !== work.scope_ref.scope_kind ||
+      !isObjectRef(activation_receipt.request_ref) ||
+      activation_receipt.request_ref.object_kind !== "GRAPH_ACTIVATION_REQUEST" ||
+      !sameScopeRef(activation_receipt.request_ref.scope_ref, work.scope_ref) ||
+      !isRevisionNumber(activation_receipt.expected_work_revision) ||
+      !isRevisionNumber(activation_receipt.resulting_work_revision) ||
+      !isTimestamp(activation_receipt.received_at) ||
       activation_receipt.receipt_state !== "ACCEPTED" ||
       !sameRef(activation_receipt.work_ref, work.work_ref) ||
       !sameRef(activation_receipt.plan_revision_ref, graph.source_plan_revision_ref) ||
