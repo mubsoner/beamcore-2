@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+      - engines/foundation-v1
   pull_request:
 
 jobs:
