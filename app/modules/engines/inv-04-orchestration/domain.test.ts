@@ -227,6 +227,51 @@ describe("INV-04 orchestration domain", () => {
     if (checkpoint.ok) expect(checkpoint.value.graph_revision_ref).toEqual(run.graph_revision_ref);
   });
 
+  it("does not infer cancellation completion from missing unresolved references", () => {
+    const run = makeRun();
+    const base = {
+      cancellation_ref: ref("CANCELLATION_REPORT", "cancel-requested"),
+      run,
+      requested_at: "2026-11-13T03:00:08Z",
+      requested_by: context.actor_ref,
+      dispatches_not_started: [],
+      execution_cancel_requests: [],
+      completed_execution_refs: [],
+      unresolved_execution_refs: [],
+      world_state_reconciliation_refs: [],
+      irreversible_or_unknown_effect_refs: [],
+    };
+
+    const requested = createCancellationReport(base);
+    expect(requested.ok).toBe(true);
+    if (requested.ok) expect(requested.value.status).toBe("REQUESTED");
+
+    const propagated = createCancellationReport({
+      ...base,
+      cancellation_ref: ref("CANCELLATION_REPORT", "cancel-propagated"),
+      execution_cancel_requests: [ref("EXECUTION_CANCEL_REQUEST", "cancel-request-1")],
+    });
+    expect(propagated.ok).toBe(true);
+    if (propagated.ok) expect(propagated.value.status).toBe("PROPAGATED");
+
+    expect(createCancellationReport({
+      ...base,
+      execution_states_confirmed: true,
+    }).ok).toBe(false);
+
+    const completed = createCancellationReport({
+      ...base,
+      cancellation_ref: ref("CANCELLATION_REPORT", "cancel-completed"),
+      execution_states_confirmed: true,
+      completed_at: "2026-11-13T03:00:09Z",
+    });
+    expect(completed.ok).toBe(true);
+    if (completed.ok) {
+      expect(completed.value.status).toBe("COMPLETED");
+      expect(completed.value.completed_at).toBe("2026-11-13T03:00:09Z");
+    }
+  });
+
   it("reports cancellation as UNKNOWN when effects remain unresolved", () => {
     const run = makeRun();
     const report = createCancellationReport({
