@@ -245,10 +245,13 @@ export async function submitPlanRevision(
       if (!superseded.ok) {
         return rejected("VALIDATION_ERROR", superseded.issues[0].safe_message, correlation_id);
       }
+      if (!priorRevision.object_version) {
+        return rejected("INTERNAL_ERROR", "Plan revision repository did not return its current storage version", correlation_id);
+      }
       const savedPrior = await revisions.update(
         command.context,
         revision.prior_revision_ref,
-        revision.prior_revision_ref.object_version ?? String(priorRevision.data.revision_number),
+        priorRevision.object_version,
         superseded.value,
       );
       if (savedPrior.status !== "OK") return savedPrior as OperationResult<PlanRevision>;
@@ -658,6 +661,19 @@ export async function requestGraphActivation(
   }
   if (!command.expected_plan_version?.trim() || !command.expected_graph_version?.trim()) {
     return rejected("VALIDATION_ERROR", "Graph activation requires expected Plan and Graph versions", correlation_id);
+  }
+
+  if (
+    !command.expected_plan_version?.trim() ||
+    !command.expected_graph_version?.trim() ||
+    !isObjectRef(command.work_ref) ||
+    command.work_ref.object_kind !== "WORK" ||
+    !isObjectRef(command.plan_revision.plan_revision_ref) ||
+    command.plan_revision.plan_revision_ref.object_kind !== "PLAN_REVISION" ||
+    !isObjectRef(command.graph_revision.graph_revision_ref) ||
+    command.graph_revision.graph_revision_ref.object_kind !== "WORK_GRAPH_REVISION"
+  ) {
+    return rejected("VALIDATION_ERROR", "Activation requires valid Work, Plan and Graph references with expected record versions", correlation_id);
   }
 
   return unitOfWork.execute(command.context, async (transaction) => {
