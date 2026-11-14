@@ -214,6 +214,118 @@ describe("INV-03 planning and graph domain", () => {
     if (duplicateValidation.ok) expect(duplicateValidation.value.status).toBe("INVALID");
   });
 
+  it("rejects cross-scope Plan inputs and non-pinned Graph node references", () => {
+    const plan = makePlan();
+    const otherScope = { scope_id: "scope-foreign", scope_kind: "WORK" as const };
+    const foreignSource = {
+      ...ref("SOURCE", "foreign-source"),
+      scope_ref: otherScope,
+    };
+
+    const invalidPlan = createPlanRevision({
+      context,
+      plan_ref: plan.plan_ref,
+      plan_revision_ref: ref("PLAN_REVISION", "plan-r2"),
+      work_ref: workRef,
+      intent_ref: plan.intent_ref,
+      desired_outcome_ref: plan.desired_outcome_ref,
+      revision_number: 2,
+      prior_revision_ref: plan.plan_revision_ref,
+      strategy_summary: "Updated plan",
+      step_proposals: [{
+        ...plan.step_proposals[0],
+        step_proposal_ref: ref("PLAN_STEP_PROPOSAL", "step-r2"),
+        input_refs: [foreignSource],
+      }],
+      assumptions: [],
+      non_goals: [],
+      constraint_refs: [],
+      capability_requirement_refs: [],
+      created_at: "2026-11-13T03:00:02Z",
+    });
+    expect(invalidPlan.ok).toBe(false);
+
+    const badNodeGraph = createGraphRevision({
+      context,
+      graph_ref: graphRef,
+      graph_revision_ref: ref("WORK_GRAPH_REVISION", "graph-bad-node-ref"),
+      work_ref: workRef,
+      source_plan_revision_ref: planRevisionRef,
+      revision_number: 1,
+      nodes: [{
+        ...node("node-bad-graph-ref"),
+        graph_ref: { ...graphRef, object_version: "2" },
+      }],
+      edges: [],
+      change_reason: "Detect graph reference version mismatch",
+      created_at: "2026-11-13T03:00:02Z",
+    });
+    expect(badNodeGraph.ok).toBe(false);
+
+    const foreignNodeInput = createGraphRevision({
+      context,
+      graph_ref: graphRef,
+      graph_revision_ref: ref("WORK_GRAPH_REVISION", "graph-foreign-input"),
+      work_ref: workRef,
+      source_plan_revision_ref: planRevisionRef,
+      revision_number: 1,
+      nodes: [{ ...node("node-foreign-input"), input_refs: [foreignSource] }],
+      edges: [],
+      change_reason: "Detect cross-scope graph input",
+      created_at: "2026-11-13T03:00:02Z",
+    });
+    expect(foreignNodeInput.ok).toBe(false);
+  });
+
+  it("requires dependency edges to pin exact node versions and annotations to graph nodes", () => {
+    const a = node("node-a");
+    const b = node("node-b");
+    const graph = createGraphRevision({
+      context,
+      graph_ref: graphRef,
+      graph_revision_ref: graphRevisionRef,
+      work_ref: workRef,
+      source_plan_revision_ref: planRevisionRef,
+      revision_number: 1,
+      nodes: [a, b],
+      edges: [{
+        edge_ref: ref("DEPENDENCY_EDGE", "edge-version-mismatch"),
+        from_node_ref: { ...a.node_ref, object_version: "2" },
+        to_node_ref: b.node_ref,
+        dependency_kind: "COMPLETION",
+        created_at: "2026-11-13T03:00:02Z",
+      }],
+      change_reason: "Detect endpoint reference version mismatch",
+      created_at: "2026-11-13T03:00:02Z",
+    });
+    expect(graph.ok).toBe(true);
+    if (!graph.ok) return;
+
+    const validation = validateGraphRevision({
+      revision: graph.value,
+      validation_ref: ref("GRAPH_VALIDATION_RESULT", "validation-edge-version"),
+      validated_at: "2026-11-13T03:00:03Z",
+      validator_version: "1.0.0",
+    });
+    expect(validation.ok).toBe(true);
+    if (validation.ok) expect(validation.value.status).toBe("INVALID");
+
+    const invalidAnnotation = createGraphRevision({
+      context,
+      graph_ref: graphRef,
+      graph_revision_ref: ref("WORK_GRAPH_REVISION", "graph-invalid-annotation"),
+      work_ref: workRef,
+      source_plan_revision_ref: planRevisionRef,
+      revision_number: 1,
+      nodes: [a],
+      edges: [],
+      affected_node_refs: [ref("GRAPH_NODE", "not-in-this-graph")],
+      change_reason: "Detect unbound graph annotation",
+      created_at: "2026-11-13T03:00:02Z",
+    });
+    expect(invalidAnnotation.ok).toBe(false);
+  });
+
   it("enforces configured graph limits", () => {
     const graph = makeGraph();
     const result = validateGraphRevision({
