@@ -15,9 +15,10 @@ import {
 import {
   applyRequestedPlanGraphActivation,
   getActivePlanGraphBinding,
+  getPlanGraphActivationReceipt,
 } from "./application";
 import { createGraphActivationCandidateReader } from "../inv-03-planning/application";
-import { createWork, type WorkRecord } from "./domain";
+import { createWork, type PlanGraphActivationBindingReceipt, type WorkRecord } from "./domain";
 import type {
   GraphActivationRequest,
   PlanRecord,
@@ -402,6 +403,57 @@ describe("INV-02 Plan/Graph activation application", () => {
       expect(state.idempotencyCount()).toBe(0);
     },
   );
+
+  it("reads the exact immutable activation receipt by its owner-issued reference", async () => {
+    const { state, command } = makeFixture();
+    const applied = await applyRequestedPlanGraphActivation(
+      state.unitOfWork,
+      activationReader(state),
+      command,
+    );
+    expect(applied.status).toBe("OK");
+
+    const receipts = state.appended<PlanGraphActivationBindingReceipt>(
+      "inv-02.plan-graph-activation-receipts",
+    );
+    expect(receipts).toHaveLength(1);
+
+    const result = await getPlanGraphActivationReceipt(
+      state.unitOfWork,
+      context(),
+      command.receipt_ref,
+    );
+    expect(result.status).toBe("OK");
+    expect(result.data?.receipt_ref).toEqual(command.receipt_ref);
+    expect(result.data?.request_ref).toEqual(command.request_ref);
+    expect(result.data?.work_ref.object_id).toBe("work-1");
+    expect(result.data?.plan_revision_ref.object_id).toBe("plan-r1");
+    expect(result.data?.graph_revision_ref.object_id).toBe("graph-r1");
+    expect(result.data?.expected_work_revision).toBe(1);
+    expect(result.data?.resulting_work_revision).toBe(2);
+    expect(result.data?.receipt_state).toBe("ACCEPTED");
+  });
+
+  it("rejects activation receipt reads outside the authenticated scope", async () => {
+    const { state, command } = makeFixture();
+    await applyRequestedPlanGraphActivation(
+      state.unitOfWork,
+      activationReader(state),
+      command,
+    );
+
+    const foreignContext = {
+      ...context(),
+      scope_ref: { scope_id: "other-scope", scope_kind: "WORK" as const },
+    };
+    const result = await getPlanGraphActivationReceipt(
+      state.unitOfWork,
+      foreignContext,
+      command.receipt_ref,
+    );
+    expect(result.status).toBe("REJECTED");
+    expect(result.errors[0]?.code).toBe("VALIDATION_ERROR");
+  });
 
   it("does not bind a request that carries unverified approval references", async () => {
     const { state, command } = makeFixture([ref("APPROVAL", "approval-1")]);

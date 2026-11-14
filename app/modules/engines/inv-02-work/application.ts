@@ -673,6 +673,89 @@ export async function applyRequestedPlanGraphActivation(
 }
 
 /**
+ * Reads an immutable activation receipt from the INV-02 owner boundary.
+ *
+ * Consumers must provide the receipt reference they received from the
+ * activation acknowledgement/outbox event. A missing receipt is not treated
+ * as proof that activation was rejected; callers must preserve UNKNOWN and
+ * reconcile through the owner path.
+ */
+export async function getPlanGraphActivationReceipt(
+  unitOfWork: EngineUnitOfWorkPort,
+  context: RequestContext,
+  receipt_ref: ObjectRef,
+): Promise<OperationResult<PlanGraphActivationBindingReceipt>> {
+  const correlation_id = context.correlation_id;
+  if (
+    !isRequestContext(context) ||
+    !isObjectRef(receipt_ref) ||
+    receipt_ref.object_kind !== "PLAN_GRAPH_ACTIVATION_RECEIPT" ||
+    receipt_ref.scope_ref.scope_id !== context.scope_ref.scope_id ||
+    receipt_ref.scope_ref.scope_kind !== context.scope_ref.scope_kind
+  ) {
+    return rejected(
+      "VALIDATION_ERROR",
+      "Activation receipt lookup requires an in-scope PLAN_GRAPH_ACTIVATION_RECEIPT reference",
+      correlation_id,
+    );
+  }
+
+  const stored = await unitOfWork.execute(context, (transaction) =>
+    transaction
+      .appendOnly<PlanGraphActivationBindingReceipt>("inv-02.plan-graph-activation-receipts")
+      .get(context, receipt_ref),
+  );
+  if (stored.status !== "OK" || !stored.data) {
+    return propagateFailure<PlanGraphActivationBindingReceipt>(stored);
+  }
+
+  const receipt = stored.data;
+  if (
+    !sameObjectRef(receipt.receipt_ref, receipt_ref) ||
+    !isObjectRef(receipt.request_ref) ||
+    receipt.request_ref.object_kind !== "GRAPH_ACTIVATION_REQUEST" ||
+    !isObjectRef(receipt.work_ref) ||
+    receipt.work_ref.object_kind !== "WORK" ||
+    !isObjectRef(receipt.plan_revision_ref) ||
+    receipt.plan_revision_ref.object_kind !== "PLAN_REVISION" ||
+    !isObjectRef(receipt.graph_revision_ref) ||
+    receipt.graph_revision_ref.object_kind !== "WORK_GRAPH_REVISION" ||
+    !sameObjectRef(receipt.request_ref, {
+      ...receipt.request_ref,
+      scope_ref: receipt.work_ref.scope_ref,
+    }) ||
+    !sameObjectRef(receipt.plan_revision_ref, {
+      ...receipt.plan_revision_ref,
+      scope_ref: receipt.work_ref.scope_ref,
+    }) ||
+    !sameObjectRef(receipt.graph_revision_ref, {
+      ...receipt.graph_revision_ref,
+      scope_ref: receipt.work_ref.scope_ref,
+    }) ||
+    receipt.work_ref.scope_ref.scope_id !== context.scope_ref.scope_id ||
+    receipt.work_ref.scope_ref.scope_kind !== context.scope_ref.scope_kind ||
+    !Number.isSafeInteger(receipt.expected_work_revision) ||
+    receipt.expected_work_revision < 1 ||
+    !Number.isSafeInteger(receipt.resulting_work_revision) ||
+    receipt.resulting_work_revision !== receipt.expected_work_revision + 1 ||
+    receipt.receipt_state !== "ACCEPTED" ||
+    !isTimestamp(receipt.received_at)
+  ) {
+    return rejected(
+      "INTEGRITY_OR_UNTRUSTED_INPUT",
+      "Stored activation receipt is malformed or does not match its owner-scoped reference",
+      correlation_id,
+    );
+  }
+
+  return createOperationResult({
+    status: "OK",
+    correlation_id,
+    data: receipt,
+  });
+}
+
+/**
  * Reads the active Plan/Graph pointers from the authoritative INV-02 Work
  * record. A newer draft may exist, but it does not replace this binding until
  * INV-02 accepts and applies a later activation request.
