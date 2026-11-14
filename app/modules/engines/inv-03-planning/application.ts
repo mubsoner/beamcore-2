@@ -18,15 +18,12 @@ import {
   createPlanRevision,
   transitionPlanRevision,
   validateGraphRevision,
-  type ChangeImpactReport,
   type GraphActivationRequest,
-  type GraphNode,
   type GraphValidationResult,
   type PlanRecord,
   type PlanRevision,
   type WorkGraphRecord,
   type WorkGraphRevision,
-  type DependencyEdge,
   type PlanningIssue,
 } from "./domain";
 
@@ -333,6 +330,9 @@ export async function submitGraphRevision(
   if (envelopeIssue) {
     return rejected("VALIDATION_ERROR", envelopeIssue, correlation_id);
   }
+  if (!command.expected_plan_version?.trim()) {
+    return rejected("VALIDATION_ERROR", "Graph submission requires expected_plan_version", correlation_id);
+  }
 
   const created = createGraphRevision(command);
   if (!created.ok) {
@@ -375,8 +375,13 @@ export async function submitGraphRevision(
     if (plans.status !== "OK" || !plans.data) {
       return plans as OperationResult<WorkGraphRevision>;
     }
-    if (!sameRef(plans.data.latest_revision_ref, plan.data.plan_revision_ref)) {
-      return rejected("VERSION_CONFLICT", "Graph source Plan revision is no longer the latest accepted revision", correlation_id);
+    if (
+      plans.object_version !== command.expected_plan_version ||
+      !sameRef(plans.data.plan_ref, plan.data.plan_ref) ||
+      !sameRef(plans.data.work_ref, revision.work_ref) ||
+      !sameRef(plans.data.latest_revision_ref, plan.data.plan_revision_ref)
+    ) {
+      return rejected("VERSION_CONFLICT", "Graph source Plan is stale or no longer the latest accepted revision", correlation_id);
     }
 
     const graphRecords = transaction.repository<WorkGraphRecord>("inv-03.work-graphs");
@@ -532,6 +537,9 @@ export async function validateAndRecordGraph(
     if (!sameRef(current.data.graph_revision_ref, command.graph_revision_ref)) {
       return rejected("INTEGRITY_OR_UNTRUSTED_INPUT", "Repository returned a different Graph revision than requested", correlation_id);
     }
+    if (current.object_version !== command.expected_graph_version) {
+      return rejected("VERSION_CONFLICT", "Graph revision changed before validation; reload before retrying", correlation_id);
+    }
 
     const graphRecord = await transaction.repository<WorkGraphRecord>("inv-03.work-graphs")
       .get(command.context, current.data.graph_ref);
@@ -648,6 +656,9 @@ export async function requestGraphActivation(
   if (envelopeIssue) {
     return rejected("VALIDATION_ERROR", envelopeIssue, correlation_id);
   }
+  if (!command.expected_plan_version?.trim() || !command.expected_graph_version?.trim()) {
+    return rejected("VALIDATION_ERROR", "Graph activation requires expected Plan and Graph versions", correlation_id);
+  }
 
   return unitOfWork.execute(command.context, async (transaction) => {
     const priorResult = await transaction.idempotency.get<GraphActivationRequest>(
@@ -686,6 +697,12 @@ export async function requestGraphActivation(
     if (
       !sameRef(plan.data.plan_revision_ref, command.plan_revision.plan_revision_ref) ||
       !sameRef(graph.data.graph_revision_ref, command.graph_revision.graph_revision_ref) ||
+      !sameRef(planRecord.data.plan_ref, plan.data.plan_ref) ||
+      !sameRef(planRecord.data.work_ref, command.work_ref) ||
+      !sameRef(graphRecord.data.graph_ref, graph.data.graph_ref) ||
+      !sameRef(graphRecord.data.work_ref, command.work_ref) ||
+      planRecord.object_version !== command.expected_plan_version ||
+      graphRecord.object_version !== command.expected_graph_version ||
       !sameRef(planRecord.data.latest_revision_ref, plan.data.plan_revision_ref) ||
       !sameRef(graphRecord.data.latest_revision_ref, graph.data.graph_revision_ref)
     ) {
