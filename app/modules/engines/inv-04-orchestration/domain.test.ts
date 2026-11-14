@@ -179,6 +179,52 @@ describe("INV-04 orchestration domain", () => {
     }).ok).toBe(false);
   });
 
+  it("rejects activation receipts whose reference versions or scopes do not match", () => {
+    const fixtures = makeFixtures();
+    const base = {
+      context,
+      orchestration_ref: ref("ORCHESTRATION_RUN", "run-ref-check"),
+      request_ref: ref("ORCHESTRATION_REQUEST", "request-ref-check"),
+      work: fixtures.work,
+      graph: fixtures.graph,
+      activation_receipt: fixtures.receipt,
+      created_at: "2026-11-13T03:00:06Z",
+    };
+
+    expect(createOrchestrationRun({
+      ...base,
+      activation_receipt: {
+        ...fixtures.receipt,
+        graph_revision_ref: {
+          ...fixtures.graph.graph_revision_ref,
+          object_version: "2",
+        },
+      },
+    }).ok).toBe(false);
+
+    expect(createOrchestrationRun({
+      ...base,
+      activation_receipt: {
+        ...fixtures.receipt,
+        request_ref: {
+          ...fixtures.receipt.request_ref,
+          object_version: "2",
+        },
+      },
+    }).ok).toBe(false);
+
+    expect(createOrchestrationRun({
+      ...base,
+      activation_receipt: {
+        ...fixtures.receipt,
+        receipt_ref: {
+          ...fixtures.receipt.receipt_ref,
+          scope_ref: { scope_id: "other-scope", scope_kind: "WORK" },
+        },
+      },
+    }).ok).toBe(false);
+  });
+
   it("enforces orchestration run state transitions and version checks", () => {
     const run = makeRun();
     const evaluating = transitionOrchestrationRun({
