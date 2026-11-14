@@ -14,7 +14,7 @@ import {
 } from "../shared";
 import type { WorkRecord } from "../inv-02-work/domain";
 import type { GraphActivationReceipt, GraphNode, WorkGraphRevision } from "../inv-03-planning/domain";
-import { submitPlan, type SubmitPlanCommand } from "./application";
+import { submitPlan, type OrchestrationStartReaderPort, type SubmitPlanCommand } from "./application";
 
 const scope = { scope_id: "scope-1", scope_kind: "WORK" as const };
 const context = (request_id: string, idempotency_key: string, correlation_id: string): RequestContext => ({
@@ -116,6 +116,33 @@ function makeFixtures() {
     graph_revision_ref,
     nodeA,
     nodeB,
+  };
+}
+
+function makeReader(fixtures: ReturnType<typeof makeFixtures>): OrchestrationStartReaderPort {
+  return {
+    readStartSnapshot: async (_context, refs) => {
+      if (refs.work_ref.object_id !== fixtures.work_ref.object_id ||
+          refs.graph_revision_ref.object_id !== fixtures.graph_revision_ref.object_id ||
+          refs.activation_receipt_ref.object_id !== fixtures.activation_receipt_ref.object_id) {
+        return createOperationResult({
+          status: "REJECTED",
+          correlation_id: "corr-test",
+          errors: [createOperationError("NOT_FOUND_OR_NOT_VISIBLE", "Start snapshot was not found")],
+        });
+      }
+      return createOperationResult({
+        status: "OK",
+        correlation_id: "corr-test",
+        data: {
+          work: fixtures.work,
+          work_storage_version: "3",
+          graph: fixtures.graph,
+          activation_receipt: fixtures.receipt,
+          observed_at: "2026-11-14T01:00:05Z",
+        },
+      });
+    },
   };
 }
 
@@ -321,19 +348,12 @@ function makeCommand(
   };
 }
 
-function seedFixtures(state: ReturnType<typeof makeUnitOfWork>, fixtures: ReturnType<typeof makeFixtures>) {
-  state.seedRepository("inv-02.works", fixtures.work_ref.object_id, fixtures.work, "3");
-  state.seedRepository("inv-03.graph-revisions", fixtures.graph_revision_ref.object_id, fixtures.graph, "1");
-  state.seedAppendOnly("inv-02.plan-graph-activation-receipts", fixtures.receipt);
-}
-
 describe("INV-04 orchestration application", () => {
   it("creates a pinned run and PENDING coordination records from INV-02's receipt", async () => {
     const fixtures = makeFixtures();
     const state = makeUnitOfWork();
-    seedFixtures(state, fixtures);
 
-    const result = await submitPlan(state.unitOfWork, makeCommand(fixtures));
+    const result = await submitPlan(state.unitOfWork, makeReader(fixtures), makeCommand(fixtures));
     expect(result.status).toBe("OK");
     expect(result.data?.state).toBe("CREATED");
     expect(result.data?.activation_request_ref).toEqual(fixtures.activation_request_ref);
@@ -349,10 +369,9 @@ describe("INV-04 orchestration application", () => {
   it("returns the original result for an identical idempotent retry", async () => {
     const fixtures = makeFixtures();
     const state = makeUnitOfWork();
-    seedFixtures(state, fixtures);
     const command = makeCommand(fixtures);
-    const first = await submitPlan(state.unitOfWork, command);
-    const replay = await submitPlan(state.unitOfWork, command);
+    const first = await submitPlan(state.unitOfWork, makeReader(fixtures), command);
+    const replay = await submitPlan(state.unitOfWork, makeReader(fixtures), command);
     expect(first.status).toBe("OK");
     expect(replay).toEqual(first);
     expect(state.events).toHaveLength(1);
@@ -361,14 +380,13 @@ describe("INV-04 orchestration application", () => {
   it("rejects a changed payload that reuses the orchestration idempotency key", async () => {
     const fixtures = makeFixtures();
     const state = makeUnitOfWork();
-    seedFixtures(state, fixtures);
     const command = makeCommand(fixtures);
-    await submitPlan(state.unitOfWork, command);
+    await submitPlan(state.unitOfWork, makeReader(fixtures), command);
     const changed = {
       ...command,
       request_fingerprint: fingerprint("b"),
     };
-    const result = await submitPlan(state.unitOfWork, changed);
+    const result = await submitPlan(state.unitOfWork, makeReader(fixtures), changed);
     expect(result.status).toBe("REJECTED");
     expect(result.errors[0].code).toBe("IDEMPOTENCY_CONFLICT");
     expect(state.events).toHaveLength(1);
@@ -377,12 +395,11 @@ describe("INV-04 orchestration application", () => {
   it("rejects stale Work versions before creating a run", async () => {
     const fixtures = makeFixtures();
     const state = makeUnitOfWork();
-    seedFixtures(state, fixtures);
     const command = {
       ...makeCommand(fixtures, "stale", "idem-stale"),
       expected_work_version: "2",
     };
-    const result = await submitPlan(state.unitOfWork, command);
+    const result = await submitPlan(state.unitOfWork, makeReader(fixtures), command);
     expect(result.status).toBe("REJECTED");
     expect(result.errors[0].code).toBe("VERSION_CONFLICT");
     expect(state.read("inv-04.orchestration-runs", "run-stale")).toBeUndefined();
@@ -391,12 +408,11 @@ describe("INV-04 orchestration application", () => {
   it("rejects a receipt from a different activation request", async () => {
     const fixtures = makeFixtures();
     const state = makeUnitOfWork();
-    seedFixtures(state, fixtures);
     const command = {
       ...makeCommand(fixtures, "wrong-request", "idem-wrong-request"),
       activation_request_ref: ref("GRAPH_ACTIVATION_REQUEST", "some-other-request"),
     };
-    const result = await submitPlan(state.unitOfWork, command);
+    const result = await submitPlan(state.unitOfWork, makeReader(fixtures), command);
     expect(result.status).toBe("REJECTED");
     expect(result.errors[0].code).toBe("VALIDATION_ERROR");
     expect(state.read("inv-04.orchestration-runs", "run-wrong-request")).toBeUndefined();
@@ -405,12 +421,11 @@ describe("INV-04 orchestration application", () => {
   it("requires one exact coordination allocation for every pinned Graph node", async () => {
     const fixtures = makeFixtures();
     const state = makeUnitOfWork();
-    seedFixtures(state, fixtures);
     const command = {
       ...makeCommand(fixtures, "missing-node", "idem-missing-node"),
       node_coordination_allocations: [],
     };
-    const result = await submitPlan(state.unitOfWork, command);
+    const result = await submitPlan(state.unitOfWork, makeReader(fixtures), command);
     expect(result.status).toBe("REJECTED");
     expect(result.errors[0].code).toBe("VALIDATION_ERROR");
     expect(state.read("inv-04.orchestration-runs", "run-missing-node")).toBeUndefined();
@@ -420,8 +435,7 @@ describe("INV-04 orchestration application", () => {
     const fixtures = makeFixtures();
     fixtures.receipt.receipt_state = "UNKNOWN";
     const state = makeUnitOfWork();
-    seedFixtures(state, fixtures);
-    const result = await submitPlan(state.unitOfWork, makeCommand(fixtures, "unknown", "idem-unknown"));
+    const result = await submitPlan(state.unitOfWork, makeReader(fixtures), makeCommand(fixtures, "unknown", "idem-unknown"));
     expect(result.status).toBe("REJECTED");
     expect(result.errors[0].code).toBe("OUTCOME_UNKNOWN_OR_RECONCILIATION_REQUIRED");
     expect(state.read("inv-04.orchestration-runs", "run-unknown")).toBeUndefined();

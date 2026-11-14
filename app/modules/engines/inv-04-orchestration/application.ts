@@ -27,6 +27,26 @@ export interface NodeCoordinationAllocation {
   node_coordination_ref: ObjectRef;
 }
 
+export interface OrchestrationStartSnapshot {
+  work: WorkRecord;
+  work_storage_version: string;
+  graph: WorkGraphRevision;
+  activation_receipt: GraphActivationReceipt;
+  observed_at: string;
+}
+
+/** Read-only boundary to INV-02/INV-03; adapters may use authenticated service APIs. */
+export interface OrchestrationStartReaderPort {
+  readStartSnapshot(
+    context: RequestContext,
+    refs: {
+      work_ref: ObjectRef;
+      graph_revision_ref: ObjectRef;
+      activation_receipt_ref: ObjectRef;
+    },
+  ): Promise<OperationResult<OrchestrationStartSnapshot>>;
+}
+
 export interface SubmitPlanCommand {
   context: RequestContext;
   work_ref: ObjectRef;
@@ -150,6 +170,7 @@ function validateCommandReferences(command: SubmitPlanCommand): string | undefin
  */
 export async function submitPlan(
   unitOfWork: EngineUnitOfWorkPort,
+  reader: OrchestrationStartReaderPort,
   command: SubmitPlanCommand,
 ): Promise<OperationResult<OrchestrationRun>> {
   const correlation_id = command.context.correlation_id;
@@ -160,6 +181,147 @@ export async function submitPlan(
   const referenceIssue = validateCommandReferences(command);
   if (referenceIssue) {
     return rejected("VALIDATION_ERROR", referenceIssue, correlation_id);
+  }
+
+  return unitOfWork.execute(command.context, async (transaction) => {
+  const readIdempotency = await unitOfWork.execute(command.context, async (transaction) => {
+    const prior = await transaction.idempotency.get<OrchestrationRun>(
+      command.context,
+      command.context.idempotency_key!,
+    );
+    if (prior.status !== "OK") return propagateFailure<IdempotencyRecord<OrchestrationRun> | null>(prior);
+    return createOperationResult({
+      status: "OK",
+      correlation_id,
+      data: prior.data,
+    });
+  });
+  if (readIdempotency.status !== "OK") return propagateFailure<OrchestrationRun>(readIdempotency);
+  if (readIdempotency.data) {
+    if (readIdempotency.data.request_fingerprint !== command.request_fingerprint) {
+      return rejected(
+        "IDEMPOTENCY_CONFLICT",
+        "Idempotency key was already used for a different orchestration submission",
+        correlation_id,
+      );
+    }
+    return readIdempotency.data.result;
+  }
+
+  // Read INV-02/INV-03 source-of-truth records before opening INV-04's write transaction.
+  const snapshotResult = await reader.readStartSnapshot(command.context, {
+    work_ref: command.work_ref,
+    graph_revision_ref: command.graph_revision_ref,
+    activation_receipt_ref: command.activation_receipt_ref,
+  });
+  if (snapshotResult.status !== "OK" || !snapshotResult.data) {
+    return propagateFailure<OrchestrationRun>(snapshotResult);
+  }
+  const snapshot = snapshotResult.data;
+  if (!isTimestamp(snapshot.observed_at) ||
+      Date.parse(snapshot.observed_at) > Date.parse(command.created_at) ||
+      !sameObjectRef(snapshot.work.work_ref, command.work_ref) ||
+      !sameObjectRef(snapshot.graph.graph_revision_ref, command.graph_revision_ref) ||
+      !sameObjectRef(snapshot.activation_receipt.receipt_ref, command.activation_receipt_ref)) {
+    return rejected(
+      "INTEGRITY_OR_UNTRUSTED_INPUT",
+      "Cross-engine start snapshot is invalid or does not match the requested references",
+      correlation_id,
+    );
+  }
+  if (!snapshot.work_storage_version ||
+      snapshot.work_storage_version !== command.expected_work_version ||
+      String(snapshot.work.current_revision) !== command.expected_work_version) {
+    return rejected(
+      "VERSION_CONFLICT",
+      "Work version changed before orchestration submission; reload the active binding",
+      correlation_id,
+    );
+  }
+
+  const created = createOrchestrationRun({
+    context: command.context,
+    orchestration_ref: command.orchestration_ref,
+    request_ref: command.request_ref,
+    activation_request_ref: command.activation_request_ref,
+    work: snapshot.work,
+    graph: snapshot.graph,
+    activation_receipt: snapshot.activation_receipt,
+    created_at: command.created_at,
+  });
+  if (!created.ok) {
+    return rejected(
+      mapDomainCode(created.issues[0].code),
+      created.issues.map((issue) => issue.safe_message).join("; "),
+      correlation_id,
+    );
+  }
+
+  const allocations = command.node_coordination_allocations;
+  if (allocations.length !== snapshot.graph.nodes.length) {
+    return rejected(
+      "VALIDATION_ERROR",
+      "Exactly one node-coordination reference is required for every node in the pinned Graph revision",
+      correlation_id,
+    );
+  }
+  const allocationByNode = new Map<string, NodeCoordinationAllocation>();
+  const coordinationIds = new Set<string>();
+  for (const allocation of allocations) {
+    if (!isObjectRef(allocation.graph_node_ref) ||
+        allocation.graph_node_ref.object_kind !== "GRAPH_NODE" ||
+        !isObjectRef(allocation.node_coordination_ref) ||
+        allocation.node_coordination_ref.object_kind !== "NODE_COORDINATION" ||
+        allocation.graph_node_ref.scope_ref.scope_id !== command.context.scope_ref.scope_id ||
+        allocation.graph_node_ref.scope_ref.scope_kind !== command.context.scope_ref.scope_kind ||
+        allocation.node_coordination_ref.scope_ref.scope_id !== command.context.scope_ref.scope_id ||
+        allocation.node_coordination_ref.scope_ref.scope_kind !== command.context.scope_ref.scope_kind) {
+      return rejected(
+        "VALIDATION_ERROR",
+        "Node-coordination allocations must be valid, in-scope GRAPH_NODE and NODE_COORDINATION references",
+        correlation_id,
+      );
+    }
+    const key = allocation.graph_node_ref.object_kind + ":" + allocation.graph_node_ref.object_id;
+    const coordKey = allocation.node_coordination_ref.object_kind + ":" + allocation.node_coordination_ref.object_id;
+    if (allocationByNode.has(key) || coordinationIds.has(coordKey)) {
+      return rejected(
+        "VALIDATION_ERROR",
+        "Node-coordination allocations must not duplicate graph nodes or coordination identities",
+        correlation_id,
+      );
+    }
+    allocationByNode.set(key, allocation);
+    coordinationIds.add(coordKey);
+  }
+
+  const nodeRecords: NodeCoordinationRecord[] = [];
+  for (const graphNode of snapshot.graph.nodes) {
+    const key = graphNode.node_ref.object_kind + ":" + graphNode.node_ref.object_id;
+    const allocation = allocationByNode.get(key);
+    if (!allocation || !sameObjectRef(allocation.graph_node_ref, graphNode.node_ref)) {
+      return rejected(
+        "VALIDATION_ERROR",
+        "Every initial node-coordination record must pin an exact node reference from the activated Graph revision",
+        correlation_id,
+      );
+    }
+    const nodeResult = createNodeCoordination({
+      context: command.context,
+      run: created.value,
+      graph: snapshot.graph,
+      node: graphNode,
+      node_coordination_ref: allocation.node_coordination_ref,
+      created_at: command.created_at,
+    });
+    if (!nodeResult.ok) {
+      return rejected(
+        mapDomainCode(nodeResult.issues[0].code),
+        nodeResult.issues.map((issue) => issue.safe_message).join("; "),
+        correlation_id,
+      );
+    }
+    nodeRecords.push(nodeResult.value);
   }
 
   return unitOfWork.execute(command.context, async (transaction) => {
@@ -177,140 +339,6 @@ export async function submitPlan(
         );
       }
       return prior.data.result;
-    }
-
-    const workResult = await transaction.repository<WorkRecord>("inv-02.works")
-      .get(command.context, command.work_ref);
-    if (workResult.status !== "OK" || !workResult.data) {
-      return propagateFailure<OrchestrationRun>(workResult);
-    }
-    if (!sameObjectRef(workResult.data.work_ref, command.work_ref)) {
-      return rejected(
-        "INTEGRITY_OR_UNTRUSTED_INPUT",
-        "Work repository returned a different Work identity than requested",
-        correlation_id,
-      );
-    }
-    if (!workResult.object_version ||
-        workResult.object_version !== command.expected_work_version ||
-        String(workResult.data.current_revision) !== command.expected_work_version) {
-      return rejected(
-        "VERSION_CONFLICT",
-        "Work version changed before orchestration submission; reload the active binding",
-        correlation_id,
-      );
-    }
-
-    const graphResult = await transaction.repository<WorkGraphRevision>("inv-03.graph-revisions")
-      .get(command.context, command.graph_revision_ref);
-    if (graphResult.status !== "OK" || !graphResult.data) {
-      return propagateFailure<OrchestrationRun>(graphResult);
-    }
-    if (!sameObjectRef(graphResult.data.graph_revision_ref, command.graph_revision_ref)) {
-      return rejected(
-        "INTEGRITY_OR_UNTRUSTED_INPUT",
-        "Graph repository returned a different Graph revision than requested",
-        correlation_id,
-      );
-    }
-
-    const receiptResult = await transaction
-      .appendOnly<GraphActivationReceipt>("inv-02.plan-graph-activation-receipts")
-      .get(command.context, command.activation_receipt_ref);
-    if (receiptResult.status !== "OK" || !receiptResult.data) {
-      return propagateFailure<OrchestrationRun>(receiptResult);
-    }
-    if (!sameObjectRef(receiptResult.data.receipt_ref, command.activation_receipt_ref)) {
-      return rejected(
-        "INTEGRITY_OR_UNTRUSTED_INPUT",
-        "Activation receipt repository returned a different receipt than requested",
-        correlation_id,
-      );
-    }
-
-    const created = createOrchestrationRun({
-      context: command.context,
-      orchestration_ref: command.orchestration_ref,
-      request_ref: command.request_ref,
-      activation_request_ref: command.activation_request_ref,
-      work: workResult.data,
-      graph: graphResult.data,
-      activation_receipt: receiptResult.data,
-      created_at: command.created_at,
-    });
-    if (!created.ok) {
-      return rejected(
-        mapDomainCode(created.issues[0].code),
-        created.issues.map((issue) => issue.safe_message).join("; "),
-        correlation_id,
-      );
-    }
-
-    const allocations = command.node_coordination_allocations;
-    if (allocations.length !== graphResult.data.nodes.length) {
-      return rejected(
-        "VALIDATION_ERROR",
-        "Exactly one node-coordination reference is required for every node in the pinned Graph revision",
-        correlation_id,
-      );
-    }
-    const allocationByNode = new Map<string, NodeCoordinationAllocation>();
-    const coordinationIds = new Set<string>();
-    for (const allocation of allocations) {
-      if (!isObjectRef(allocation.graph_node_ref) ||
-          allocation.graph_node_ref.object_kind !== "GRAPH_NODE" ||
-          !isObjectRef(allocation.node_coordination_ref) ||
-          allocation.node_coordination_ref.object_kind !== "NODE_COORDINATION" ||
-          allocation.graph_node_ref.scope_ref.scope_id !== command.context.scope_ref.scope_id ||
-          allocation.graph_node_ref.scope_ref.scope_kind !== command.context.scope_ref.scope_kind ||
-          allocation.node_coordination_ref.scope_ref.scope_id !== command.context.scope_ref.scope_id ||
-          allocation.node_coordination_ref.scope_ref.scope_kind !== command.context.scope_ref.scope_kind) {
-        return rejected(
-          "VALIDATION_ERROR",
-          "Node-coordination allocations must be valid, in-scope GRAPH_NODE and NODE_COORDINATION references",
-          correlation_id,
-        );
-      }
-      const key = allocation.graph_node_ref.object_kind + ":" + allocation.graph_node_ref.object_id;
-      const coordKey = allocation.node_coordination_ref.object_kind + ":" + allocation.node_coordination_ref.object_id;
-      if (allocationByNode.has(key) || coordinationIds.has(coordKey)) {
-        return rejected(
-          "VALIDATION_ERROR",
-          "Node-coordination allocations must not duplicate graph nodes or coordination identities",
-          correlation_id,
-        );
-      }
-      allocationByNode.set(key, allocation);
-      coordinationIds.add(coordKey);
-    }
-
-    const nodeRecords: NodeCoordinationRecord[] = [];
-    for (const graphNode of graphResult.data.nodes) {
-      const key = graphNode.node_ref.object_kind + ":" + graphNode.node_ref.object_id;
-      const allocation = allocationByNode.get(key);
-      if (!allocation || !sameObjectRef(allocation.graph_node_ref, graphNode.node_ref)) {
-        return rejected(
-          "VALIDATION_ERROR",
-          "Every initial node-coordination record must pin an exact node reference from the activated Graph revision",
-          correlation_id,
-        );
-      }
-      const nodeResult = createNodeCoordination({
-        context: command.context,
-        run: created.value,
-        graph: graphResult.data,
-        node: graphNode,
-        node_coordination_ref: allocation.node_coordination_ref,
-        created_at: command.created_at,
-      });
-      if (!nodeResult.ok) {
-        return rejected(
-          mapDomainCode(nodeResult.issues[0].code),
-          nodeResult.issues.map((issue) => issue.safe_message).join("; "),
-          correlation_id,
-        );
-      }
-      nodeRecords.push(nodeResult.value);
     }
 
     const runs = transaction.repository<OrchestrationRun>("inv-04.orchestration-runs");
