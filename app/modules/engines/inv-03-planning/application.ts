@@ -3,6 +3,7 @@ import {
   createOperationResult,
   isObjectRef,
   isRequestContext,
+  isTimestamp,
   type DomainEventEnvelope,
   type EngineUnitOfWorkPort,
   type IdempotencyRecord,
@@ -351,11 +352,19 @@ export async function reviewPlanRevision(
   if (envelopeIssue) {
     return rejected("VALIDATION_ERROR", envelopeIssue, correlation_id);
   }
+  const allowedTargets: readonly PlanRevisionState[] = [
+    "UNDER_REVIEW",
+    "ACCEPTED",
+    "REJECTED",
+    "WITHDRAWN",
+    "SUPERSEDED",
+  ];
   if (
     !isObjectRef(command.plan_revision_ref) ||
     command.plan_revision_ref.object_kind !== "PLAN_REVISION" ||
     !command.expected_revision_version.trim() ||
-    !["UNDER_REVIEW", "ACCEPTED", "REJECTED", "WITHDRAWN", "SUPERSEDED"].includes(command.target_state)
+    !allowedTargets.includes(command.target_state) ||
+    !isTimestamp(command.occurred_at)
   ) {
     return rejected("VALIDATION_ERROR", "Plan review requires a valid revision, expected version and supported target state", correlation_id);
   }
