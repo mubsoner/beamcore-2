@@ -192,6 +192,11 @@ const fail = <T = never>(code: PlanningIssue["code"], safe_message: string): Pla
 });
 const sameScope = (a: ObjectRef, b: ObjectRef) =>
   a.scope_ref.scope_id === b.scope_ref.scope_id && a.scope_ref.scope_kind === b.scope_ref.scope_kind;
+const sameRef = (a: ObjectRef, b: ObjectRef) =>
+  a.object_kind === b.object_kind &&
+  a.object_id === b.object_id &&
+  a.object_version === b.object_version &&
+  sameScope(a, b);
 const allRefsValid = (refs: readonly ObjectRef[]) => refs.every(isObjectRef);
 
 export function createPlanRevision(input: {
@@ -502,16 +507,32 @@ export function applyGraphValidation(
   result: GraphValidationResult,
   review_decision_ref?: ObjectRef,
 ): PlanningResult<WorkGraphRevision> {
-  if (result.graph_revision_ref.object_id !== revision.graph_revision_ref.object_id ||
-      result.graph_revision_ref.scope_ref.scope_id !== revision.graph_revision_ref.scope_ref.scope_id) {
-    return fail("VALIDATION_ERROR", "Validation result does not belong to this graph revision");
+  if (
+    !isObjectRef(result.validation_ref) ||
+    result.validation_ref.object_kind !== "GRAPH_VALIDATION_RESULT" ||
+    !sameScope(result.validation_ref, revision.work_ref) ||
+    !isObjectRef(result.graph_revision_ref) ||
+    !sameRef(result.graph_revision_ref, revision.graph_revision_ref) ||
+    !isTimestamp(result.validated_at) ||
+    !result.validator_version.trim() ||
+    !Array.isArray(result.findings) ||
+    result.findings.some((finding) =>
+      !isObjectRef(finding.finding_ref) ||
+      finding.finding_ref.object_kind !== "GRAPH_VALIDATION_FINDING" ||
+      !sameScope(finding.finding_ref, revision.work_ref) ||
+      !allRefsValid(finding.affected_refs)
+    )
+  ) {
+    return fail("VALIDATION_ERROR", "Validation result identity, graph binding, timestamp or findings are invalid");
   }
   if (result.status === "INVALID" || result.status === "NEEDS_INPUT" || result.status === "DEPENDENCY_UNAVAILABLE" ||
       result.findings.some((finding) => finding.severity === "ERROR" || finding.severity === "BLOCKER")) {
     return fail("VALIDATION_ERROR", "Graph validation did not permit activation");
   }
   if ((result.status === "VALID_WITH_WARNINGS" || result.findings.some((finding) => finding.severity === "WARNING")) &&
-      (!review_decision_ref || !isObjectRef(review_decision_ref) || review_decision_ref.object_kind !== "GRAPH_REVIEW_DECISION")) {
+      (!review_decision_ref || !isObjectRef(review_decision_ref) ||
+       review_decision_ref.object_kind !== "GRAPH_REVIEW_DECISION" ||
+       !sameScope(review_decision_ref, revision.work_ref))) {
     return fail("VALIDATION_ERROR", "A graph review decision is required to accept validation warnings");
   }
   return ok({
@@ -616,9 +637,9 @@ export function createGraphActivationRequest(input: {
       !sameScope(input.request_ref, input.work_ref) ||
       input.plan_revision.state !== "ACCEPTED" ||
       input.graph_revision.state !== "VALIDATED" ||
-      input.plan_revision.work_ref.object_id !== input.work_ref.object_id ||
-      input.graph_revision.work_ref.object_id !== input.work_ref.object_id ||
-      input.graph_revision.source_plan_revision_ref.object_id !== input.plan_revision.plan_revision_ref.object_id ||
+      !sameRef(input.plan_revision.work_ref, input.work_ref) ||
+      !sameRef(input.graph_revision.work_ref, input.work_ref) ||
+      !sameRef(input.graph_revision.source_plan_revision_ref, input.plan_revision.plan_revision_ref) ||
       !sameScope(input.work_ref, { object_kind: "WORK", object_id: input.work_ref.object_id, scope_ref: input.context.scope_ref })) {
     return fail("VALIDATION_ERROR", "Activation requires an accepted Plan and validated Graph bound to the same Work and exact Plan revision");
   }
@@ -647,11 +668,17 @@ export function reconcileGraphActivation(
   request: GraphActivationRequest,
   receipt: GraphActivationReceipt,
 ): PlanningResult<"ACTIVATED" | "REJECTED" | "RECONCILE"> {
-  if (!isObjectRef(receipt.receipt_ref) || receipt.receipt_ref.object_kind !== "PLAN_GRAPH_ACTIVATION_RECEIPT" ||
-      !isObjectRef(receipt.request_ref) || receipt.request_ref.object_id !== request.request_ref.object_id ||
-      receipt.work_ref.object_id !== request.work_ref.object_id ||
-      receipt.plan_revision_ref.object_id !== request.plan_revision_ref.object_id ||
-      receipt.graph_revision_ref.object_id !== request.graph_revision_ref.object_id ||
+  if (!isObjectRef(request.request_ref) || request.request_ref.object_kind !== "GRAPH_ACTIVATION_REQUEST" ||
+      !isObjectRef(request.work_ref) || request.work_ref.object_kind !== "WORK" ||
+      !isObjectRef(request.plan_revision_ref) || request.plan_revision_ref.object_kind !== "PLAN_REVISION" ||
+      !isObjectRef(request.graph_revision_ref) || request.graph_revision_ref.object_kind !== "WORK_GRAPH_REVISION" ||
+      !isRevisionNumber(request.expected_work_revision) ||
+      !isObjectRef(receipt.receipt_ref) || receipt.receipt_ref.object_kind !== "PLAN_GRAPH_ACTIVATION_RECEIPT" ||
+      !sameScope(receipt.receipt_ref, request.work_ref) ||
+      !isObjectRef(receipt.request_ref) || !sameRef(receipt.request_ref, request.request_ref) ||
+      !isObjectRef(receipt.work_ref) || !sameRef(receipt.work_ref, request.work_ref) ||
+      !isObjectRef(receipt.plan_revision_ref) || !sameRef(receipt.plan_revision_ref, request.plan_revision_ref) ||
+      !isObjectRef(receipt.graph_revision_ref) || !sameRef(receipt.graph_revision_ref, request.graph_revision_ref) ||
       receipt.expected_work_revision !== request.expected_work_revision ||
       !isTimestamp(receipt.received_at)) {
     return fail("VALIDATION_ERROR", "Activation receipt does not match the exact request, Work, Plan and Graph revisions");
