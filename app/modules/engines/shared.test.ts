@@ -98,6 +98,13 @@ describe("canonical request context contracts", () => {
     expect(isTimestamp("2026-11-13T03:00:00")).toBe(false);
     expect(isTimestamp("2026-11-13T03:00:00Z")).toBe(true);
     expect(isTimestamp("2026-11-13T03:00:00+01:00")).toBe(true);
+    expect(isTimestamp("2026-02-29T03:00:00Z")).toBe(false);
+    expect(isTimestamp("2024-02-29T03:00:00Z")).toBe(true);
+    expect(isTimestamp("2026-04-31T03:00:00Z")).toBe(false);
+    expect(isTimestamp("2026-11-13T24:00:00Z")).toBe(false);
+    expect(isTimestamp("2026-11-13T03:00:60Z")).toBe(false);
+    expect(isTimestamp("2026-11-13T03:00:00+14:01")).toBe(false);
+    expect(isTimestamp("2026-11-13T03:00:00+14:00")).toBe(true);
   });
 
   it("rejects malformed contexts before mutation", () => {
