@@ -17,10 +17,14 @@ import {
   getActivePlanGraphBinding,
   getPlanGraphActivationReceipt,
 } from "./application";
-import { createGraphActivationCandidateReader } from "../inv-03-planning/application";
+import {
+  createGraphActivationCandidateReader,
+  reconcileRequestedGraphActivation,
+} from "../inv-03-planning/application";
 import { createWork, type PlanGraphActivationBindingReceipt, type WorkRecord } from "./domain";
 import type {
   GraphActivationRequest,
+  GraphActivationReceipt,
   PlanRecord,
   PlanRevision,
   WorkGraphRecord,
@@ -361,6 +365,13 @@ function activationReader(state: ReturnType<typeof makeState>) {
   return createGraphActivationCandidateReader(state.unitOfWork);
 }
 
+function activationReceiptReader(state: ReturnType<typeof makeState>) {
+  return {
+    readReceipt: (ctx: RequestContext, receipt_ref: ObjectRef) =>
+      getPlanGraphActivationReceipt(state.unitOfWork, ctx, receipt_ref),
+  };
+}
+
 describe("INV-02 Plan/Graph activation application", () => {
   it("consumes an INV-03 request and atomically records the authoritative Work binding", async () => {
     const { state, command } = makeFixture();
@@ -436,6 +447,48 @@ describe("INV-02 Plan/Graph activation application", () => {
     expect(result.data?.expected_work_revision).toBe(1);
     expect(result.data?.resulting_work_revision).toBe(2);
     expect(result.data?.receipt_state).toBe("ACCEPTED");
+  });
+
+  it("reconciles INV-03 request state from the authoritative INV-02 receipt", async () => {
+    const { state, command } = makeFixture();
+    await applyRequestedPlanGraphActivation(
+      state.unitOfWork,
+      activationReader(state),
+      command,
+    );
+
+    const result = await reconcileRequestedGraphActivation(
+      state.unitOfWork,
+      activationReceiptReader(state),
+      {
+        context: context(),
+        request_ref: command.request_ref,
+        receipt_ref: command.receipt_ref,
+      },
+    );
+    expect(result.status).toBe("OK");
+    expect(result.data?.state).toBe("ACTIVATED");
+    expect(result.data?.work_ref.object_id).toBe("work-1");
+    expect(result.data?.plan_revision_ref.object_id).toBe("plan-r1");
+    expect(result.data?.graph_revision_ref.object_id).toBe("graph-r1");
+    expect(result.data?.resulting_work_revision).toBe(2);
+  });
+
+  it("keeps activation UNKNOWN when the authoritative receipt is not yet visible", async () => {
+    const { state, command } = makeFixture();
+
+    const result = await reconcileRequestedGraphActivation(
+      state.unitOfWork,
+      activationReceiptReader(state),
+      {
+        context: context(),
+        request_ref: command.request_ref,
+        receipt_ref: command.receipt_ref,
+      },
+    );
+    expect(result.status).toBe("UNKNOWN");
+    expect(result.data?.state).toBe("RECONCILE");
+    expect(result.errors[0]?.code).toBe("OUTCOME_UNKNOWN_OR_RECONCILIATION_REQUIRED");
   });
 
   it("rejects activation receipt reads outside the authenticated scope", async () => {

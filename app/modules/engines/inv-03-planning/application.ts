@@ -20,7 +20,9 @@ import {
   createPlanRevision,
   transitionPlanRevision,
   validateGraphRevision,
+  reconcileGraphActivation,
   type GraphActivationRequest,
+  type GraphActivationReceipt,
   type GraphValidationResult,
   type PlanRecord,
   type PlanRevision,
@@ -104,6 +106,30 @@ export interface GraphActivationCandidateReaderPort {
     context: RequestContext,
     request_ref: ObjectRef,
   ): Promise<OperationResult<GraphActivationCandidate>>;
+}
+
+/** INV-02-owned receipt reader; INV-03 never queries INV-02 private storage. */
+export interface GraphActivationReceiptReaderPort {
+  readReceipt(
+    context: RequestContext,
+    receipt_ref: ObjectRef,
+  ): Promise<OperationResult<GraphActivationReceipt>>;
+}
+
+export interface ReconcileGraphActivationCommand {
+  context: RequestContext;
+  request_ref: ObjectRef;
+  receipt_ref: ObjectRef;
+}
+
+export interface GraphActivationReconciliation {
+  request_ref: ObjectRef;
+  receipt_ref: ObjectRef;
+  work_ref: ObjectRef;
+  plan_revision_ref: ObjectRef;
+  graph_revision_ref: ObjectRef;
+  state: "ACTIVATED" | "REJECTED" | "RECONCILE";
+  resulting_work_revision?: number;
 }
 
 function rejected<T>(
@@ -197,6 +223,144 @@ async function readPlanGraphRevisions(transaction: EngineTransaction, context: R
   }
   return createOperationResult({status:"OK",correlation_id:context.correlation_id,data:{plan:plan.data,graph:graph.data}});
 }
+/**
+ * Reconciles one persisted INV-03 activation request against the authoritative
+ * receipt returned by INV-02. A missing receipt is UNKNOWN, never proof of
+ * rejection; the caller must query/reconcile again before any retry.
+ */
+export async function reconcileRequestedGraphActivation(
+  unitOfWork: EngineUnitOfWorkPort,
+  receiptReader: GraphActivationReceiptReaderPort,
+  command: ReconcileGraphActivationCommand,
+): Promise<OperationResult<GraphActivationReconciliation>> {
+  const { context, request_ref, receipt_ref } = command;
+  const correlation_id = context.correlation_id;
+  if (
+    !isRequestContext(context) ||
+    !isObjectRef(request_ref) ||
+    request_ref.object_kind !== "GRAPH_ACTIVATION_REQUEST" ||
+    !isObjectRef(receipt_ref) ||
+    receipt_ref.object_kind !== "PLAN_GRAPH_ACTIVATION_RECEIPT" ||
+    request_ref.scope_ref.scope_id !== context.scope_ref.scope_id ||
+    request_ref.scope_ref.scope_kind !== context.scope_ref.scope_kind ||
+    receipt_ref.scope_ref.scope_id !== context.scope_ref.scope_id ||
+    receipt_ref.scope_ref.scope_kind !== context.scope_ref.scope_kind
+  ) {
+    return rejected(
+      "VALIDATION_ERROR",
+      "Activation reconciliation requires in-scope request and receipt references",
+      correlation_id,
+    );
+  }
+
+  const requestResult = await unitOfWork.execute(context, async (transaction) => {
+    const stored = await transaction
+      .appendOnly<GraphActivationRequest>("inv-03.graph-activation-requests")
+      .get(context, request_ref);
+    if (stored.status !== "OK" || !stored.data) {
+      return propagateFailure<GraphActivationRequest>(stored);
+    }
+    if (
+      !isObjectRef(stored.data.request_ref) ||
+      !sameRef(stored.data.request_ref, request_ref) ||
+      !isObjectRef(stored.data.work_ref) ||
+      stored.data.work_ref.object_kind !== "WORK" ||
+      !sameRef(stored.data.work_ref, {
+        ...stored.data.work_ref,
+        scope_ref: context.scope_ref,
+      }) ||
+      !sameRef(stored.data.plan_revision_ref, {
+        ...stored.data.plan_revision_ref,
+        scope_ref: context.scope_ref,
+      }) ||
+      !sameRef(stored.data.graph_revision_ref, {
+        ...stored.data.graph_revision_ref,
+        scope_ref: context.scope_ref,
+      })
+    ) {
+      return rejected(
+        "INTEGRITY_OR_UNTRUSTED_INPUT",
+        "Stored activation request identity or scope does not match its owner reference",
+        correlation_id,
+      );
+    }
+    return createOperationResult({
+      status: "OK",
+      correlation_id,
+      data: stored.data,
+    });
+  });
+  if (requestResult.status !== "OK" || !requestResult.data) {
+    return propagateFailure<GraphActivationReconciliation>(requestResult);
+  }
+
+  const request = requestResult.data;
+  const receiptResult = await receiptReader.readReceipt(context, receipt_ref);
+  if (
+    receiptResult.status === "REJECTED" &&
+    receiptResult.errors.some((error) => error.code === "NOT_FOUND_OR_NOT_VISIBLE")
+  ) {
+    return createOperationResult<GraphActivationReconciliation>({
+      status: "UNKNOWN",
+      correlation_id,
+      data: {
+        request_ref,
+        receipt_ref,
+        work_ref: request.work_ref,
+        plan_revision_ref: request.plan_revision_ref,
+        graph_revision_ref: request.graph_revision_ref,
+        state: "RECONCILE",
+      },
+      errors: [
+        createOperationError(
+          "OUTCOME_UNKNOWN_OR_RECONCILIATION_REQUIRED",
+          "No authoritative activation receipt is visible yet; query INV-02 before any retry",
+          true,
+        ),
+      ],
+    });
+  }
+  if (receiptResult.status !== "OK" || !receiptResult.data) {
+    return propagateFailure<GraphActivationReconciliation>(receiptResult);
+  }
+
+  const reconciled = reconcileGraphActivation(request, receiptResult.data);
+  if (!reconciled.ok) {
+    return rejected(
+      mapDomainCode(reconciled.issues[0].code),
+      reconciled.issues.map((issue) => issue.safe_message).join("; "),
+      correlation_id,
+    );
+  }
+
+  return createOperationResult<GraphActivationReconciliation>({
+    status: reconciled.value === "RECONCILE" ? "UNKNOWN" : "OK",
+    correlation_id,
+    data: {
+      request_ref,
+      receipt_ref,
+      work_ref: request.work_ref,
+      plan_revision_ref: request.plan_revision_ref,
+      graph_revision_ref: request.graph_revision_ref,
+      state: reconciled.value,
+      ...(receiptResult.data.resulting_work_revision !== undefined
+        ? { resulting_work_revision: receiptResult.data.resulting_work_revision }
+        : {}),
+    },
+    ...(reconciled.value === "RECONCILE"
+      ? {
+          errors: [
+            createOperationError(
+              "OUTCOME_UNKNOWN_OR_RECONCILIATION_REQUIRED",
+              "INV-02 returned an UNKNOWN activation receipt; reconcile the active Work binding before retry",
+              true,
+            ),
+          ],
+        }
+      : {}),
+  });
+}
+
 export function createGraphActivationCandidateReader(
   unitOfWork: EngineUnitOfWorkPort,
 ): GraphActivationCandidateReaderPort {
