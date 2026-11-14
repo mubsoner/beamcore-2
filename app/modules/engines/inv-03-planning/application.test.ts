@@ -14,6 +14,7 @@ import {
 } from "../shared";
 import {
   requestGraphActivation,
+  reviewPlanRevision,
   submitGraphRevision,
   submitPlanRevision,
   validateAndRecordGraph,
@@ -237,6 +238,36 @@ const planInput = {
   created_at: "2026-11-14T01:00:01Z",
 };
 
+async function acceptPlan(
+  state: ReturnType<typeof makeUnitOfWork>,
+  revision: PlanRevision,
+  suffix: string,
+) {
+  const underReview = await reviewPlanRevision(state.unitOfWork, {
+    context: context(`req-${suffix}-review`, `idem-${suffix}-review`, `corr-${suffix}-review`),
+    plan_revision_ref: revision.plan_revision_ref,
+    expected_revision_version: "1",
+    target_state: "UNDER_REVIEW",
+    occurred_at: "2026-11-14T01:00:02Z",
+    request_fingerprint: fingerprint("7"),
+    event_ref: ref("DOMAIN_EVENT", `event-${suffix}-review`),
+  });
+  if (underReview.status !== "OK" || !underReview.object_version) {
+    throw new Error(underReview.errors[0]?.safe_message ?? "Plan did not enter review");
+  }
+
+  return reviewPlanRevision(state.unitOfWork, {
+    context: context(`req-${suffix}-accept`, `idem-${suffix}-accept`, `corr-${suffix}-accept`),
+    plan_revision_ref: revision.plan_revision_ref,
+    expected_revision_version: underReview.object_version,
+    target_state: "ACCEPTED",
+    review_decision_ref: ref("PLAN_REVIEW_DECISION", `decision-${suffix}`),
+    occurred_at: "2026-11-14T01:00:03Z",
+    request_fingerprint: fingerprint("8"),
+    event_ref: ref("DOMAIN_EVENT", `event-${suffix}-accept`),
+  });
+}
+
 const graphNode = {
   node_ref: ref("GRAPH_NODE", "node-1"),
   graph_ref: graphRef,
@@ -264,10 +295,12 @@ describe("INV-03 Planning application services", () => {
     expect(first.status).toBe("OK");
     expect(state.version("inv-03.plans", "plan-1")).toBe("1");
 
-    const acceptedPrior = { ...first.data!, state: "ACCEPTED" as const };
-    // A review transition changes the PlanRevision storage version, while
-    // its immutable revision reference remains pinned to version 1.
-    state.seed("inv-03.plan-revisions", "plan-r1", acceptedPrior, "2");
+    const accepted = await acceptPlan(state, first.data!, "prior-plan");
+    expect(accepted.status).toBe("OK");
+    expect(state.read<PlanRevision>("inv-03.plan-revisions", "plan-r1")?.state).toBe("ACCEPTED");
+    // Review transitions increment the stored version while the revision
+    // reference itself continues to identify the same immutable Plan revision.
+    expect(state.version("inv-03.plan-revisions", "plan-r1")).toBe("3");
 
     const second = await submitPlanRevision(state.unitOfWork, {
       ...planInput,
@@ -288,6 +321,8 @@ describe("INV-03 Planning application services", () => {
     expect(state.version("inv-03.plans", "plan-1")).toBe("2");
     expect(state.events.map((event) => event.event_type)).toEqual([
       "planning.plan_revision_submitted",
+      "planning.plan_revision_state_changed",
+      "planning.plan_revision_state_changed",
       "planning.plan_revision_submitted",
     ]);
   });
@@ -301,13 +336,8 @@ describe("INV-03 Planning application services", () => {
       event_ref: ref("DOMAIN_EVENT", "event-plan"),
     });
     expect(planResult.status).toBe("OK");
-    state.seed(
-      "inv-03.plan-revisions",
-      "plan-r1",
-      { ...planResult.data!, state: "ACCEPTED" },
-      "1",
-    );
-
+    const accepted = await acceptPlan(state, planResult.data!, "activation-plan");
+    expect(accepted.status).toBe("OK");
     const acceptedPlan = state.read<PlanRevision>("inv-03.plan-revisions", "plan-r1")!;
     const graphResult = await submitGraphRevision(state.unitOfWork, {
       context: context("req-graph", "idem-graph", "corr-graph"),
