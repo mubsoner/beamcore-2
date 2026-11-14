@@ -1,6 +1,7 @@
 import {
   createOperationError,
   createOperationResult,
+  isObjectRef,
   type EngineUnitOfWorkPort,
   type DomainEventEnvelope,
   type ObjectRef,
@@ -11,11 +12,36 @@ import {
   normalizeIntent,
   type NormalizeIntentInput,
   type NormalizedIntent,
+  type DomainIssue,
 } from "./domain";
 
 export interface SubmitIntentCommand extends NormalizeIntentInput {
   request_fingerprint: string;
   event_ref: ObjectRef;
+}
+
+function mapDomainCode(code: DomainIssue["code"]): OperationErrorCode {
+  switch (code) {
+    case "INVALID_TRANSITION":
+      return "VALIDATION_ERROR";
+    case "VALIDATION_ERROR":
+    case "VERSION_CONFLICT":
+    case "INTEGRITY_OR_UNTRUSTED_INPUT":
+      return code;
+  }
+}
+
+function propagateFailure<T, U>(source: OperationResult<U>): OperationResult<T> {
+  const isUnexpectedSuccess = source.status === "OK";
+  return createOperationResult<T>({
+    status: isUnexpectedSuccess ? "UNKNOWN" : source.status,
+    correlation_id: source.correlation_id,
+    errors: isUnexpectedSuccess
+      ? [createOperationError("INTERNAL_ERROR", "A dependency returned success without the required record", false)]
+      : source.errors,
+    warnings: source.warnings,
+    ...(source.object_version !== undefined ? { object_version: source.object_version } : {}),
+  });
 }
 
 function rejected<T>(
@@ -49,14 +75,14 @@ export async function submitIntent(
   if (!/^[a-f0-9]{64}$/i.test(command.request_fingerprint)) {
     return rejected("VALIDATION_ERROR", "request_fingerprint must be a SHA-256 hex digest", correlationId);
   }
-  if (!command.event_ref || command.event_ref.object_kind !== "DOMAIN_EVENT") {
+  if (!isObjectRef(command.event_ref) || command.event_ref.object_kind !== "DOMAIN_EVENT") {
     return rejected("VALIDATION_ERROR", "Intent submission requires a DOMAIN_EVENT reference", correlationId);
   }
 
   const normalized = normalizeIntent(command);
   if (!normalized.ok) {
     return rejected(
-      normalized.issues[0].code,
+      mapDomainCode(normalized.issues[0].code),
       normalized.issues.map((issue) => issue.safe_message).join("; "),
       correlationId,
     );
@@ -67,7 +93,7 @@ export async function submitIntent(
       context,
       context.idempotency_key!,
     );
-    if (prior.status !== "OK") return prior as OperationResult<NormalizedIntent>;
+    if (prior.status !== "OK") return propagateFailure<NormalizedIntent>(prior);
     if (prior.data) {
       if (prior.data.request_fingerprint !== command.request_fingerprint) {
         return rejected("IDEMPOTENCY_CONFLICT", "Idempotency key was already used for a different intent submission", correlationId);
@@ -78,7 +104,7 @@ export async function submitIntent(
     const created = await transaction.repository<NormalizedIntent>("inv-01.normalized-intents")
       .create(context, normalized.value.intent_ref, normalized.value);
     if (created.status !== "OK" || !created.data) {
-      return created as OperationResult<NormalizedIntent>;
+      return propagateFailure<NormalizedIntent>(created);
     }
 
     const event: DomainEventEnvelope = {
@@ -98,7 +124,7 @@ export async function submitIntent(
       },
     };
     const emitted = await transaction.outbox.append(context, event);
-    if (emitted.status !== "OK") return emitted as OperationResult<NormalizedIntent>;
+    if (emitted.status !== "OK") return propagateFailure<NormalizedIntent>(emitted);
 
     const result = createOperationResult({
       status: "OK",
@@ -112,7 +138,7 @@ export async function submitIntent(
       result,
       recorded_at: normalized.value.created_at,
     });
-    if (recorded.status !== "OK") return recorded as OperationResult<NormalizedIntent>;
+    if (recorded.status !== "OK") return propagateFailure<NormalizedIntent>(recorded);
     return result;
   });
 }
