@@ -213,6 +213,9 @@ export async function submitPlanRevision(
       if (recordCreated.status !== "OK" || !recordCreated.data) {
         return recordCreated as OperationResult<PlanRevision>;
       }
+      if (!recordCreated.object_version) {
+        return rejected("INTERNAL_ERROR", "Plan repository did not return its initial storage version", correlation_id);
+      }
       planRecordVersion = recordCreated.object_version;
     } else {
       if (!command.expected_plan_version || !revision.prior_revision_ref) {
@@ -269,6 +272,9 @@ export async function submitPlanRevision(
       if (savedPlan.status !== "OK" || !savedPlan.data) {
         return savedPlan as OperationResult<PlanRevision>;
       }
+      if (!savedPlan.object_version) {
+        return rejected("INTERNAL_ERROR", "Plan repository did not return its updated storage version", correlation_id);
+      }
       planRecordVersion = savedPlan.object_version;
     }
 
@@ -303,7 +309,7 @@ export async function submitPlanRevision(
       status: "OK",
       correlation_id,
       data: persisted.data,
-      object_version: planRecordVersion ?? persisted.object_version,
+      object_version: planRecordVersion,
     });
     const recorded = await transaction.idempotency.record(command.context, {
       idempotency_key: command.context.idempotency_key!,
@@ -403,6 +409,9 @@ export async function submitGraphRevision(
       if (savedRecord.status !== "OK" || !savedRecord.data) {
         return savedRecord as OperationResult<WorkGraphRevision>;
       }
+      if (!savedRecord.object_version) {
+        return rejected("INTERNAL_ERROR", "Work Graph repository did not return its initial storage version", correlation_id);
+      }
       graphRecordVersion = savedRecord.object_version;
     } else {
       if (!command.expected_graph_version || !revision.prior_revision_ref) {
@@ -444,6 +453,9 @@ export async function submitGraphRevision(
       if (savedRecord.status !== "OK" || !savedRecord.data) {
         return savedRecord as OperationResult<WorkGraphRevision>;
       }
+      if (!savedRecord.object_version) {
+        return rejected("INTERNAL_ERROR", "Work Graph repository did not return its updated storage version", correlation_id);
+      }
       graphRecordVersion = savedRecord.object_version;
     }
 
@@ -480,7 +492,7 @@ export async function submitGraphRevision(
       status: "OK",
       correlation_id,
       data: persisted.data,
-      object_version: graphRecordVersion ?? persisted.object_version,
+      object_version: graphRecordVersion,
     });
     const recorded = await transaction.idempotency.record(command.context, {
       idempotency_key: command.context.idempotency_key!,
@@ -659,10 +671,6 @@ export async function requestGraphActivation(
   if (envelopeIssue) {
     return rejected("VALIDATION_ERROR", envelopeIssue, correlation_id);
   }
-  if (!command.expected_plan_version?.trim() || !command.expected_graph_version?.trim()) {
-    return rejected("VALIDATION_ERROR", "Graph activation requires expected Plan and Graph versions", correlation_id);
-  }
-
   if (
     !command.expected_plan_version?.trim() ||
     !command.expected_graph_version?.trim() ||
