@@ -78,6 +78,12 @@ function validateCommandEnvelope(
   if (!context.idempotency_key?.trim()) {
     return "Work mutation requires an idempotency key";
   }
+  if (
+    event_ref.scope_ref.scope_id !== context.scope_ref.scope_id ||
+    event_ref.scope_ref.scope_kind !== context.scope_ref.scope_kind
+  ) {
+    return "Domain event reference must be in the request scope";
+  }
   if (!/^[a-f0-9]{64}$/i.test(request_fingerprint)) {
     return "request_fingerprint must be a SHA-256 hex digest";
   }
@@ -213,8 +219,13 @@ export async function changeWorkState(
   if (envelopeIssue) {
     return rejected("VALIDATION_ERROR", envelopeIssue, correlation_id);
   }
-  if (!isObjectRef(command.work_ref) || command.work_ref.object_kind !== "WORK") {
-    return rejected("VALIDATION_ERROR", "work_ref must identify a canonical WORK object", correlation_id);
+  if (
+    !isObjectRef(command.work_ref) ||
+    command.work_ref.object_kind !== "WORK" ||
+    command.work_ref.scope_ref.scope_id !== command.context.scope_ref.scope_id ||
+    command.work_ref.scope_ref.scope_kind !== command.context.scope_ref.scope_kind
+  ) {
+    return rejected("VALIDATION_ERROR", "work_ref must identify a WORK object in the request scope", correlation_id);
   }
 
   return unitOfWork.execute(command.context, async (transaction) => {
@@ -238,6 +249,14 @@ export async function changeWorkState(
       .get(command.context, command.work_ref);
     if (current.status !== "OK" || !current.data) {
       return current as OperationResult<WorkRecord>;
+    }
+    if (
+      current.data.work_ref.object_kind !== command.work_ref.object_kind ||
+      current.data.work_ref.object_id !== command.work_ref.object_id ||
+      current.data.work_ref.scope_ref.scope_id !== command.work_ref.scope_ref.scope_id ||
+      current.data.work_ref.scope_ref.scope_kind !== command.work_ref.scope_ref.scope_kind
+    ) {
+      return rejected("INTEGRITY_OR_UNTRUSTED_INPUT", "Repository returned a Work object that does not match the requested identity", correlation_id);
     }
 
     const transitioned = transitionWork(current.data, command.transition, command.context);
