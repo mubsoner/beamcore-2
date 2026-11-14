@@ -599,6 +599,41 @@ describe("INV-02 Plan/Graph activation application", () => {
     expect(result.errors[0]?.code).toBe("VALIDATION_ERROR");
   });
 
+  it("rejects activation when Work changes after INV-03 returns its candidate snapshot", async () => {
+    const { state, command } = makeFixture();
+    const ownerReader = activationReader(state);
+    const racingReader = {
+      readRevisions: ownerReader.readRevisions,
+      readCandidate: async (ctx: RequestContext, request_ref: ObjectRef) => {
+        const candidate = await ownerReader.readCandidate(ctx, request_ref);
+        const currentWork = state.read<WorkRecord>("inv-02.works", "work-1");
+        if (!currentWork) throw new Error("Expected seeded Work record");
+        // Simulate a different accepted Work mutation after INV-03's read
+        // completed but before INV-02 opens its activation write transaction.
+        state.seed(
+          "inv-02.works",
+          "work-1",
+          { ...currentWork, current_revision: 2 },
+          "2",
+        );
+        return candidate;
+      },
+    };
+
+    const result = await applyRequestedPlanGraphActivation(
+      state.unitOfWork,
+      racingReader,
+      command,
+    );
+    expect(result.status).toBe("REJECTED");
+    expect(result.errors[0]?.code).toBe("VERSION_CONFLICT");
+    expect(state.read<WorkRecord>("inv-02.works", "work-1")?.current_revision).toBe(2);
+    expect(state.appended("inv-02.work-revisions")).toHaveLength(0);
+    expect(state.appended("inv-02.plan-graph-activation-receipts")).toHaveLength(0);
+    expect(state.events).toHaveLength(0);
+    expect(state.idempotencyCount()).toBe(0);
+  });
+
   it("does not bind a request that carries unverified approval references", async () => {
     const { state, command } = makeFixture([ref("APPROVAL", "approval-1")]);
     const result = await applyRequestedPlanGraphActivation(state.unitOfWork, activationReader(state), command);
