@@ -198,6 +198,8 @@ const sameRef = (a: ObjectRef, b: ObjectRef) =>
   a.object_version === b.object_version &&
   sameScope(a, b);
 const allRefsValid = (refs: readonly ObjectRef[]) => refs.every(isObjectRef);
+const allRefsInScope = (refs: readonly ObjectRef[], owner: ObjectRef) =>
+  refs.every((ref) => isObjectRef(ref) && sameScope(ref, owner));
 
 export function createPlanRevision(input: {
   context: RequestContext;
@@ -235,15 +237,35 @@ export function createPlanRevision(input: {
       !sameScope(input.work_ref, { object_kind: "WORK", object_id: input.work_ref.object_id, scope_ref: input.context.scope_ref })) {
     return fail("VALIDATION_ERROR", "Plan, revision, intent, outcome and Work must share the request scope");
   }
-  if (!allRefsValid(input.constraint_refs) || !allRefsValid(input.capability_requirement_refs)) {
-    return fail("VALIDATION_ERROR", "Plan contains invalid constraint or capability references");
+  if (
+    !allRefsInScope(input.constraint_refs, input.work_ref) ||
+    !allRefsInScope(input.capability_requirement_refs, input.work_ref) ||
+    (input.prior_revision_ref !== undefined && (
+      !isObjectRef(input.prior_revision_ref) ||
+      input.prior_revision_ref.object_kind !== "PLAN_REVISION" ||
+      !sameScope(input.prior_revision_ref, input.work_ref)
+    ))
+  ) {
+    return fail("VALIDATION_ERROR", "Plan contains invalid, cross-scope or unbound revision references");
   }
   for (const step of input.step_proposals) {
-    if (!isObjectRef(step.step_proposal_ref) || step.step_proposal_ref.object_kind !== "PLAN_STEP_PROPOSAL" ||
-        !step.title.trim() || !step.purpose.trim() ||
-        !allRefsValid([...step.requirement_refs, ...step.input_refs, ...step.capability_requirement_refs,
-          ...step.expected_output_refs, ...step.dependency_step_refs, ...step.acceptance_criteria_refs, ...step.constraint_refs])) {
-      return fail("VALIDATION_ERROR", "Plan contains an invalid or incomplete step proposal");
+    if (
+      !isObjectRef(step.step_proposal_ref) ||
+      step.step_proposal_ref.object_kind !== "PLAN_STEP_PROPOSAL" ||
+      !sameScope(step.step_proposal_ref, input.work_ref) ||
+      !step.title.trim() ||
+      !step.purpose.trim() ||
+      !allRefsInScope([
+        ...step.requirement_refs,
+        ...step.input_refs,
+        ...step.capability_requirement_refs,
+        ...step.expected_output_refs,
+        ...step.dependency_step_refs,
+        ...step.acceptance_criteria_refs,
+        ...step.constraint_refs,
+      ], input.work_ref)
+    ) {
+      return fail("VALIDATION_ERROR", "Plan contains an invalid, cross-scope or incomplete step proposal");
     }
   }
   if (input.revision_number === 1 && input.prior_revision_ref) {
@@ -289,7 +311,10 @@ export function transitionPlanRevision(
   };
   if (!allowed[revision.state].includes(target)) return fail("INVALID_TRANSITION", `Plan revision cannot transition from ${revision.state} to ${target}`);
   if ((target === "ACCEPTED" || target === "REJECTED") &&
-      (!review_decision_ref || !isObjectRef(review_decision_ref) || review_decision_ref.object_kind !== "PLAN_REVIEW_DECISION")) {
+      (!review_decision_ref ||
+       !isObjectRef(review_decision_ref) ||
+       review_decision_ref.object_kind !== "PLAN_REVIEW_DECISION" ||
+       !sameScope(review_decision_ref, revision.work_ref))) {
     return fail("VALIDATION_ERROR", "Plan review outcome requires a PLAN_REVIEW_DECISION reference");
   }
   return ok({
@@ -337,7 +362,9 @@ export function createGraphRevision(input: {
   if (input.revision_number > 1 && (!input.base_graph_revision_ref || !input.prior_revision_ref ||
       !isObjectRef(input.base_graph_revision_ref) || !isObjectRef(input.prior_revision_ref) ||
       input.base_graph_revision_ref.object_kind !== "WORK_GRAPH_REVISION" ||
-      input.prior_revision_ref.object_kind !== "WORK_GRAPH_REVISION")) {
+      input.prior_revision_ref.object_kind !== "WORK_GRAPH_REVISION" ||
+      !sameScope(input.base_graph_revision_ref, input.work_ref) ||
+      !sameScope(input.prior_revision_ref, input.work_ref))) {
     return fail("VALIDATION_ERROR", "Graph revision must pin its base and prior revision");
   }
   const nodes = input.nodes.map((node) => ({ ...node }));
@@ -345,10 +372,25 @@ export function createGraphRevision(input: {
   for (const node of nodes) {
     if (!isObjectRef(node.node_ref) || !isObjectRef(node.graph_ref) ||
         node.node_ref.object_kind !== "GRAPH_NODE" || node.graph_ref.object_kind !== "WORK_GRAPH" ||
-        node.graph_ref.object_id !== input.graph_ref.object_id ||
+        !sameRef(node.graph_ref, input.graph_ref) ||
         !sameScope(node.node_ref, input.work_ref) || !node.title.trim() ||
-        !allRefsValid([...node.requirement_refs, ...node.input_refs, ...node.capability_requirement_refs,
-          ...node.expected_output_refs, ...node.acceptance_criteria_refs, ...node.constraint_refs])) {
+        (node.plan_step_proposal_ref !== undefined && (
+          !isObjectRef(node.plan_step_proposal_ref) ||
+          node.plan_step_proposal_ref.object_kind !== "PLAN_STEP_PROPOSAL" ||
+          !sameScope(node.plan_step_proposal_ref, input.work_ref)
+        )) ||
+        (node.linked_task_ref !== undefined && (
+          !isObjectRef(node.linked_task_ref) ||
+          !sameScope(node.linked_task_ref, input.work_ref)
+        )) ||
+        !allRefsInScope([
+          ...node.requirement_refs,
+          ...node.input_refs,
+          ...node.capability_requirement_refs,
+          ...node.expected_output_refs,
+          ...node.acceptance_criteria_refs,
+          ...node.constraint_refs,
+        ], input.work_ref)) {
       return fail("VALIDATION_ERROR", "Graph contains an invalid node or cross-scope reference");
     }
   }
@@ -356,9 +398,16 @@ export function createGraphRevision(input: {
     if (!isObjectRef(edge.edge_ref) || edge.edge_ref.object_kind !== "DEPENDENCY_EDGE" ||
         !isObjectRef(edge.from_node_ref) || edge.from_node_ref.object_kind !== "GRAPH_NODE" ||
         !isObjectRef(edge.to_node_ref) || edge.to_node_ref.object_kind !== "GRAPH_NODE" ||
-        !sameScope(edge.edge_ref, input.work_ref) || !isTimestamp(edge.created_at) ||
-        (edge.condition_ref && !isObjectRef(edge.condition_ref)) ||
-        (edge.required_output_ref && !isObjectRef(edge.required_output_ref))) {
+        !sameScope(edge.edge_ref, input.work_ref) ||
+        !sameScope(edge.from_node_ref, input.work_ref) ||
+        !sameScope(edge.to_node_ref, input.work_ref) ||
+        !isTimestamp(edge.created_at) ||
+        (edge.condition_ref !== undefined && (
+          !isObjectRef(edge.condition_ref) || !sameScope(edge.condition_ref, input.work_ref)
+        )) ||
+        (edge.required_output_ref !== undefined && (
+          !isObjectRef(edge.required_output_ref) || !sameScope(edge.required_output_ref, input.work_ref)
+        ))) {
       return fail("VALIDATION_ERROR", "Graph contains an invalid dependency edge");
     }
   }
