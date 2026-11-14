@@ -249,11 +249,16 @@ export async function submitPlanRevision(
       if (priorRevision.status !== "OK" || !priorRevision.data) {
         return priorRevision as OperationResult<PlanRevision>;
       }
+      const replaceableStates: readonly PlanRevisionState[] = [
+        "ACCEPTED",
+        "REJECTED",
+        "WITHDRAWN",
+      ];
       if (
         !sameRef(priorRevision.data.plan_ref, revision.plan_ref) ||
         !sameRef(priorRevision.data.work_ref, revision.work_ref) ||
         priorRevision.data.revision_number + 1 !== revision.revision_number ||
-        !["ACCEPTED", "REJECTED", "WITHDRAWN"].includes(priorRevision.data.state)
+        !replaceableStates.includes(priorRevision.data.state)
       ) {
         return rejected("VERSION_CONFLICT", "New Plan revision must follow the exact latest accepted, rejected or withdrawn revision", correlation_id);
       }
