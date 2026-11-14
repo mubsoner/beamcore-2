@@ -453,19 +453,36 @@ export function validateGraphRevision(input: {
     adjacency.get(from.node_ref.object_id)?.push(to.node_ref.object_id);
   }
 
-  const visiting = new Set<string>();
-  const visited = new Set<string>();
-  let cycleFound = false;
-  const visit = (id: string) => {
-    if (visiting.has(id)) { cycleFound = true; return; }
-    if (visited.has(id)) return;
-    visiting.add(id);
-    for (const next of adjacency.get(id) ?? []) visit(next);
-    visiting.delete(id);
-    visited.add(id);
-  };
-  for (const id of adjacency.keys()) visit(id);
-  if (cycleFound) add("DEPENDENCY_CYCLE", "ERROR", "Work Graph contains a dependency cycle");
+  // Kahn's topological traversal is iterative and O(V + E). Avoid recursive
+  // DFS here: user-authored Work Graphs can be deep enough to exhaust the JS
+  // call stack even when the graph is otherwise valid.
+  const indegree = new Map<string, number>();
+  for (const id of adjacency.keys()) indegree.set(id, 0);
+  for (const targets of adjacency.values()) {
+    for (const target of targets) {
+      indegree.set(target, (indegree.get(target) ?? 0) + 1);
+    }
+  }
+
+  const ready: string[] = [];
+  for (const [id, degree] of indegree) {
+    if (degree === 0) ready.push(id);
+  }
+
+  let processed = 0;
+  for (let cursor = 0; cursor < ready.length; cursor += 1) {
+    const id = ready[cursor];
+    processed += 1;
+    for (const next of adjacency.get(id) ?? []) {
+      const remaining = (indegree.get(next) ?? 0) - 1;
+      indegree.set(next, remaining);
+      if (remaining === 0) ready.push(next);
+    }
+  }
+
+  if (processed !== indegree.size) {
+    add("DEPENDENCY_CYCLE", "ERROR", "Work Graph contains a dependency cycle");
+  }
 
   const blocking = findings.some((finding) => finding.severity === "ERROR" || finding.severity === "BLOCKER");
   const warnings = findings.some((finding) => finding.severity === "WARNING");
