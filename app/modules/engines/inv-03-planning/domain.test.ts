@@ -145,6 +145,34 @@ describe("INV-03 planning and graph domain", () => {
     if (validated.ok) expect(validated.value.state).toBe("VALIDATED");
   });
 
+  it("validates a deep dependency chain without recursive stack growth", () => {
+    const count = 12_000;
+    const nodes = Array.from({ length: count }, (_, index) => node(`deep-node-${index}`));
+    const edges: WorkGraphRevision["edges"] = Array.from(
+      { length: count - 1 },
+      (_, index) => ({
+        edge_ref: ref("DEPENDENCY_EDGE", `deep-edge-${index}`),
+        from_node_ref: nodes[index].node_ref,
+        to_node_ref: nodes[index + 1].node_ref,
+        dependency_kind: "COMPLETION" as const,
+        created_at: "2026-11-13T03:00:02Z",
+      }),
+    );
+
+    const graph = makeGraph(nodes, edges);
+    const validation = validateGraphRevision({
+      revision: graph,
+      validation_ref: ref("GRAPH_VALIDATION_RESULT", "validation-deep-chain"),
+      validated_at: "2026-11-13T03:00:03Z",
+      validator_version: "1.0.0",
+      max_nodes: count,
+      max_edges: count - 1,
+    });
+
+    expect(validation.ok).toBe(true);
+    if (validation.ok) expect(validation.value.status).toBe("VALID");
+  });
+
   it("detects cycles, duplicate nodes and missing edge endpoints", () => {
     const a = node("node-a");
     const b = node("node-b");
