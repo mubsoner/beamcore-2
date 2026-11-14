@@ -64,6 +64,19 @@ function rejected<T>(
   });
 }
 
+function propagateFailure<T, U>(source: OperationResult<U>): OperationResult<T> {
+  const isUnexpectedSuccess = source.status === "OK";
+  return createOperationResult<T>({
+    status: isUnexpectedSuccess ? "UNKNOWN" : source.status,
+    correlation_id: source.correlation_id,
+    errors: isUnexpectedSuccess
+      ? [createOperationError("INTERNAL_ERROR", "A dependency returned success without the required record", false)]
+      : source.errors,
+    warnings: source.warnings,
+    ...(source.object_version !== undefined ? { object_version: source.object_version } : {}),
+  });
+}
+
 function mapDomainCode(code: WorkDomainIssue["code"]): OperationErrorCode {
   switch (code) {
     case "VALIDATION_ERROR":
@@ -158,7 +171,7 @@ export async function submitWork(
       command.context,
       command.context.idempotency_key!,
     );
-    if (prior.status !== "OK") return prior as OperationResult<WorkRecord>;
+    if (prior.status !== "OK") return propagateFailure<WorkRecord>(prior);
     if (prior.data) {
       if (prior.data.request_fingerprint !== command.request_fingerprint) {
         return rejected(
@@ -173,13 +186,13 @@ export async function submitWork(
     const persisted = await transaction.repository<WorkRecord>("inv-02.works")
       .create(command.context, work.work_ref, work);
     if (persisted.status !== "OK" || !persisted.data) {
-      return persisted as OperationResult<WorkRecord>;
+      return propagateFailure<WorkRecord>(persisted);
     }
 
     const revisionResult = await transaction.appendOnly<WorkRevision>("inv-02.work-revisions")
       .append(command.context, revision);
     if (revisionResult.status !== "OK") {
-      return revisionResult as OperationResult<WorkRecord>;
+      return propagateFailure<WorkRecord>(revisionResult);
     }
 
     const event: DomainEventEnvelope = {
@@ -199,7 +212,7 @@ export async function submitWork(
       },
     };
     const emitted = await transaction.outbox.append(command.context, event);
-    if (emitted.status !== "OK") return emitted as OperationResult<WorkRecord>;
+    if (emitted.status !== "OK") return propagateFailure<WorkRecord>(emitted);
 
     const result = createOperationResult({
       status: "OK",
@@ -213,7 +226,7 @@ export async function submitWork(
       result,
       recorded_at: work.created_at,
     });
-    if (recorded.status !== "OK") return recorded as OperationResult<WorkRecord>;
+    if (recorded.status !== "OK") return propagateFailure<WorkRecord>(recorded);
     return result;
   });
 }
@@ -249,7 +262,7 @@ export async function changeWorkState(
       command.context,
       command.context.idempotency_key!,
     );
-    if (prior.status !== "OK") return prior as OperationResult<WorkRecord>;
+    if (prior.status !== "OK") return propagateFailure<WorkRecord>(prior);
     if (prior.data) {
       if (prior.data.request_fingerprint !== command.request_fingerprint) {
         return rejected(
@@ -264,7 +277,7 @@ export async function changeWorkState(
     const current = await transaction.repository<WorkRecord>("inv-02.works")
       .get(command.context, command.work_ref);
     if (current.status !== "OK" || !current.data) {
-      return current as OperationResult<WorkRecord>;
+      return propagateFailure<WorkRecord>(current);
     }
     if (
       current.data.work_ref.object_kind !== command.work_ref.object_kind ||
@@ -292,13 +305,13 @@ export async function changeWorkState(
         transitioned.value.work,
       );
     if (updated.status !== "OK" || !updated.data) {
-      return updated as OperationResult<WorkRecord>;
+      return propagateFailure<WorkRecord>(updated);
     }
 
     const revisionResult = await transaction.appendOnly<WorkRevision>("inv-02.work-revisions")
       .append(command.context, transitioned.value.revision);
     if (revisionResult.status !== "OK") {
-      return revisionResult as OperationResult<WorkRecord>;
+      return propagateFailure<WorkRecord>(revisionResult);
     }
 
     const event: DomainEventEnvelope = {
@@ -320,7 +333,7 @@ export async function changeWorkState(
       },
     };
     const emitted = await transaction.outbox.append(command.context, event);
-    if (emitted.status !== "OK") return emitted as OperationResult<WorkRecord>;
+    if (emitted.status !== "OK") return propagateFailure<WorkRecord>(emitted);
 
     const result = createOperationResult({
       status: "OK",
@@ -334,7 +347,7 @@ export async function changeWorkState(
       result,
       recorded_at: command.transition.occurred_at,
     } satisfies IdempotencyRecord<WorkRecord>);
-    if (recorded.status !== "OK") return recorded as OperationResult<WorkRecord>;
+    if (recorded.status !== "OK") return propagateFailure<WorkRecord>(recorded);
     return result;
   });
 }
@@ -373,7 +386,7 @@ export async function acceptWorkOutcome(
       command.context,
       command.context.idempotency_key!,
     );
-    if (prior.status !== "OK") return prior as OperationResult<WorkRecord>;
+    if (prior.status !== "OK") return propagateFailure<WorkRecord>(prior);
     if (prior.data) {
       if (prior.data.request_fingerprint !== command.request_fingerprint) {
         return rejected(
@@ -388,7 +401,7 @@ export async function acceptWorkOutcome(
     const current = await transaction.repository<WorkRecord>("inv-02.works")
       .get(command.context, command.work_ref);
     if (current.status !== "OK" || !current.data) {
-      return current as OperationResult<WorkRecord>;
+      return propagateFailure<WorkRecord>(current);
     }
     if (
       current.data.work_ref.object_kind !== command.work_ref.object_kind ||
@@ -430,7 +443,7 @@ export async function acceptWorkOutcome(
         current.data.current_desired_outcome_ref,
       );
       if (existing.status !== "OK" || !existing.data) {
-        return existing as OperationResult<WorkRecord>;
+        return propagateFailure<WorkRecord>(existing);
       }
       const oldTarget = existing.data;
       if (
@@ -461,7 +474,7 @@ export async function acceptWorkOutcome(
       );
       if (superseded.status !== "OK" || superseded.data?.state !== "SUPERSEDED") {
         return superseded.status !== "OK"
-          ? superseded as OperationResult<WorkRecord>
+          ? propagateFailure<WorkRecord>(superseded)
           : rejected("INTEGRITY_OR_UNTRUSTED_INPUT", "Repository did not confirm Desired Outcome supersession", correlation_id);
       }
     }
@@ -472,7 +485,7 @@ export async function acceptWorkOutcome(
       accepted.value.desired_outcome,
     );
     if (savedTarget.status !== "OK" || !savedTarget.data) {
-      return savedTarget as OperationResult<WorkRecord>;
+      return propagateFailure<WorkRecord>(savedTarget);
     }
     if (
       savedTarget.data.desired_outcome_ref.object_id !== accepted.value.desired_outcome.desired_outcome_ref.object_id ||
@@ -490,7 +503,7 @@ export async function acceptWorkOutcome(
         accepted.value.work,
       );
     if (updated.status !== "OK" || !updated.data) {
-      return updated as OperationResult<WorkRecord>;
+      return propagateFailure<WorkRecord>(updated);
     }
     if (
       updated.data.work_ref.object_id !== current.data.work_ref.object_id ||
@@ -503,14 +516,14 @@ export async function acceptWorkOutcome(
     const revisionResult = await transaction.appendOnly<WorkRevision>("inv-02.work-revisions")
       .append(command.context, accepted.value.revision);
     if (revisionResult.status !== "OK") {
-      return revisionResult as OperationResult<WorkRecord>;
+      return propagateFailure<WorkRecord>(revisionResult);
     }
 
     const receiptResult = await transaction.appendOnly<AcceptOutcomeProposalResult["receipt"]>(
       "inv-02.outcome-acceptance-receipts",
     ).append(command.context, accepted.value.receipt);
     if (receiptResult.status !== "OK") {
-      return receiptResult as OperationResult<WorkRecord>;
+      return propagateFailure<WorkRecord>(receiptResult);
     }
 
     const event: DomainEventEnvelope = {
@@ -532,7 +545,7 @@ export async function acceptWorkOutcome(
       },
     };
     const emitted = await transaction.outbox.append(command.context, event);
-    if (emitted.status !== "OK") return emitted as OperationResult<WorkRecord>;
+    if (emitted.status !== "OK") return propagateFailure<WorkRecord>(emitted);
 
     const result = createOperationResult({
       status: "OK",
@@ -546,7 +559,7 @@ export async function acceptWorkOutcome(
       result,
       recorded_at: command.accepted_at,
     });
-    if (recorded.status !== "OK") return recorded as OperationResult<WorkRecord>;
+    if (recorded.status !== "OK") return propagateFailure<WorkRecord>(recorded);
     return result;
   });
 }
