@@ -140,7 +140,11 @@ function makeState() {
       const injected = maybeFail<T>(`append:${key}`);
       if (injected) return injected;
       const item = value as unknown as Record<string, unknown>;
-      const object_ref = (item.request_ref ?? item.receipt_ref ?? item.revision_ref) as ObjectRef | undefined;
+      const object_ref = (
+        key === "inv-02.plan-graph-activation-receipts"
+          ? item.receipt_ref
+          : item.request_ref ?? item.receipt_ref ?? item.revision_ref
+      ) as ObjectRef | undefined;
       if (!object_ref) throw new Error(`Append-only item for ${key} has no stable object reference`);
       const records = appendRecords(key);
       if (records.has(object_ref.object_id)) {
