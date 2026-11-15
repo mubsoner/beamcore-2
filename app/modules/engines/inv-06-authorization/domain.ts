@@ -1343,7 +1343,10 @@ export function validateDelegationRequest(
   if (!Array.isArray(request.allowed_actions) || !Array.isArray(request.resource_constraints) ||
       !Array.isArray(request.limits) || !Array.isArray(request.conditions) ||
       !Array.isArray(authority.grantor_allowed_actions) ||
-      !Array.isArray(authority.grantor_resource_constraints)) {
+      !authority.grantor_allowed_actions.every(action => typeof action === "string" && !!action.trim()) ||
+      !Array.isArray(authority.grantor_resource_constraints) ||
+      !authority.grantor_resource_constraints.every(isObjectRef) ||
+      (authority.valid_until !== undefined && !isTimestamp(authority.valid_until))) {
     return ["delegation action, resource, limit or condition collections are invalid"];
   }
   if (!isObjectRef(request.delegation_ref) || request.delegation_ref.object_kind !== "DELEGATION" ||
@@ -1388,7 +1391,15 @@ export function validateDelegationRequest(
     issues.push("delegation must cite an in-scope authorization decision");
   }
   if (request.parent_delegation_ref) {
-    if (!parent || !parent.allow_subdelegation || parent.state !== "ACTIVE" ||
+    if (!parent || typeof parent !== "object" ||
+      !isObjectRef(parent.delegation_ref) ||
+      !Array.isArray(parent.allowed_actions) ||
+      !Array.isArray(parent.resource_constraints) ||
+      !Array.isArray(parent.limits) ||
+      !Array.isArray(parent.conditions) ||
+      !isTimestamp(parent.not_before) ||
+      !isTimestamp(parent.expires_at) ||
+      !parent.allow_subdelegation || parent.state !== "ACTIVE" ||
       !sameObjectRef(parent.delegation_ref, request.parent_delegation_ref) ||
       sameObjectRef(parent.delegation_ref, request.delegation_ref) ||
       !sameScopeRef(parent.scope_ref, request.scope_ref) ||
@@ -1416,6 +1427,85 @@ export function validateDelegationRequest(
     issues.push("delegation outlives the grantor's current authority");
   }
   return issues;
+}
+
+/**
+ * The adapter returns the complete current delegation ancestry, immediate parent first,
+ * followed by its parent, until the root. Missing, duplicate or reordered links fail closed.
+ */
+export function validateDelegationLineage(
+  request: DelegationRequest,
+  ancestry: DelegationRecord[],
+  now: Timestamp,
+): string[] {
+  const issues: string[] = [];
+  if (!isTimestamp(now) || !Array.isArray(ancestry)) return ["delegation ancestry is unavailable or malformed"];
+  if (!request.parent_delegation_ref) {
+    if (ancestry.length) issues.push("root delegation cannot carry an unexpected parent chain");
+    return issues;
+  }
+  if (!ancestry.length) return ["complete parent delegation lineage is required"];
+
+  const seen = new Set<string>();
+  const key = (ref: ObjectRef) => JSON.stringify([
+    ref.scope_ref.scope_kind, ref.scope_ref.scope_id, ref.object_kind, ref.object_id,
+  ]);
+  for (let i = 0; i < ancestry.length; i++) {
+    const current = ancestry[i];
+    if (!current || !isObjectRef(current.delegation_ref) ||
+        current.delegation_ref.object_kind !== "DELEGATION" ||
+        !isScopeRef(current.scope_ref) ||
+        !sameScopeRef(current.scope_ref, request.scope_ref) ||
+        !sameScopeRef(current.delegation_ref.scope_ref, request.scope_ref) ||
+        !isPrincipalRef(current.grantor_ref) || !isPrincipalRef(current.delegate_ref) ||
+        !isTimestamp(current.not_before) || !isTimestamp(current.expires_at) ||
+        !Array.isArray(current.allowed_actions) ||
+        !Array.isArray(current.resource_constraints) ||
+        !Array.isArray(current.limits) || !Array.isArray(current.conditions)) {
+      issues.push("parent delegation ancestry contains a malformed or cross-scope record");
+      continue;
+    }
+    const currentKey = key(current.delegation_ref);
+    if (seen.has(currentKey) || currentKey === key(request.delegation_ref)) {
+      issues.push("delegation cycle or self-reference detected");
+    }
+    seen.add(currentKey);
+    if (current.state !== "ACTIVE" || Date.parse(current.not_before) > Date.parse(now) ||
+        Date.parse(current.expires_at) <= Date.parse(now)) {
+      issues.push("every ancestor delegation must remain active and current");
+    }
+    if (!current.allow_subdelegation) issues.push("an ancestor does not permit subdelegation");
+    if (request.allowed_actions.some(action => !current.allowed_actions.includes(action)) ||
+        request.resource_constraints.some(resource =>
+          !current.resource_constraints.some(allowed => isExactObjectRef(allowed, resource))) ||
+        request.limits.some(limit => !current.limits.includes(limit)) ||
+        Date.parse(request.not_before) < Date.parse(current.not_before) ||
+        Date.parse(request.expires_at) > Date.parse(current.expires_at)) {
+      issues.push("child delegation exceeds an ancestor's effective authority");
+    }
+    if (request.conditions.some(condition => !current.conditions.some(parentCondition =>
+      parentCondition.condition_id === condition.condition_id &&
+      parentCondition.condition_kind === condition.condition_kind &&
+      parentCondition.must_hold_at_enforcement === condition.must_hold_at_enforcement &&
+      JSON.stringify(parentCondition.parameters_ref ?? null) === JSON.stringify(condition.parameters_ref ?? null)))) {
+      issues.push("child delegation weakens or changes an ancestor condition");
+    }
+    const next = ancestry[i + 1];
+    if (current.parent_delegation_ref) {
+      if (!next || !sameObjectRef(current.parent_delegation_ref, next.delegation_ref)) {
+        issues.push("delegation ancestry is incomplete or incorrectly ordered");
+      } else if (!samePrincipal(current.grantor_ref, next.delegate_ref)) {
+        issues.push("delegation ancestry actor lineage is broken");
+      }
+    } else if (next) {
+      issues.push("delegation ancestry contains records beyond its root");
+    }
+  }
+  if (!sameObjectRef(ancestry[0].delegation_ref, request.parent_delegation_ref) ||
+      !samePrincipal(request.grantor_ref, ancestry[0].delegate_ref)) {
+    issues.push("grantor is not the delegate of the exact parent delegation");
+  }
+  return [...new Set(issues)];
 }
 
 function samePrincipal(a: PrincipalRef, b: PrincipalRef): boolean {
