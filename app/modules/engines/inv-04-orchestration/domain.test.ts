@@ -396,13 +396,29 @@ describe("INV-04 orchestration domain", () => {
 
   it("requires READY, current authorization, capability and resource admission before dispatch", () => {
     const allowed = authorizeDispatch({
+      scope_ref: scope,
       node_state: "READY",
       authorization: { decision_ref: ref("AUTHORITY_DECISION", "auth-1"), disposition: "ALLOWED" },
       capability: { capability_ref: ref("CAPABILITY", "cap-1"), version: "v1", eligible: true },
       resource: { admission_ref: ref("RESOURCE_ADMISSION", "admit-1"), state: "ADMITTED" },
     });
     expect(allowed.ok).toBe(true);
+    const foreignAdmissionRef = {
+      ...ref("RESOURCE_ADMISSION", "admit-foreign"),
+      scope_ref: { scope_id: "scope-other", scope_kind: "WORK" as const },
+    };
+    const foreignScopeGate = authorizeDispatch({
+      scope_ref: scope,
+      node_state: "READY",
+      authorization: { decision_ref: ref("AUTHORITY_DECISION", "auth-foreign"), disposition: "ALLOWED" },
+      capability: { capability_ref: ref("CAPABILITY", "cap-1"), version: "v1", eligible: true },
+      resource: { admission_ref: foreignAdmissionRef, state: "ADMITTED" },
+    });
+    expect(foreignScopeGate.ok).toBe(false);
+    if (!foreignScopeGate.ok) expect(foreignScopeGate.issues[0].code).toBe("FORBIDDEN");
+
     expect(authorizeDispatch({
+      scope_ref: scope,
       node_state: "READY",
       authorization: { decision_ref: ref("AUTHORITY_DECISION", "auth-2"), disposition: "REQUIRES_APPROVAL" },
       capability: { capability_ref: ref("CAPABILITY", "cap-1"), version: "v1", eligible: true },
@@ -423,6 +439,37 @@ describe("INV-04 orchestration domain", () => {
       attempt_number: 1, submitted_at: "2026-11-13T03:00:09Z",
     });
     expect(attempt.ok).toBe(true);
+
+    const foreignCapabilityRef = {
+      ...ref("CAPABILITY", "cap-foreign"),
+      scope_ref: { scope_id: "scope-other", scope_kind: "WORK" as const },
+    };
+    const foreignCapabilityAttempt = createDispatchAttempt({
+      context, run, node, attempt_ref: ref("DISPATCH_ATTEMPT", "dispatch-foreign-capability"),
+      capability_ref: foreignCapabilityRef, capability_version: "v1",
+      authorization_decision_ref: ref("AUTHORITY_DECISION", "auth-foreign-capability"),
+      resource_admission_ref: ref("RESOURCE_ADMISSION", "admit-foreign-capability"),
+      authorization_disposition: "ALLOWED",
+      capability_eligible: true,
+      resource_admission_state: "ADMITTED",
+      attempt_number: 1, submitted_at: "2026-11-13T03:00:09Z",
+    });
+    expect(foreignCapabilityAttempt.ok).toBe(false);
+    if (!foreignCapabilityAttempt.ok) expect(foreignCapabilityAttempt.issues[0].code).toBe("FORBIDDEN");
+
+    const wrongWorkNode = { ...node, work_ref: ref("WORK", "work-other") };
+    const crossWorkAttempt = createDispatchAttempt({
+      context, run, node: wrongWorkNode, attempt_ref: ref("DISPATCH_ATTEMPT", "dispatch-wrong-work"),
+      capability_ref: ref("CAPABILITY", "cap-1"), capability_version: "v1",
+      authorization_decision_ref: ref("AUTHORITY_DECISION", "auth-wrong-work"),
+      resource_admission_ref: ref("RESOURCE_ADMISSION", "admit-wrong-work"),
+      authorization_disposition: "ALLOWED",
+      capability_eligible: true,
+      resource_admission_state: "ADMITTED",
+      attempt_number: 1, submitted_at: "2026-11-13T03:00:09Z",
+    });
+    expect(crossWorkAttempt.ok).toBe(false);
+    if (!crossWorkAttempt.ok) expect(crossWorkAttempt.issues[0].code).toBe("INVALID_TRANSITION");
   });
 
   it("never blindly retries uncertain or non-idempotent side effects", () => {

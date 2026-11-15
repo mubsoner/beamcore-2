@@ -166,6 +166,7 @@ export interface RetryDecision {
 }
 
 export interface DispatchGateInput {
+  scope_ref: RequestContext["scope_ref"];
   node_state: NodeCoordinationState;
   authorization: { decision_ref: ObjectRef; disposition: "ALLOWED" | "DENIED" | "REQUIRES_APPROVAL" | "UNKNOWN" };
   capability: { capability_ref: ObjectRef; version: string; eligible: boolean };
@@ -557,22 +558,31 @@ export function evaluateNodeReadiness(input: {
 }
 
 export function authorizeDispatch(input: DispatchGateInput): OrchestrationResult<void> {
+  if (!input.scope_ref || typeof input.scope_ref.scope_id !== "string" || !input.scope_ref.scope_id.trim() ||
+      typeof input.scope_ref.scope_kind !== "string" || !input.scope_ref.scope_kind.trim()) {
+    return fail("VALIDATION_ERROR", "Dispatch requires an authenticated scope reference");
+  }
   if (input.node_state !== "READY") return fail("INVALID_TRANSITION", "Only a READY node can be dispatched");
   if (!isObjectRef(input.authorization.decision_ref) || input.authorization.decision_ref.object_kind !== "AUTHORITY_DECISION") {
     return fail("VALIDATION_ERROR", "Dispatch requires an authoritative decision reference");
+  }
+  if (!isObjectRef(input.capability.capability_ref) || input.capability.capability_ref.object_kind !== "CAPABILITY" ||
+      typeof input.capability.version !== "string" || !input.capability.version.trim() || !input.capability.eligible) {
+    return fail("DEPENDENCY_UNAVAILABLE", "Target capability is unavailable or incompatible");
+  }
+  if (!isObjectRef(input.resource.admission_ref) || input.resource.admission_ref.object_kind !== "RESOURCE_ADMISSION") {
+    return fail("VALIDATION_ERROR", "Dispatch requires a resource admission reference");
+  }
+  if (!sameScopeRef(input.authorization.decision_ref.scope_ref, input.scope_ref) ||
+      !sameScopeRef(input.capability.capability_ref.scope_ref, input.scope_ref) ||
+      !sameScopeRef(input.resource.admission_ref.scope_ref, input.scope_ref)) {
+    return fail("FORBIDDEN", "Authorization, capability and resource admission must match the authenticated scope");
   }
   if (input.authorization.disposition === "DENIED" || input.authorization.disposition === "UNKNOWN") {
     return fail("FORBIDDEN", "Current action-time authorization does not permit dispatch");
   }
   if (input.authorization.disposition === "REQUIRES_APPROVAL") return fail("APPROVAL_REQUIRED", "Dispatch requires approval");
   if (input.authorization.disposition !== "ALLOWED") return fail("FORBIDDEN", "Dispatch requires an explicit ALLOWED authorization decision");
-  if (!isObjectRef(input.capability.capability_ref) || typeof input.capability.version !== "string" ||
-      !input.capability.version.trim() || !input.capability.eligible) {
-    return fail("DEPENDENCY_UNAVAILABLE", "Target capability is unavailable or incompatible");
-  }
-  if (!isObjectRef(input.resource.admission_ref) || input.resource.admission_ref.object_kind !== "RESOURCE_ADMISSION") {
-    return fail("VALIDATION_ERROR", "Dispatch requires a resource admission reference");
-  }
   if (input.resource.state === "DENIED") return fail("RESOURCE_LIMIT", "Resource admission denied dispatch");
   if (input.resource.state === "DEFERRED" || input.resource.state === "UNKNOWN") {
     return fail("DEPENDENCY_UNAVAILABLE", "Resource admission is not yet confirmed");
@@ -596,7 +606,12 @@ export function createDispatchAttempt(input: {
   attempt_number: number;
   submitted_at: Timestamp;
 }): OrchestrationResult<DispatchAttempt> {
+  if (!isRequestContext(input.context) ||
+      typeof input.context.idempotency_key !== "string" || !input.context.idempotency_key.trim()) {
+    return fail("VALIDATION_ERROR", "Dispatch attempt requires a valid request context and idempotency key");
+  }
   const dispatchGate = authorizeDispatch({
+    scope_ref: input.context.scope_ref,
     node_state: input.node.state,
     authorization: {
       decision_ref: input.authorization_decision_ref,
@@ -613,18 +628,49 @@ export function createDispatchAttempt(input: {
     },
   });
   if (!dispatchGate.ok) return { ok: false, issues: dispatchGate.issues };
-  if (!isRequestContext(input.context) || !input.context.idempotency_key ||
-      !isObjectRef(input.attempt_ref) || input.attempt_ref.object_kind !== "DISPATCH_ATTEMPT" ||
-      !isObjectRef(input.capability_ref) || !isObjectRef(input.authorization_decision_ref) ||
+  if (!isObjectRef(input.attempt_ref) || input.attempt_ref.object_kind !== "DISPATCH_ATTEMPT" ||
+      !isObjectRef(input.capability_ref) || input.capability_ref.object_kind !== "CAPABILITY" ||
+      !isObjectRef(input.authorization_decision_ref) || input.authorization_decision_ref.object_kind !== "AUTHORITY_DECISION" ||
       !isObjectRef(input.resource_admission_ref) || input.resource_admission_ref.object_kind !== "RESOURCE_ADMISSION" ||
       !Number.isSafeInteger(input.attempt_number) || input.attempt_number < 1 ||
-      !input.capability_version.trim() || !isTimestamp(input.submitted_at)) {
+      typeof input.capability_version !== "string" || !input.capability_version.trim() ||
+      !isTimestamp(input.submitted_at)) {
     return fail("VALIDATION_ERROR", "Dispatch attempt identity, capability, gates, attempt number or timestamp is invalid");
   }
+  const scopedRefs = [
+    input.attempt_ref,
+    input.capability_ref,
+    input.authorization_decision_ref,
+    input.resource_admission_ref,
+    input.run.orchestration_ref,
+    input.run.work_ref,
+    input.run.plan_revision_ref,
+    input.run.graph_revision_ref,
+    input.run.graph_activation_receipt_ref,
+    input.run.request_ref,
+    input.run.activation_request_ref,
+    input.node.node_coordination_ref,
+    input.node.orchestration_ref,
+    input.node.work_ref,
+    input.node.graph_revision_ref,
+    input.node.graph_node_ref,
+  ];
+  if (!sameScopeRef(input.run.scope_ref, input.context.scope_ref) ||
+      !scopedRefs.every((ref) => isObjectRef(ref) && sameScopeRef(ref.scope_ref, input.context.scope_ref))) {
+    return fail("FORBIDDEN", "Dispatch records and all referenced objects must match the authenticated orchestration scope");
+  }
   if (input.run.state !== "RUNNING" || input.node.state !== "READY" ||
+      input.run.orchestration_ref.object_kind !== "ORCHESTRATION_RUN" ||
+      input.run.work_ref.object_kind !== "WORK" ||
+      input.run.graph_revision_ref.object_kind !== "WORK_GRAPH_REVISION" ||
+      input.node.node_coordination_ref.object_kind !== "NODE_COORDINATION" ||
+      input.node.work_ref.object_kind !== "WORK" ||
+      input.node.graph_revision_ref.object_kind !== "WORK_GRAPH_REVISION" ||
+      input.node.graph_node_ref.object_kind !== "GRAPH_NODE" ||
       !sameRef(input.node.orchestration_ref, input.run.orchestration_ref) ||
+      !sameRef(input.node.work_ref, input.run.work_ref) ||
       !sameRef(input.node.graph_revision_ref, input.run.graph_revision_ref)) {
-    return fail("INVALID_TRANSITION", "Dispatch must target a READY node in a RUNNING run pinned to this graph");
+    return fail("INVALID_TRANSITION", "Dispatch must target a READY node in the exact Work and Graph pinned by a RUNNING orchestration");
   }
   return ok({
     dispatch_ref: input.attempt_ref,
