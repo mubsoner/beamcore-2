@@ -102,7 +102,7 @@ function canonicalJson(value: unknown, ancestors = new WeakSet<object>()): strin
     if (Array.isArray(value)) {
       const ownKeys = Reflect.ownKeys(value);
       if (
-        ownKeys.some((key) => typeof key !== "string" || (key !== "length" && !/^\\d+$/.test(key as string)))
+        ownKeys.some((key) => typeof key !== "string" || (key !== "length" && (!Number.isSafeInteger(Number(key)) || String(Number(key)) !== key)))
       ) {
         throw new TypeError("Arrays must not contain custom or symbol properties");
       }
