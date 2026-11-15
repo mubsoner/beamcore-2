@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { ObjectRef, RequestContext, ScopeRef } from "../shared";
 import {
+  buildAuthorityFingerprintMaterial,
+  buildCanonicalRequestFingerprint,
+  claimOneTimeApprovalRecord,
   createPendingApproval,
   decideApproval,
   evaluateAuthorizationDecision,
@@ -10,6 +13,8 @@ import {
   validateApprovalUse,
   validateDelegationRequest,
   validateAuthorizationRequest,
+  validateAuthorityFacts,
+  validatePolicyEvaluation,
   type ApprovalRecord,
   type AuthorizationRequest,
   type AuthorityFacts,
@@ -112,6 +117,41 @@ describe("INV-06 authorization domain", () => {
   it("allows only when authenticated, in-scope, current authority and released policy agree", () => {
     expect(evaluate().data?.result).toBe("ALLOW");
   });
+  it("blocks a stale resource version instead of authorizing the old version", () => {
+    expect(evaluate({ facts: { current_resource_version: "2" } }).data?.result).toBe("INDETERMINATE");
+    expect(evaluate({ facts: { current_resource_version: "2" } }).data?.reason_codes).toContain("RESOURCE_VERSION_STALE");
+  });
+  it("rejects malformed authority snapshots and policy releases", () => {
+    expect(validateAuthorityFacts(facts({ source_refs: [] }), request(), "2026-11-15T10:00:00Z").length).toBeGreaterThan(0);
+    expect(validatePolicyEvaluation(policy({ approval_required: true }), request()).length).toBeGreaterThan(0);
+  });
+  it("canonicalizes object key order but changes the request fingerprint for material changes", () => {
+    const first = request();
+    const reordered = { ...first, risk_context: {
+      valid_until: first.risk_context.valid_until,
+      assessed_at: first.risk_context.assessed_at,
+      scope_blast_radius_refs: first.risk_context.scope_blast_radius_refs,
+      uncertainty_flags: first.risk_context.uncertainty_flags,
+      sensitivity_refs: first.risk_context.sensitivity_refs,
+      impact_dimensions: first.risk_context.impact_dimensions,
+      assessment_state: first.risk_context.assessment_state,
+    } };
+    expect(buildCanonicalRequestFingerprint(first)).toBe(buildCanonicalRequestFingerprint(reordered));
+    expect(buildCanonicalRequestFingerprint(first)).not.toBe(buildCanonicalRequestFingerprint(request({ action: "artifact.delete" })));
+  });
+  it("changes the authority fingerprint when source versions, policy release or approvals change", () => {
+    const first = {
+      request: request(), principal: principal(), facts: facts(), policy: policy(),
+    };
+    const a = buildAuthorityFingerprintMaterial(first);
+    const membershipChanged = buildAuthorityFingerprintMaterial({
+      ...first, facts: facts({ source_refs: [{
+        source_kind: "membership", object_ref: ref("MEMBERSHIP", "membership-1"),
+        source_version: "4", observed_at: "2026-11-15T09:59:30Z",
+      }] }),
+    });
+    expect(membershipChanged).not.toBe(a);
+  });
   it("rejects actor spoofing and mismatched scope before evaluation", () => {
     expect(validateAuthorizationRequest(context, request({
       actor_ref: { principal_id: "attacker", principal_kind: "USER" },
@@ -156,12 +196,52 @@ describe("INV-06 authorization domain", () => {
       approval,
       decision: {
         approval_ref: approval.approval_ref, approver_ref: context.actor_ref,
-        decision: "APPROVE", expected_version: "1", decided_at: "2026-11-15T10:01:00Z",
+        decision: "APPROVE", expected_version: "1", idempotency_key: "approval-decision-1",
+        decided_at: "2026-11-15T10:01:00Z",
       },
       expected_current_version: "1", approver_is_authorized: true,
       independent_approval_required: true, now: "2026-11-15T10:01:00Z",
     });
     expect(rejected.status).toBe("REJECTED");
+  });
+  it("consumes a one-time approval only for its exact request and current version", () => {
+    const created = createPendingApproval({
+      approval_ref: ref("APPROVAL", "approval-consume"),
+      approval_id: "approval-consume",
+      request_ref: ref("AUTHORIZATION_REQUEST", "auth-req-1"),
+      requested_by_ref: context.actor_ref,
+      required_approver_constraints: [],
+      action: "artifact.publish",
+      resource_ref: ref("ARTIFACT", "artifact-1"),
+      scope_ref: scope,
+      environment_ref: ref("ENVIRONMENT", "production"),
+      context_version_refs: [],
+      policy_release_ref: { ...ref("POLICY_RELEASE", "policy-1"), object_version: "7" },
+      approval_use_mode: "ONE_TIME",
+      created_at: "2026-11-15T10:00:00Z",
+      expires_at: "2026-11-15T10:10:00Z",
+    });
+    const approval = {
+      ...created.data!,
+      state: "APPROVED" as const,
+      approver_ref: { principal_id: "admin-1", principal_kind: "USER" as const },
+      decided_at: "2026-11-15T10:01:00Z",
+    };
+    const requestRef = ref("AUTHORIZATION_REQUEST", "auth-req-1");
+    const claimed = claimOneTimeApprovalRecord({
+      approval, authorization_request_ref: requestRef,
+      expected_version: "1", idempotency_key: "claim-1", now: "2026-11-15T10:02:00Z",
+    });
+    expect(claimed.data?.state).toBe("CONSUMED");
+    expect(claimed.data?.consumed_by_request_ref).toEqual(requestRef);
+    expect(claimOneTimeApprovalRecord({
+      approval: claimed.data!, authorization_request_ref: requestRef,
+      expected_version: "1", idempotency_key: "claim-2", now: "2026-11-15T10:03:00Z",
+    }).status).toBe("REJECTED");
+    expect(claimOneTimeApprovalRecord({
+      approval, authorization_request_ref: ref("AUTHORIZATION_REQUEST", "different"),
+      expected_version: "1", idempotency_key: "claim-3", now: "2026-11-15T10:03:00Z",
+    }).status).toBe("REJECTED");
   });
   it("rejects approvals with a different action, target, environment, tenant or expiry", () => {
     const approval: ApprovalRecord = {
