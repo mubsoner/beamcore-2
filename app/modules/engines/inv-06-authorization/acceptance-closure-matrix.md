@@ -11,7 +11,7 @@
 - **INTEGRATION BLOCKER** — completion needs an actual provider, persistent repository, or another engine's enforcement/source adapter; a port or fake test adapter is not proof.
 - **GAP** — required logical behavior or test is still missing/incomplete.
 
-**Current engine test inventory:** 31 domain tests + 28 application tests = 59 focused INV-06 tests. Latest branch head inspected: `bc6ffe0201b93f57185b3d1df1217f532e816eba`; CI run `43775412219` for that exact head was `in_progress` at matrix update time. This inventory is a test count, not a pass count. Passing unit tests are not substitutes for the provider/integration blockers below.
+**Current engine test inventory:** 31 domain tests + 29 application tests = 60 focused INV-06 tests. Latest branch head inspected: `26cdbecdfef9e7bacc536e1b6789ad60df29b2ce`; CI for that exact head was pending/in progress at matrix update time. This inventory is a test count, not a pass count. Passing unit tests are not substitutes for the provider/integration blockers below.
 
 ## Acceptance status
 
@@ -21,8 +21,8 @@
 | T02 | Missing authentication blocks protected action | TEST EXISTS — unauthenticated state is denied | Verify at INV-05/07 action boundaries |
 | T03 | Expired session requires reauthentication or denial | TEST EXISTS — application test rejects an already-expired authenticated session result | Bind session freshness and revocation to the selected IdP adapter |
 | T04 | Revoked session blocks subsequent actions | LOGIC ONLY — REVOKED authentication state is denied; session revocation workflow emits session.revoked | Add session-provider revocation integration test |
-| T05 | Authentication without action permission is denied | LOGIC ONLY — NOT_GRANTED permission is denied | Add focused test using current INV-18 permission facts |
-| T06 | Ownership alone cannot bypass policy | LOGIC ONLY — authorization is action/policy based; no owner bypass exists | Add explicit owner fixture and test |
+| T05 | Authentication without action permission is denied | TEST EXISTS — NOT_GRANTED returns DENY even when the principal has an OWNER role binding | Verify current permission facts against INV-18 |
+| T06 | Ownership alone cannot bypass policy | TEST EXISTS — OWNER role binding does not override NOT_GRANTED | Verify ownership and authority remain separate in live INV-18 facts |
 | T07 | Admin without action entitlement is denied | INTEGRATION BLOCKER | Bind role/entitlement facts from INV-18 and test |
 | T08 | Developer cannot access production without production authority | INTEGRATION BLOCKER | Bind environment/role policy and test |
 | T09 | Reachable capability without authority is blocked at tool gateway | INTEGRATION BLOCKER | Integrate INV-07 Secure Tool Gateway |
@@ -34,11 +34,11 @@
 | T15 | Membership removal takes effect within declared propagation objective | INTEGRATION BLOCKER | INV-18 event/read adapter and an approved, measurable propagation SLO are open |
 | T16 | Stale cached decision rejected after membership/entitlement version changes | LOGIC ONLY — decision fingerprint includes current source versions | Add cache and INV-18 version-change integration test |
 | T17 | Policy version change forces next action re-evaluation | LOGIC ONLY — action boundary re-resolves policy on each call | Add policy-version mutation/action-boundary test |
-| T18 | Policy timeout returns unavailable/indeterminate and prevents side effect | LOGIC ONLY — provider failure is fail-closed | Add dedicated outage test and INV-05/07 proof |
+| T18 | Policy timeout returns unavailable/indeterminate and prevents side effect | TEST EXISTS — policy evaluator outage rejects the request and does not commit a decision | Prove no side effect at INV-05/07 protected boundaries |
 | T19 | Policy UNKNOWN/conflict cannot become ALLOW | TEST EXISTS — UNKNOWN maps to INDETERMINATE | Add evaluator conflict fixture when policy evaluator is selected |
 | T20 | Draft/suspended policy cannot authorize | TEST EXISTS — suspended policy case; draft is guarded by the same release-state gate | Add explicit draft test |
 | T21 | Policy release immutable; changes create a new version and invalidation/recheck | LOGIC ONLY — ordered release lifecycle and guarded publish/suspend ports | Bind immutable policy store, approval/impact evidence and invalidation event consumer |
-| T22 | Required missing/stale/indeterminate risk blocks action | LOGIC ONLY — risk freshness and required-assessment checks exist | Add dedicated missing/stale risk tests and risk source adapter |
+| T22 | Required missing/stale/indeterminate risk blocks action | TEST EXISTS — bounded validity, future-dated and stale risk assessment cases are covered | Bind a trusted risk source and verify enforcement at INV-05/07 |
 | T23 | Approval-required returns scoped approval requirement without execution | TEST EXISTS — approval-required decision case | Verify no protected side effect through INV-05/07 |
 | T24 | Unauthorized approver cannot decide an approval | TEST EXISTS — application tests re-resolve current approver authority and deny revoked/stale approvers | Verify against live INV-18 membership and policy adapter |
 | T25 | Self-approval rejected when independent approval is required | TEST EXISTS — independent approver guard | Add cross-kind PrincipalRef test if policy permits varied principal types |
@@ -61,7 +61,7 @@
 | T42 | Role/scope/expiry/risk/context changes trigger action-time re-evaluation | LOGIC ONLY — boundary re-resolves principal/facts/policy and rechecks conditions | Add source-version change matrix test |
 | T43 | A long-running Work is rechecked before its next consequential action after a policy/membership/delegation change | INTEGRATION BLOCKER | Integrate recheck hook into INV-04 and enforcement points in INV-05/07 |
 | T44 | A caller cannot substitute its own service identity for an acting user without an explicit permitted delegation | TEST EXISTS — service identity must resolve independently and be bound to a verified delegation | Verify with real application/service identity provider and delegation source |
-| T45 | External authorization failure/uncertainty blocks action | LOGIC ONLY — denied/unknown external authority states fail closed | Add dedicated test and external authority adapter |
+| T45 | External authorization failure/uncertainty blocks action | TEST EXISTS — DENIED blocks and UNKNOWN returns INDETERMINATE | Add external authority source integration test |
 | T46 | Capability fallback cannot broaden permissions or reuse unrelated approval | INTEGRATION BLOCKER | INV-07 capability fallback and approval binding integration test |
 | T47 | Authorization request with wrong expected version returns a conflict and performs no partial mutation | TEST EXISTS — current approval row version is passed separately from stable ObjectRef version; stale CAS is rejected | Prove database compare-and-set and rollback under race/fault injection |
 | T48 | Repeated request with the same idempotency key and same canonical payload returns the same logical operation result | LOGIC ONLY — decision fingerprint binds canonical request plus current authority fingerprint; one-time claim replay is keyed to the same request/operation | Verify persistent idempotency replay and stable results with the selected repository/transaction adapter |
