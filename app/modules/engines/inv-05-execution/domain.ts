@@ -1152,6 +1152,12 @@ export function captureExecutionOutput(
       !isTimestamp(input.captured_at)) {
     return rejected(context, "VALIDATION_ERROR", "Output reference, digest, completeness or capture timestamp is invalid");
   }
+  if (!attempt.started_at) {
+    return rejected(context, "VALIDATION_ERROR", "Output cannot be captured for an attempt whose runtime start was not observed");
+  }
+  if (input.output_completeness === "COMPLETE" && execution.state !== "SUCCEEDED") {
+    return rejected(context, "VALIDATION_ERROR", "Complete output requires a successful runtime execution");
+  }
   if (execution.state === "FAILED" || execution.state === "TIMED_OUT" || execution.state === "CANCELLED") {
     if (input.output_completeness !== "PARTIAL" && input.output_completeness !== "UNKNOWN") {
       return rejected(context, "VALIDATION_ERROR", "Output captured after failed, timed-out or cancelled execution cannot be marked COMPLETE");
