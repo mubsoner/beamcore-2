@@ -189,6 +189,58 @@ describe("INV-06 authorization domain", () => {
     })));
     expect(buildCanonicalRequestFingerprint(first)).not.toBe(buildCanonicalRequestFingerprint(request({ action: "artifact.delete" })));
   });
+  it("keeps the authority fingerprint stable for the same consumed one-time approval replay", () => {
+    const approved = {
+      approval_id: "approval-replay",
+      approval_ref: ref("APPROVAL", "approval-replay"),
+      request_ref: ref("AUTHORIZATION_REQUEST", "auth-req-1"),
+      request_binding_fingerprint: buildApprovalBindingFingerprint(request(), "ONE_TIME"),
+      requested_by_ref: context.actor_ref,
+      approver_ref: { principal_id: "admin-replay", principal_kind: "USER" as const },
+      required_approver_constraints: [],
+      action: "artifact.publish",
+      resource_ref: ref("ARTIFACT", "artifact-1"),
+      scope_ref: scope,
+      environment_ref: ref("ENVIRONMENT", "production"),
+      context_version_refs: [],
+      policy_release_ref: { ...ref("POLICY_RELEASE", "policy-1"), object_version: "7" },
+      approval_use_mode: "ONE_TIME" as const,
+      state: "APPROVED" as const,
+      created_at: "2026-11-15T09:50:00Z",
+      decided_at: "2026-11-15T09:55:00Z",
+      expires_at: "2026-11-15T10:10:00Z",
+    };
+    const replayRequest = request({ approval_ref: approved.approval_ref, idempotency_key: "same-claim" });
+    const approvedFingerprint = buildAuthorityFingerprintMaterial({
+      request: replayRequest, principal: principal(), facts: facts(), policy: policy(),
+      approval: approved, idempotency_key: "same-claim",
+    });
+    const consumedFingerprint = buildAuthorityFingerprintMaterial({
+      request: replayRequest, principal: principal(), facts: facts(), policy: policy(),
+      approval: {
+        ...approved,
+        state: "CONSUMED",
+        consumed_at: "2026-11-15T10:00:00Z",
+        consumed_by_request_ref: ref("AUTHORIZATION_REQUEST", "auth-req-1"),
+        consumed_idempotency_key: "same-claim",
+      },
+      idempotency_key: "same-claim",
+    });
+    expect(consumedFingerprint).toBe(approvedFingerprint);
+    const otherOperation = buildAuthorityFingerprintMaterial({
+      request: replayRequest, principal: principal(), facts: facts(), policy: policy(),
+      approval: {
+        ...approved,
+        state: "CONSUMED",
+        consumed_at: "2026-11-15T10:00:00Z",
+        consumed_by_request_ref: ref("AUTHORIZATION_REQUEST", "auth-req-1"),
+        consumed_idempotency_key: "different-claim",
+      },
+      idempotency_key: "same-claim",
+    });
+    expect(otherOperation).not.toBe(approvedFingerprint);
+  });
+
   it("changes the authority fingerprint when source versions, policy release or approvals change", () => {
     const first = {
       request: request(), principal: principal(), facts: facts(), policy: policy(),
@@ -315,11 +367,33 @@ describe("INV-06 authorization domain", () => {
     });
     expect(claimed.data?.state).toBe("CONSUMED");
     expect(claimed.data?.consumed_by_request_ref).toEqual(requestRef);
+    expect(claimed.data?.consumed_idempotency_key).toBe("claim-1");
+    const replayedClaim = claimOneTimeApprovalRecord({
+      approval: claimed.data!, authorization_request_ref: requestRef,
+      current_version: "4", expected_version: "4",
+      idempotency_key: "claim-1", now: "2026-11-15T10:03:00Z",
+    });
+    expect(replayedClaim.status).toBe("OK");
+    expect(replayedClaim.data).toEqual(claimed.data);
     expect(claimOneTimeApprovalRecord({
       approval: claimed.data!, authorization_request_ref: requestRef,
-      current_version: "4", expected_version: "3",
+      current_version: "4", expected_version: "4",
       idempotency_key: "claim-2", now: "2026-11-15T10:03:00Z",
     }).status).toBe("REJECTED");
+    const replayRequest = request({
+      approval_ref: approval.approval_ref,
+      idempotency_key: "claim-1",
+    });
+    expect(validateApprovalUse({
+      ...claimed.data!, policy_release_ref: { ...ref("POLICY_RELEASE", "policy-1"), object_version: "7" },
+    }, replayRequest, "2026-11-15T10:03:00Z",
+    { ...ref("POLICY_RELEASE", "policy-1"), object_version: "7" }, "claim-1")).toEqual([]);
+    expect(validateApprovalUse({
+      ...claimed.data!, policy_release_ref: { ...ref("POLICY_RELEASE", "policy-1"), object_version: "7" },
+    }, replayRequest, "2026-11-15T10:03:00Z",
+    { ...ref("POLICY_RELEASE", "policy-1"), object_version: "7" }, "claim-2")).toContain(
+      "approval is not approved for this request or idempotency operation",
+    );
     expect(claimOneTimeApprovalRecord({
       approval, authorization_request_ref: ref("AUTHORIZATION_REQUEST", "different"),
       current_version: "3", expected_version: "3",
