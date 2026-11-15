@@ -1172,16 +1172,23 @@ export function createPendingApproval(input: {
   if (!input.approval_id?.trim() ||
     !["ONE_TIME", "REUSABLE_WITHIN_SCOPE"].includes(input.approval_use_mode) ||
     !isObjectRef(input.approval_ref) || input.approval_ref.object_kind !== "APPROVAL" ||
+    !isVersion(input.approval_ref.object_version) ||
     !sameScopeRef(input.approval_ref.scope_ref, input.scope_ref) ||
     !isObjectRef(input.request_ref) || input.request_ref.object_kind !== "AUTHORIZATION_REQUEST" ||
+    !isVersion(input.request_ref.object_version) ||
     !sameScopeRef(input.request_ref.scope_ref, input.scope_ref) ||
     !input.request_binding_fingerprint?.trim() ||
-    !isPrincipalRef(input.requested_by_ref) || !input.action.trim() ||
+    !isPrincipalRef(input.requested_by_ref) || typeof input.action !== "string" || !input.action.trim() ||
     !isObjectRef(input.resource_ref) || !sameScopeRef(input.resource_ref.scope_ref, input.scope_ref) ||
     !isObjectRef(input.environment_ref) || !sameScopeRef(input.environment_ref.scope_ref, input.scope_ref) ||
+    (input.work_ref !== undefined &&
+      (!isObjectRef(input.work_ref) || !sameScopeRef(input.work_ref.scope_ref, input.scope_ref))) ||
     !Array.isArray(input.required_approver_constraints) ||
     !input.required_approver_constraints.every(value => typeof value === "string" && !!value.trim()) ||
-    !Array.isArray(input.context_version_refs) || !input.context_version_refs.every(isObjectRef) ||
+    !Array.isArray(input.context_version_refs) ||
+    !input.context_version_refs.every(ref => isObjectRef(ref) && sameScopeRef(ref.scope_ref, input.scope_ref)) ||
+    (input.work_ref !== undefined &&
+      !input.context_version_refs.some(ref => isExactObjectRef(ref, input.work_ref!))) ||
     !isObjectRef(input.policy_release_ref) || input.policy_release_ref.object_kind !== "POLICY_RELEASE" ||
     !sameScopeRef(input.policy_release_ref.scope_ref, input.scope_ref) ||
     !isTimestamp(input.created_at) ||
