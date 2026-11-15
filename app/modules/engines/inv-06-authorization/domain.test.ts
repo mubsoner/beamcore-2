@@ -478,7 +478,7 @@ describe("INV-06 authorization domain", () => {
   });
 
   it("requires current, scoped and versioned approver evidence", () => {
-    const snapshot = {
+    const snapshot: ApprovalAuthoritySnapshot = {
       authorized: true,
       independent_required: true,
       satisfied_constraints: ["INDEPENDENT_APPROVER"],
