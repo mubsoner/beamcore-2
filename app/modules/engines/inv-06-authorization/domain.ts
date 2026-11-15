@@ -1151,8 +1151,7 @@ export function decideApproval(input: {
     !isExactObjectRef(decision.approval_ref, approval.approval_ref) ||
     !sameScopeRef(decision.approval_ref.scope_ref, approval.scope_ref) ||
     decision.expected_version !== input.expected_current_version ||
-    !approval.approval_ref.object_version ||
-    approval.approval_ref.object_version !== input.expected_current_version ||
+    !isVersion(input.expected_current_version) ||
     !decision.idempotency_key?.trim() ||
     !isPrincipalRef(decision.approver_ref) || !isTimestamp(decision.decided_at) ||
     !isTimestamp(input.now) || Date.parse(decision.decided_at) > Date.parse(input.now)) {
@@ -1230,25 +1229,24 @@ export function transitionApproval(
 export function claimOneTimeApprovalRecord(input: {
   approval: ApprovalRecord;
   authorization_request_ref: ObjectRef;
+  current_version: Version;
   expected_version: Version;
   idempotency_key: string;
   now: Timestamp;
 }): OperationResult<ApprovalRecord> {
-  const { approval, authorization_request_ref, expected_version, idempotency_key, now } = input;
+  const { approval, authorization_request_ref, current_version, expected_version, idempotency_key, now } = input;
   if (!isObjectRef(authorization_request_ref) ||
       authorization_request_ref.object_kind !== "AUTHORIZATION_REQUEST" ||
       !sameScopeRef(authorization_request_ref.scope_ref, approval.scope_ref) ||
-      !isVersion(expected_version) || !idempotency_key.trim() || !isTimestamp(now)) {
+      !isVersion(current_version) || !isVersion(expected_version) ||
+      current_version !== expected_version ||
+      !idempotency_key.trim() || !isTimestamp(now)) {
     return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
       errors: [createOperationError("VALIDATION_ERROR", "One-time approval claim input is invalid")] });
   }
   if (approval.approval_use_mode !== "ONE_TIME" || approval.state !== "APPROVED") {
     return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
       errors: [createOperationError("APPROVAL_REQUIRED", "Approval is not an available one-time approval")] });
-  }
-  if (!approval.approval_ref.object_version || approval.approval_ref.object_version !== expected_version) {
-    return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
-      errors: [createOperationError("VERSION_CONFLICT", "Approval version changed before consumption")] });
   }
   if (!sameObjectRef(approval.request_ref, authorization_request_ref)) {
     return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
