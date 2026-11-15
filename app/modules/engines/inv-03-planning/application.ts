@@ -1208,7 +1208,7 @@ export async function requestGraphActivation(
 
     const stored = await transaction.appendOnly<GraphActivationRequest>(
       "inv-03.graph-activation-requests",
-    ).append(command.context, request.value);
+    ).append(command.context, request.value.request_ref, request.value);
     if (stored.status !== "OK" || !stored.data) {
       return propagateFailure<GraphActivationRequest>(stored);
     }
