@@ -163,6 +163,7 @@ describe("INV-05 execution application admission boundary", () => {
       readExecution: async () => ({
         status: "OK", correlation_id: context.correlation_id,
         data: { ...created.data!, state: "UNKNOWN", effect_knowledge: "UNKNOWN", cleanup_state: "FAILED" },
+        object_version: "db-version-1",
         errors: [], warnings: [],
       }),
       readAttempts: async () => ({ status: "OK", correlation_id: context.correlation_id, data: [], errors: [], warnings: [] }),
@@ -174,6 +175,7 @@ describe("INV-05 execution application admission boundary", () => {
     expect(result.data?.execution.effect_knowledge).toBe("UNKNOWN");
     expect(result.data?.execution.cleanup_state).toBe("FAILED");
     expect(result.data?.attempts).toEqual([]);
+    expect(result.object_version).toBe("db-version-1");
   });
 
   it("rejects incomplete, reordered or cross-Execution attempt history", async () => {
@@ -193,7 +195,7 @@ describe("INV-05 execution application admission boundary", () => {
     });
     if (!started.data) throw new Error("Attempt fixture failed");
     const reader: ExecutionReadPort = {
-      readExecution: async () => ({ status: "OK", correlation_id: context.correlation_id, data: started.data!.execution, errors: [], warnings: [] }),
+      readExecution: async () => ({ status: "OK", correlation_id: context.correlation_id, data: started.data!.execution, object_version: "db-version-2", errors: [], warnings: [] }),
       readAttempts: async () => ({ status: "OK", correlation_id: context.correlation_id, data: [], errors: [], warnings: [] }),
       readInvocationManifest: async () => { throw new Error("Not used"); },
     };
@@ -223,7 +225,7 @@ describe("INV-05 execution application admission boundary", () => {
       created_at: "2026-11-15T08:00:01Z",
     };
     const reader: ExecutionReadPort = {
-      readExecution: async () => ({ status: "OK", correlation_id: context.correlation_id, data: execution, errors: [], warnings: [] }),
+      readExecution: async () => ({ status: "OK", correlation_id: context.correlation_id, data: execution, object_version: "db-version-3", errors: [], warnings: [] }),
       readAttempts: async () => ({ status: "OK", correlation_id: context.correlation_id, data: [], errors: [], warnings: [] }),
       readInvocationManifest: async () => ({ status: "OK", correlation_id: context.correlation_id, data: manifest, errors: [], warnings: [] }),
     };
