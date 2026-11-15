@@ -1,0 +1,1001 @@
+import {
+  createOperationError,
+  createOperationResult,
+  isObjectRef,
+  isPrincipalRef,
+  isRequestContext,
+  isScopeRef,
+  isTimestamp,
+  isVersion,
+  sameObjectRef,
+  sameScopeRef,
+  type ObjectRef,
+  type OperationResult,
+  type PrincipalRef,
+  type RequestContext,
+  type ScopeRef,
+  type Timestamp,
+  type Version,
+} from "../shared";
+
+export const AUTHORIZATION_RESULTS = [
+  "ALLOW", "DENY", "REQUIRE_APPROVAL", "REQUIRE_REAUTH",
+  "RESTRICT", "QUARANTINE", "DEFER", "INDETERMINATE",
+] as const;
+export type AuthorizationResult = (typeof AUTHORIZATION_RESULTS)[number];
+
+export const AUTHENTICATION_STATES = [
+  "AUTHENTICATED", "UNAUTHENTICATED", "STEP_UP_REQUIRED",
+  "EXPIRED", "REVOKED", "INDETERMINATE",
+] as const;
+export type AuthenticationState = (typeof AUTHENTICATION_STATES)[number];
+
+export const POLICY_EFFECTS = [
+  "ALLOW", "DENY", "REQUIRE_APPROVAL", "REQUIRE_REAUTH",
+  "RESTRICT", "QUARANTINE", "DEFER", "UNKNOWN",
+] as const;
+export type PolicyEffect = (typeof POLICY_EFFECTS)[number];
+
+export const APPROVAL_STATES = [
+  "PENDING", "APPROVED", "REJECTED", "EXPIRED", "REVOKED", "CONSUMED",
+] as const;
+export type ApprovalState = (typeof APPROVAL_STATES)[number];
+export type ApprovalUseMode = "ONE_TIME" | "REUSABLE_WITHIN_SCOPE";
+
+export const DELEGATION_STATES = [
+  "PENDING_APPROVAL", "SCHEDULED", "ACTIVE", "SUSPENDED", "REVOKED", "EXPIRED",
+] as const;
+export type DelegationState = (typeof DELEGATION_STATES)[number];
+
+export const POLICY_RELEASE_STATES = [
+  "DRAFT", "VALIDATED", "STATIC_ANALYSIS_PASSED", "SCENARIO_TESTED",
+  "CONFLICT_TESTED", "REGRESSION_TESTED", "IMPACT_REVIEWED", "APPROVED",
+  "RELEASED", "MONITORING", "SUSPENDED", "RETIRED",
+] as const;
+export type PolicyReleaseState = (typeof POLICY_RELEASE_STATES)[number];
+
+export const TRUST_STATES = [
+  "UNKNOWN", "OBSERVED", "EVALUATED", "TRUSTED_FOR_SCOPE",
+  "MONITORED", "RESTRICTED", "SUSPENDED", "REVOKED",
+] as const;
+export type TrustState = (typeof TRUST_STATES)[number];
+export type RiskAssessmentState = "NOT_ASSESSED" | "ASSESSED" | "INDETERMINATE";
+export type MembershipState = "ACTIVE" | "SUSPENDED" | "REVOKED" | "UNKNOWN";
+export type EntitlementState = "ELIGIBLE" | "INELIGIBLE" | "NOT_REQUIRED" | "UNKNOWN";
+export type PermissionState = "GRANTED" | "NOT_GRANTED" | "UNKNOWN";
+export type ExternalAuthorizationState = "AUTHORIZED" | "DENIED" | "NOT_REQUIRED" | "UNKNOWN";
+
+export interface AuthoritySourceRef {
+  source_kind: string;
+  object_ref: ObjectRef;
+  source_version?: Version;
+  observed_at: Timestamp;
+}
+
+export interface PrincipalContext {
+  principal_ref: PrincipalRef;
+  authentication_state: AuthenticationState;
+  session_ref?: ObjectRef;
+  assurance_context_ref?: ObjectRef;
+  organization_membership_refs: ObjectRef[];
+  role_binding_refs: ObjectRef[];
+  delegation_refs: ObjectRef[];
+  trust_assessment_refs: ObjectRef[];
+  authority_source_refs: AuthoritySourceRef[];
+  resolved_at: Timestamp;
+  valid_until?: Timestamp;
+}
+
+export interface RiskContext {
+  assessment_state: RiskAssessmentState;
+  impact_dimensions: string[];
+  reversibility?: string;
+  sensitivity_refs: ObjectRef[];
+  uncertainty_flags: string[];
+  scope_blast_radius_refs: ObjectRef[];
+  risk_assessment_ref?: ObjectRef;
+  assessed_at?: Timestamp;
+  valid_until?: Timestamp;
+}
+
+export interface AuthorizationRequest {
+  authorization_request_id: string;
+  actor_ref: PrincipalRef;
+  service_identity_ref?: PrincipalRef;
+  action: string;
+  resource_ref: ObjectRef;
+  scope_ref: ScopeRef;
+  environment_ref: ObjectRef;
+  work_ref?: ObjectRef;
+  plan_revision_ref?: ObjectRef;
+  graph_revision_ref?: ObjectRef;
+  execution_ref?: ObjectRef;
+  capability_ref?: ObjectRef;
+  delegation_ref?: ObjectRef;
+  approval_ref?: ObjectRef;
+  risk_context: RiskContext;
+  action_arguments_digest?: string;
+  requested_at: Timestamp;
+  deadline?: Timestamp;
+  expected_resource_version?: Version;
+  policy_context_refs: ObjectRef[];
+  correlation_id: string;
+  causation_id?: string;
+  idempotency_key?: string;
+}
+
+export interface DecisionCondition {
+  condition_id: string;
+  condition_kind: string;
+  parameters_ref?: ObjectRef;
+  must_hold_at_enforcement: boolean;
+}
+
+export interface PolicyRelease {
+  policy_release_id: string;
+  policy_family_id: string;
+  policy_release_ref: ObjectRef;
+  version: Version;
+  state: PolicyReleaseState;
+  ruleset_digest: string;
+  evaluator_contract_version: string;
+  effective_from?: Timestamp;
+  valid_until?: Timestamp;
+  suspended_at?: Timestamp;
+  retired_at?: Timestamp;
+}
+
+export interface ApprovalRecord {
+  approval_id: string;
+  approval_ref: ObjectRef;
+  request_ref: ObjectRef;
+  requested_by_ref: PrincipalRef;
+  approver_ref?: PrincipalRef;
+  required_approver_constraints: string[];
+  action: string;
+  resource_ref: ObjectRef;
+  scope_ref: ScopeRef;
+  environment_ref: ObjectRef;
+  work_ref?: ObjectRef;
+  context_version_refs: ObjectRef[];
+  policy_release_ref?: ObjectRef;
+  approval_use_mode: ApprovalUseMode;
+  state: ApprovalState;
+  reason_ref?: ObjectRef;
+  evidence_method_ref?: ObjectRef;
+  created_at: Timestamp;
+  decided_at?: Timestamp;
+  valid_from?: Timestamp;
+  expires_at?: Timestamp;
+  revoked_at?: Timestamp;
+  consumed_at?: Timestamp;
+  consumed_by_request_ref?: ObjectRef;
+}
+
+export interface DelegationRecord {
+  delegation_id: string;
+  delegation_ref: ObjectRef;
+  grantor_ref: PrincipalRef;
+  delegate_ref: PrincipalRef;
+  purpose: string;
+  scope_ref: ScopeRef;
+  allowed_actions: string[];
+  resource_constraints: ObjectRef[];
+  limits: string[];
+  conditions: DecisionCondition[];
+  not_before: Timestamp;
+  expires_at: Timestamp;
+  allow_subdelegation: boolean;
+  parent_delegation_ref?: ObjectRef;
+  authorized_by_decision_ref: ObjectRef;
+  state: DelegationState;
+  created_at: Timestamp;
+  revoked_at?: Timestamp;
+}
+
+export interface TrustAssessment {
+  trust_assessment_ref: ObjectRef;
+  subject_ref: ObjectRef;
+  trust_state: TrustState;
+  trusted_scope_ref?: ScopeRef;
+  basis_refs: ObjectRef[];
+  restrictions: string[];
+  assessed_at: Timestamp;
+  valid_until?: Timestamp;
+}
+
+export interface AuthorityFacts {
+  membership_state: MembershipState;
+  entitlement_state: EntitlementState;
+  permission_state: PermissionState;
+  delegation_state: "VALID" | "INVALID" | "NOT_REQUIRED" | "UNKNOWN";
+  external_authorization_state: ExternalAuthorizationState;
+  verified_resource_scope_ref: ScopeRef;
+  source_refs: AuthoritySourceRef[];
+  observed_at: Timestamp;
+  valid_until?: Timestamp;
+  current_resource_version?: Version;
+}
+
+export interface PolicyEvaluation {
+  effect: PolicyEffect;
+  policy_release: PolicyRelease;
+  evaluator_version: string;
+  reason_codes: string[];
+  safe_message?: string;
+  conditions: DecisionCondition[];
+  obligations: string[];
+  valid_until?: Timestamp;
+  approval_required: boolean;
+  approval_use_mode?: ApprovalUseMode;
+  independent_approver_required: boolean;
+  risk_assessment_required: boolean;
+  trust_required: boolean;
+  constrained_action?: string;
+  constrained_resource_ref?: ObjectRef;
+  constrained_environment_ref?: ObjectRef;
+}
+
+export interface AuthorizationDecision {
+  decision_ref: ObjectRef;
+  decision_id: string;
+  request_ref: ObjectRef;
+  result: AuthorizationResult;
+  policy_release_ref?: ObjectRef;
+  policy_version?: Version;
+  evaluator_version?: string;
+  authority_fingerprint: string;
+  applicable_scope_ref: ScopeRef;
+  constrained_action?: string;
+  constrained_resource_ref?: ObjectRef;
+  constrained_environment_ref?: ObjectRef;
+  conditions: DecisionCondition[];
+  obligations: string[];
+  reason_codes: string[];
+  related_approval_refs: ObjectRef[];
+  authority_source_refs: AuthoritySourceRef[];
+  evaluated_at: Timestamp;
+  valid_until?: Timestamp;
+  recheck_before_effect: boolean;
+  audit_ref: ObjectRef;
+}
+
+export interface PolicyEvaluationAudit {
+  audit_ref: ObjectRef;
+  request_ref: ObjectRef;
+  decision_ref: ObjectRef;
+  actor_ref: PrincipalRef;
+  target_ref: ObjectRef;
+  scope_ref: ScopeRef;
+  policy_release_ref?: ObjectRef;
+  authority_fingerprint: string;
+  reason_codes: string[];
+  source_version_refs: ObjectRef[];
+  evaluated_at: Timestamp;
+  correlation_id: string;
+  causation_id?: string;
+}
+
+export interface ApprovalDecisionInput {
+  approval_ref: ObjectRef;
+  approver_ref: PrincipalRef;
+  decision: "APPROVE" | "REJECT";
+  reason_ref?: ObjectRef;
+  evidence_method_ref?: ObjectRef;
+  expected_version: Version;
+  decided_at: Timestamp;
+}
+
+export interface DelegationRequest {
+  delegation_ref: ObjectRef;
+  grantor_ref: PrincipalRef;
+  delegate_ref: PrincipalRef;
+  purpose: string;
+  scope_ref: ScopeRef;
+  allowed_actions: string[];
+  resource_constraints: ObjectRef[];
+  limits: string[];
+  conditions: DecisionCondition[];
+  not_before: Timestamp;
+  expires_at: Timestamp;
+  allow_subdelegation: boolean;
+  parent_delegation_ref?: ObjectRef;
+  authorized_by_decision_ref: ObjectRef;
+}
+
+export interface DelegationGrantAuthority {
+  grantor_authenticated: boolean;
+  grantor_may_delegate: boolean;
+  grantor_allowed_actions: string[];
+  grantor_scope_ref: ScopeRef;
+  grantor_resource_constraints: ObjectRef[];
+  valid_until?: Timestamp;
+}
+
+export interface SafeDecisionExplanation {
+  decision_ref: ObjectRef;
+  result: AuthorizationResult;
+  safe_message: string;
+  visible_reason_codes: string[];
+  permitted_next_step:
+    | "NONE" | "REAUTHENTICATE" | "REQUEST_APPROVAL"
+    | "NARROW_REQUEST" | "WAIT_AND_RECHECK" | "CONTACT_ADMIN";
+  user_visible_refs: ObjectRef[];
+}
+
+export function isAuthorizationResult(value: unknown): value is AuthorizationResult {
+  return typeof value === "string" &&
+    (AUTHORIZATION_RESULTS as readonly string[]).includes(value);
+}
+
+export function validateAuthorizationRequest(
+  context: RequestContext,
+  request: AuthorizationRequest,
+): string[] {
+  const issues: string[] = [];
+  if (!isRequestContext(context)) issues.push("request context is invalid");
+  if (!request || typeof request !== "object") return [...issues, "authorization request is required"];
+  if (!request.authorization_request_id?.trim()) issues.push("authorization_request_id is required");
+  if (!isPrincipalRef(request.actor_ref)) issues.push("actor_ref is invalid");
+  else if (request.actor_ref.principal_id !== context.actor_ref.principal_id ||
+    request.actor_ref.principal_kind !== context.actor_ref.principal_kind) {
+    issues.push("actor_ref must match the authenticated request actor");
+  }
+  if (!request.action?.trim()) issues.push("action is required");
+  if (!isObjectRef(request.resource_ref)) issues.push("resource_ref is invalid");
+  if (!isScopeRef(request.scope_ref)) issues.push("scope_ref is invalid");
+  if (isScopeRef(request.scope_ref) && !sameScopeRef(request.scope_ref, context.scope_ref)) {
+    issues.push("authorization scope must match the authenticated request scope");
+  }
+  if (isObjectRef(request.resource_ref) && isScopeRef(request.scope_ref) &&
+    !sameScopeRef(request.resource_ref.scope_ref, request.scope_ref)) {
+    issues.push("resource scope does not match the requested scope");
+  }
+  if (!isObjectRef(request.environment_ref)) issues.push("environment_ref is invalid");
+  if (isObjectRef(request.environment_ref) && isScopeRef(request.scope_ref) &&
+    !sameScopeRef(request.environment_ref.scope_ref, request.scope_ref)) {
+    issues.push("environment scope does not match the requested scope");
+  }
+  if (!isTimestamp(request.requested_at)) issues.push("requested_at is invalid");
+  if (request.deadline !== undefined && !isTimestamp(request.deadline)) issues.push("deadline is invalid");
+  else if (request.deadline && Date.parse(request.deadline) <= Date.parse(request.requested_at)) {
+    issues.push("deadline must be later than requested_at");
+  }
+  if (request.expected_resource_version !== undefined && !isVersion(request.expected_resource_version)) {
+    issues.push("expected_resource_version is invalid");
+  }
+  if (!Array.isArray(request.policy_context_refs) ||
+    !request.policy_context_refs.every(isObjectRef)) issues.push("policy_context_refs are invalid");
+  if (!request.correlation_id?.trim() || request.correlation_id !== context.correlation_id) {
+    issues.push("correlation_id must match the request context");
+  }
+  if (request.causation_id !== undefined && !request.causation_id.trim()) issues.push("causation_id is invalid");
+  if (request.idempotency_key !== undefined && !request.idempotency_key.trim()) issues.push("idempotency_key is invalid");
+  if (request.service_identity_ref !== undefined && !isPrincipalRef(request.service_identity_ref)) {
+    issues.push("service_identity_ref is invalid");
+  }
+  for (const [name, value] of Object.entries({
+    work_ref: request.work_ref,
+    plan_revision_ref: request.plan_revision_ref,
+    graph_revision_ref: request.graph_revision_ref,
+    execution_ref: request.execution_ref,
+    capability_ref: request.capability_ref,
+    delegation_ref: request.delegation_ref,
+    approval_ref: request.approval_ref,
+  })) {
+    if (value !== undefined && !isObjectRef(value)) issues.push(`${name} is invalid`);
+    else if (value && isObjectRef(value) && !sameScopeRef(value.scope_ref, request.scope_ref)) {
+      issues.push(`${name} is outside the authorization scope`);
+    }
+  }
+  if (!request.risk_context ||
+    !["NOT_ASSESSED", "ASSESSED", "INDETERMINATE"].includes(request.risk_context.assessment_state) ||
+    !Array.isArray(request.risk_context.impact_dimensions) ||
+    !Array.isArray(request.risk_context.sensitivity_refs) ||
+    !request.risk_context.sensitivity_refs.every(isObjectRef) ||
+    !Array.isArray(request.risk_context.uncertainty_flags) ||
+    !Array.isArray(request.risk_context.scope_blast_radius_refs) ||
+    !request.risk_context.scope_blast_radius_refs.every(isObjectRef)) {
+    issues.push("risk_context is invalid");
+  } else {
+    if (request.risk_context.assessment_state === "ASSESSED" &&
+      (!isTimestamp(request.risk_context.assessed_at) ||
+       (request.risk_context.valid_until !== undefined && !isTimestamp(request.risk_context.valid_until)))) {
+      issues.push("assessed risk context must include valid assessment timestamps");
+    }
+  }
+  if (request.action_arguments_digest !== undefined &&
+    !/^sha256:[a-f0-9]{64}$/i.test(request.action_arguments_digest)) {
+    issues.push("action_arguments_digest must be a SHA-256 digest");
+  }
+  return issues;
+}
+
+export function validatePrincipalContext(
+  context: RequestContext,
+  principal: PrincipalContext,
+  now: Timestamp,
+): string[] {
+  const issues: string[] = [];
+  if (!principal || !isPrincipalRef(principal.principal_ref)) return ["principal context is invalid"];
+  if (principal.principal_ref.principal_id !== context.actor_ref.principal_id ||
+    principal.principal_ref.principal_kind !== context.actor_ref.principal_kind) {
+    issues.push("resolved principal does not match authenticated request actor");
+  }
+  if (!(AUTHENTICATION_STATES as readonly string[]).includes(principal.authentication_state)) {
+    issues.push("authentication_state is invalid");
+  }
+  if (!isTimestamp(principal.resolved_at) || Date.parse(principal.resolved_at) > Date.parse(now)) {
+    issues.push("principal resolution timestamp is invalid");
+  }
+  if (principal.valid_until !== undefined &&
+    (!isTimestamp(principal.valid_until) || Date.parse(principal.valid_until) <= Date.parse(now))) {
+    issues.push("principal context is expired");
+  }
+  for (const group of [
+    principal.organization_membership_refs,
+    principal.role_binding_refs,
+    principal.delegation_refs,
+    principal.trust_assessment_refs,
+  ]) {
+    if (!Array.isArray(group) || !group.every(isObjectRef)) issues.push("principal authority references are invalid");
+  }
+  if (!Array.isArray(principal.authority_source_refs) ||
+    !principal.authority_source_refs.every(source =>
+      !!source && typeof source.source_kind === "string" && !!source.source_kind.trim() &&
+      isObjectRef(source.object_ref) && isTimestamp(source.observed_at) &&
+      (source.source_version === undefined || isVersion(source.source_version)))) {
+    issues.push("principal authority source references are invalid");
+  }
+  if (principal.session_ref && !isObjectRef(principal.session_ref)) issues.push("session_ref is invalid");
+  if (principal.assurance_context_ref && !isObjectRef(principal.assurance_context_ref)) {
+    issues.push("assurance_context_ref is invalid");
+  }
+  return issues;
+}
+
+export function buildAuthorityFingerprintMaterial(input: {
+  request: AuthorizationRequest;
+  principal: PrincipalContext;
+  facts: AuthorityFacts;
+  policy: PolicyEvaluation;
+}): string {
+  const refs = input.facts.source_refs
+    .map(source => [
+      source.source_kind,
+      source.object_ref.object_kind,
+      source.object_ref.object_id,
+      source.source_version ?? "",
+      source.observed_at,
+    ])
+    .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  const refsFromPrincipal = input.principal.authority_source_refs
+    .map(source => [
+      source.source_kind,
+      source.object_ref.object_kind,
+      source.object_ref.object_id,
+      source.source_version ?? "",
+      source.observed_at,
+    ])
+    .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  return JSON.stringify({
+    actor: [input.request.actor_ref.principal_kind, input.request.actor_ref.principal_id],
+    action: input.request.action,
+    resource: [input.request.resource_ref.object_kind, input.request.resource_ref.object_id,
+      input.request.expected_resource_version ?? input.request.resource_ref.object_version ?? ""],
+    scope: input.request.scope_ref,
+    environment: [input.request.environment_ref.object_kind, input.request.environment_ref.object_id,
+      input.request.environment_ref.object_version ?? ""],
+    context: {
+      work: input.request.work_ref,
+      plan: input.request.plan_revision_ref,
+      graph: input.request.graph_revision_ref,
+      execution: input.request.execution_ref,
+      capability: input.request.capability_ref,
+    },
+    membership: input.facts.membership_state,
+    entitlement: input.facts.entitlement_state,
+    permission: input.facts.permission_state,
+    delegation: input.facts.delegation_state,
+    external: input.facts.external_authorization_state,
+    membership_sources: refsFromPrincipal,
+    authority_sources: refs,
+    policy: [
+      input.policy.policy_release.policy_release_ref.object_id,
+      input.policy.policy_release.version,
+      input.policy.policy_release.ruleset_digest,
+      input.policy.evaluator_version,
+    ],
+    risk: input.request.risk_context,
+  });
+}
+
+function isApprovalForRequest(
+  approval: ApprovalRecord,
+  request: AuthorizationRequest,
+  policyReleaseRef: ObjectRef,
+  now: Timestamp,
+  useMode?: ApprovalUseMode,
+): boolean {
+  if (approval.state !== "APPROVED" ||
+    approval.action !== request.action ||
+    !sameObjectRef(approval.resource_ref, request.resource_ref) ||
+    !sameScopeRef(approval.scope_ref, request.scope_ref) ||
+    !sameObjectRef(approval.environment_ref, request.environment_ref) ||
+    (approval.work_ref && (!request.work_ref || !sameObjectRef(approval.work_ref, request.work_ref))) ||
+    (approval.policy_release_ref && !sameObjectRef(approval.policy_release_ref, policyReleaseRef)) ||
+    (useMode !== undefined && approval.approval_use_mode !== useMode) ||
+    (approval.valid_from && Date.parse(approval.valid_from) > Date.parse(now)) ||
+    !approval.expires_at || Date.parse(approval.expires_at) <= Date.parse(now)) return false;
+  return true;
+}
+
+export function evaluateAuthorizationDecision(input: {
+  context: RequestContext;
+  request: AuthorizationRequest;
+  principal: PrincipalContext;
+  facts: AuthorityFacts;
+  policy: PolicyEvaluation;
+  approval?: ApprovalRecord;
+  decision_ref: ObjectRef;
+  decision_id: string;
+  request_ref: ObjectRef;
+  audit_ref: ObjectRef;
+  evaluated_at: Timestamp;
+  authority_fingerprint: string;
+}): OperationResult<AuthorizationDecision> {
+  const correlation_id = input.context.correlation_id;
+  const requestIssues = validateAuthorizationRequest(input.context, input.request);
+  const principalIssues = validatePrincipalContext(input.context, input.principal, input.evaluated_at);
+  if (requestIssues.length || principalIssues.length ||
+    !isObjectRef(input.decision_ref) || input.decision_ref.object_kind !== "AUTHORIZATION_DECISION" ||
+    !sameScopeRef(input.decision_ref.scope_ref, input.context.scope_ref) ||
+    !isObjectRef(input.request_ref) || input.request_ref.object_kind !== "AUTHORIZATION_REQUEST" ||
+    !sameScopeRef(input.request_ref.scope_ref, input.context.scope_ref) ||
+    !isObjectRef(input.audit_ref) || input.audit_ref.object_kind !== "AUTHORIZATION_AUDIT" ||
+    !sameScopeRef(input.audit_ref.scope_ref, input.context.scope_ref) ||
+    !input.decision_id?.trim() || !input.authority_fingerprint?.trim() ||
+    !isTimestamp(input.evaluated_at)) {
+    return createOperationResult({
+      status: "REJECTED",
+      correlation_id,
+      errors: [createOperationError("VALIDATION_ERROR", "Authorization decision input is invalid")],
+    });
+  }
+
+  const { request, principal, facts, policy } = input;
+  let result: AuthorizationResult = "INDETERMINATE";
+  const reasons: string[] = [];
+  const validUntil: string[] = [];
+
+  if (principal.authentication_state === "UNAUTHENTICATED" ||
+      principal.authentication_state === "REVOKED") {
+    result = "DENY"; reasons.push("AUTHENTICATION_NOT_VALID");
+  } else if (principal.authentication_state === "STEP_UP_REQUIRED" ||
+      principal.authentication_state === "EXPIRED") {
+    result = "REQUIRE_REAUTH"; reasons.push("REAUTHENTICATION_REQUIRED");
+  } else if (principal.authentication_state === "INDETERMINATE") {
+    result = "INDETERMINATE"; reasons.push("AUTHENTICATION_STATE_UNKNOWN");
+  } else if (!sameScopeRef(facts.verified_resource_scope_ref, request.resource_ref.scope_ref) ||
+      !sameScopeRef(facts.verified_resource_scope_ref, request.scope_ref)) {
+    result = "DENY"; reasons.push("SCOPE_MISMATCH");
+  } else if (facts.membership_state === "SUSPENDED" || facts.membership_state === "REVOKED" ||
+      facts.entitlement_state === "INELIGIBLE" || facts.permission_state === "NOT_GRANTED" ||
+      facts.delegation_state === "INVALID" || facts.external_authorization_state === "DENIED") {
+    result = "DENY"; reasons.push("AUTHORITY_CONSTRAINT_NOT_SATISFIED");
+  } else if (facts.membership_state === "UNKNOWN" || facts.entitlement_state === "UNKNOWN" ||
+      facts.permission_state === "UNKNOWN" || facts.delegation_state === "UNKNOWN" ||
+      facts.external_authorization_state === "UNKNOWN") {
+    result = "INDETERMINATE"; reasons.push("AUTHORITY_FACTS_UNAVAILABLE");
+  } else if (principal.valid_until && Date.parse(principal.valid_until) <= Date.parse(input.evaluated_at)) {
+    result = "REQUIRE_REAUTH"; reasons.push("PRINCIPAL_CONTEXT_EXPIRED");
+  } else if (facts.valid_until && Date.parse(facts.valid_until) <= Date.parse(input.evaluated_at)) {
+    result = "INDETERMINATE"; reasons.push("AUTHORITY_FACTS_EXPIRED");
+  } else if (request.risk_context.assessment_state === "INDETERMINATE" ||
+      (request.risk_context.assessment_state === "ASSESSED" &&
+       request.risk_context.valid_until !== undefined &&
+       Date.parse(request.risk_context.valid_until) <= Date.parse(input.evaluated_at))) {
+    result = "INDETERMINATE"; reasons.push("RISK_CONTEXT_NOT_CURRENT");
+  } else if (!policy || !policy.policy_release ||
+      !["RELEASED", "MONITORING"].includes(policy.policy_release.state) ||
+      (policy.policy_release.effective_from && Date.parse(policy.policy_release.effective_from) > Date.parse(input.evaluated_at)) ||
+      (policy.policy_release.valid_until && Date.parse(policy.policy_release.valid_until) <= Date.parse(input.evaluated_at))) {
+    result = "INDETERMINATE"; reasons.push("CURRENT_POLICY_UNAVAILABLE");
+  } else {
+    switch (policy.effect) {
+      case "DENY": result = "DENY"; break;
+      case "REQUIRE_REAUTH": result = "REQUIRE_REAUTH"; break;
+      case "REQUIRE_APPROVAL": result = "REQUIRE_APPROVAL"; break;
+      case "RESTRICT": result = "RESTRICT"; break;
+      case "QUARANTINE": result = "QUARANTINE"; break;
+      case "DEFER": result = "DEFER"; break;
+      case "UNKNOWN": result = "INDETERMINATE"; break;
+      case "ALLOW": result = "ALLOW"; break;
+    }
+    reasons.push(...policy.reason_codes);
+    if (policy.risk_assessment_required && request.risk_context.assessment_state !== "ASSESSED") {
+      result = "INDETERMINATE"; reasons.push("RISK_ASSESSMENT_REQUIRED");
+    }
+    if (policy.trust_required && !principal.trust_assessment_refs.length) {
+      result = "INDETERMINATE"; reasons.push("SCOPED_TRUST_ASSESSMENT_REQUIRED");
+    }
+    if (policy.approval_required) {
+      if (!input.approval) {
+        result = "REQUIRE_APPROVAL"; reasons.push("SCOPED_APPROVAL_REQUIRED");
+      } else if (!isApprovalForRequest(input.approval, request,
+          policy.policy_release.policy_release_ref, input.evaluated_at, policy.approval_use_mode)) {
+        result = "DENY"; reasons.push("APPROVAL_INVALID_OR_MISMATCHED");
+      }
+    }
+    if (policy.effect === "ALLOW" && facts.entitlement_state === "NOT_REQUIRED") {
+      // No entitlement is required by the authoritative source for this action.
+    }
+    if (facts.delegation_state === "NOT_REQUIRED" && request.delegation_ref) {
+      result = "DENY"; reasons.push("DELEGATION_NOT_VALIDATED");
+    }
+  }
+
+  if (principal.valid_until) validUntil.push(principal.valid_until);
+  if (facts.valid_until) validUntil.push(facts.valid_until);
+  if (policy?.valid_until) validUntil.push(policy.valid_until);
+  if (policy?.policy_release?.valid_until) validUntil.push(policy.policy_release.valid_until);
+  if (input.approval?.expires_at && result === "ALLOW") validUntil.push(input.approval.expires_at);
+  const valid_until = validUntil.length
+    ? validUntil.sort((a, b) => Date.parse(a) - Date.parse(b))[0]
+    : undefined;
+
+  const decision: AuthorizationDecision = {
+    decision_ref: input.decision_ref,
+    decision_id: input.decision_id,
+    request_ref: input.request_ref,
+    result,
+    ...(policy?.policy_release ? { policy_release_ref: policy.policy_release.policy_release_ref } : {}),
+    ...(policy?.policy_release?.version ? { policy_version: policy.policy_release.version } : {}),
+    ...(policy?.evaluator_version ? { evaluator_version: policy.evaluator_version } : {}),
+    authority_fingerprint: input.authority_fingerprint,
+    applicable_scope_ref: request.scope_ref,
+    ...(result === "RESTRICT" && policy.constrained_action ? { constrained_action: policy.constrained_action } : {}),
+    ...(result === "RESTRICT" && policy.constrained_resource_ref ? { constrained_resource_ref: policy.constrained_resource_ref } : {}),
+    ...(result === "RESTRICT" && policy.constrained_environment_ref ? { constrained_environment_ref: policy.constrained_environment_ref } : {}),
+    conditions: policy?.conditions ?? [],
+    obligations: policy?.obligations ?? [],
+    reason_codes: [...new Set(reasons.length ? reasons : [`POLICY_${result}`])],
+    related_approval_refs: input.approval ? [input.approval.approval_ref] : [],
+    authority_source_refs: [...principal.authority_source_refs, ...facts.source_refs],
+    evaluated_at: input.evaluated_at,
+    ...(valid_until ? { valid_until } : {}),
+    recheck_before_effect: true,
+    audit_ref: input.audit_ref,
+  };
+  return createOperationResult({ status: "OK", correlation_id, data: decision });
+}
+
+export function isDecisionCurrentForRequest(
+  decision: AuthorizationDecision,
+  request: AuthorizationRequest,
+  now: Timestamp,
+  currentAuthorityFingerprint: string,
+): boolean {
+  return decision.result === "ALLOW" &&
+    isTimestamp(now) &&
+    (!decision.valid_until || Date.parse(decision.valid_until) > Date.parse(now)) &&
+    decision.authority_fingerprint === currentAuthorityFingerprint &&
+    decision.request_ref.object_kind === "AUTHORIZATION_REQUEST" &&
+    sameScopeRef(decision.applicable_scope_ref, request.scope_ref) &&
+    decision.decision_ref.scope_ref && sameScopeRef(decision.decision_ref.scope_ref, request.scope_ref) &&
+    decision.reason_codes.length > 0;
+}
+
+export function createSafeDecisionExplanation(
+  decision: AuthorizationDecision,
+  userVisibleRefs: ObjectRef[] = [],
+): SafeDecisionExplanation {
+  const copy: Record<AuthorizationResult, { message: string; next: SafeDecisionExplanation["permitted_next_step"] }> = {
+    ALLOW: { message: "This action is currently authorized, subject to enforcement-time rechecks.", next: "NONE" },
+    DENY: { message: "This action is not permitted in the current context.", next: "CONTACT_ADMIN" },
+    REQUIRE_APPROVAL: { message: "This action needs an authorized approval before it can proceed.", next: "REQUEST_APPROVAL" },
+    REQUIRE_REAUTH: { message: "Please re-authenticate before requesting this action again.", next: "REAUTHENTICATE" },
+    RESTRICT: { message: "The requested action is broader than the currently permitted scope. Submit a narrower request.", next: "NARROW_REQUEST" },
+    QUARANTINE: { message: "This action is blocked while the relevant item or authority is under review.", next: "CONTACT_ADMIN" },
+    DEFER: { message: "This action is waiting for a required condition to become current.", next: "WAIT_AND_RECHECK" },
+    INDETERMINATE: { message: "Current authority could not be verified, so the action has been blocked.", next: "WAIT_AND_RECHECK" },
+  };
+  return {
+    decision_ref: decision.decision_ref,
+    result: decision.result,
+    safe_message: copy[decision.result].message,
+    visible_reason_codes: [...decision.reason_codes],
+    permitted_next_step: copy[decision.result].next,
+    user_visible_refs: userVisibleRefs.filter(ref => isObjectRef(ref) &&
+      sameScopeRef(ref.scope_ref, decision.applicable_scope_ref)),
+  };
+}
+
+export function createPendingApproval(input: {
+  approval_ref: ObjectRef;
+  approval_id: string;
+  request_ref: ObjectRef;
+  requested_by_ref: PrincipalRef;
+  required_approver_constraints: string[];
+  action: string;
+  resource_ref: ObjectRef;
+  scope_ref: ScopeRef;
+  environment_ref: ObjectRef;
+  work_ref?: ObjectRef;
+  context_version_refs: ObjectRef[];
+  policy_release_ref?: ObjectRef;
+  approval_use_mode: ApprovalUseMode;
+  created_at: Timestamp;
+  expires_at?: Timestamp;
+}): OperationResult<ApprovalRecord> {
+  if (!isObjectRef(input.approval_ref) || input.approval_ref.object_kind !== "APPROVAL" ||
+    !sameScopeRef(input.approval_ref.scope_ref, input.scope_ref) ||
+    !isObjectRef(input.request_ref) || input.request_ref.object_kind !== "AUTHORIZATION_REQUEST" ||
+    !sameScopeRef(input.request_ref.scope_ref, input.scope_ref) ||
+    !isPrincipalRef(input.requested_by_ref) || !input.action.trim() ||
+    !isObjectRef(input.resource_ref) || !sameScopeRef(input.resource_ref.scope_ref, input.scope_ref) ||
+    !isObjectRef(input.environment_ref) || !sameScopeRef(input.environment_ref.scope_ref, input.scope_ref) ||
+    !Array.isArray(input.required_approver_constraints) ||
+    !Array.isArray(input.context_version_refs) || !input.context_version_refs.every(isObjectRef) ||
+    !isTimestamp(input.created_at) ||
+    (input.expires_at !== undefined &&
+      (!isTimestamp(input.expires_at) || Date.parse(input.expires_at) <= Date.parse(input.created_at)))) {
+    return createOperationResult({
+      status: "REJECTED", correlation_id: "authorization",
+      errors: [createOperationError("VALIDATION_ERROR", "Approval request is invalid or cross-scope")],
+    });
+  }
+  return createOperationResult({
+    status: "OK", correlation_id: "authorization",
+    data: {
+      approval_id: input.approval_id,
+      approval_ref: input.approval_ref,
+      request_ref: input.request_ref,
+      requested_by_ref: input.requested_by_ref,
+      required_approver_constraints: [...input.required_approver_constraints],
+      action: input.action,
+      resource_ref: input.resource_ref,
+      scope_ref: input.scope_ref,
+      environment_ref: input.environment_ref,
+      ...(input.work_ref ? { work_ref: input.work_ref } : {}),
+      context_version_refs: [...input.context_version_refs],
+      ...(input.policy_release_ref ? { policy_release_ref: input.policy_release_ref } : {}),
+      approval_use_mode: input.approval_use_mode,
+      state: "PENDING",
+      created_at: input.created_at,
+      ...(input.expires_at ? { expires_at: input.expires_at } : {}),
+    },
+  });
+}
+
+export function decideApproval(input: {
+  approval: ApprovalRecord;
+  decision: ApprovalDecisionInput;
+  expected_current_version: Version;
+  approver_is_authorized: boolean;
+  independent_approval_required: boolean;
+  now: Timestamp;
+}): OperationResult<ApprovalRecord> {
+  const { approval, decision } = input;
+  if (!isObjectRef(decision.approval_ref) ||
+    !sameObjectRef(decision.approval_ref, approval.approval_ref) ||
+    !sameScopeRef(decision.approval_ref.scope_ref, approval.scope_ref) ||
+    decision.expected_version !== input.expected_current_version ||
+    !isPrincipalRef(decision.approver_ref) || !isTimestamp(decision.decided_at) ||
+    !isTimestamp(input.now) || Date.parse(decision.decided_at) > Date.parse(input.now)) {
+    return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
+      errors: [createOperationError("VERSION_CONFLICT", "Approval identity, version or timestamp is invalid")] });
+  }
+  if (approval.state !== "PENDING") {
+    return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
+      errors: [createOperationError("VERSION_CONFLICT", "Only a pending approval can be decided")] });
+  }
+  if (!input.approver_is_authorized ||
+    (input.independent_approval_required &&
+      decision.approver_ref.principal_id === approval.requested_by_ref.principal_id)) {
+    return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
+      errors: [createOperationError("FORBIDDEN", "Approver does not hold the required independent approval authority")] });
+  }
+  if (approval.expires_at && Date.parse(approval.expires_at) <= Date.parse(input.now)) {
+    return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
+      errors: [createOperationError("APPROVAL_REQUIRED", "Approval has already expired")] });
+  }
+  const updated: ApprovalRecord = {
+    ...approval,
+    state: decision.decision === "APPROVE" ? "APPROVED" : "REJECTED",
+    approver_ref: decision.approver_ref,
+    decided_at: decision.decided_at,
+    ...(decision.reason_ref ? { reason_ref: decision.reason_ref } : {}),
+    ...(decision.evidence_method_ref ? { evidence_method_ref: decision.evidence_method_ref } : {}),
+  };
+  return createOperationResult({ status: "OK", correlation_id: "authorization", data: updated });
+}
+
+export function validateApprovalUse(
+  approval: ApprovalRecord,
+  request: AuthorizationRequest,
+  now: Timestamp,
+  policyReleaseRef: ObjectRef,
+): string[] {
+  const issues: string[] = [];
+  if (approval.state !== "APPROVED") issues.push("approval is not approved");
+  if (approval.action !== request.action) issues.push("approval action does not match");
+  if (!sameObjectRef(approval.resource_ref, request.resource_ref)) issues.push("approval resource does not match");
+  if (!sameScopeRef(approval.scope_ref, request.scope_ref)) issues.push("approval scope does not match");
+  if (!sameObjectRef(approval.environment_ref, request.environment_ref)) issues.push("approval environment does not match");
+  if (approval.work_ref && (!request.work_ref || !sameObjectRef(approval.work_ref, request.work_ref))) {
+    issues.push("approval Work context does not match");
+  }
+  if (approval.policy_release_ref && !sameObjectRef(approval.policy_release_ref, policyReleaseRef)) {
+    issues.push("approval policy release does not match");
+  }
+  if (approval.valid_from && Date.parse(approval.valid_from) > Date.parse(now)) issues.push("approval is not yet valid");
+  if (!approval.expires_at || !isTimestamp(approval.expires_at) || Date.parse(approval.expires_at) <= Date.parse(now)) {
+    issues.push("approval is expired or has no enforceable expiry");
+  }
+  if (approval.approval_use_mode === "ONE_TIME" &&
+    (approval.consumed_at !== undefined || approval.consumed_by_request_ref !== undefined)) {
+    issues.push("one-time approval has already been consumed");
+  }
+  return issues;
+}
+
+export function validateDelegationRequest(
+  request: DelegationRequest,
+  authority: DelegationGrantAuthority,
+  parent?: DelegationRecord,
+): string[] {
+  const issues: string[] = [];
+  if (!isObjectRef(request.delegation_ref) || request.delegation_ref.object_kind !== "DELEGATION" ||
+    !sameScopeRef(request.delegation_ref.scope_ref, request.scope_ref) ||
+    !isPrincipalRef(request.grantor_ref) || !isPrincipalRef(request.delegate_ref) ||
+    request.grantor_ref.principal_id === request.delegate_ref.principal_id) {
+    issues.push("delegation identity or actor references are invalid");
+  }
+  if (!request.purpose.trim() || !request.allowed_actions.length ||
+    new Set(request.allowed_actions).size !== request.allowed_actions.length) {
+    issues.push("delegation purpose and unique allowed actions are required");
+  }
+  if (!isScopeRef(request.scope_ref) || !sameScopeRef(request.scope_ref, authority.grantor_scope_ref)) {
+    issues.push("delegation scope exceeds the grantor's current scope");
+  }
+  if (!isTimestamp(request.not_before) || !isTimestamp(request.expires_at) ||
+    Date.parse(request.expires_at) <= Date.parse(request.not_before)) {
+    issues.push("delegation validity window is invalid");
+  }
+  if (!authority.grantor_authenticated || !authority.grantor_may_delegate) {
+    issues.push("grantor is not currently authorized to delegate");
+  }
+  if (request.allowed_actions.some(action => !authority.grantor_allowed_actions.includes(action))) {
+    issues.push("delegation cannot grant actions the grantor does not hold");
+  }
+  for (const resource of request.resource_constraints) {
+    if (!isObjectRef(resource) || !sameScopeRef(resource.scope_ref, request.scope_ref) ||
+      !authority.grantor_resource_constraints.some(allowed => sameObjectRef(allowed, resource))) {
+      issues.push("delegation resource constraints exceed current grantor authority");
+    }
+  }
+  if (!isObjectRef(request.authorized_by_decision_ref) ||
+    request.authorized_by_decision_ref.object_kind !== "AUTHORIZATION_DECISION" ||
+    !sameScopeRef(request.authorized_by_decision_ref.scope_ref, request.scope_ref)) {
+    issues.push("delegation must cite an in-scope authorization decision");
+  }
+  if (request.parent_delegation_ref) {
+    if (!parent || !parent.allow_subdelegation || parent.state !== "ACTIVE" ||
+      !sameObjectRef(parent.delegation_ref, request.parent_delegation_ref) ||
+      !sameScopeRef(parent.scope_ref, request.scope_ref) ||
+      request.allowed_actions.some(action => !parent.allowed_actions.includes(action)) ||
+      Date.parse(request.expires_at) > Date.parse(parent.expires_at) ||
+      Date.parse(request.not_before) < Date.parse(parent.not_before) ||
+      !samePrincipal(request.grantor_ref, parent.delegate_ref)) {
+      issues.push("child delegation exceeds or is not authorized by the parent delegation");
+    }
+  } else if (request.allow_subdelegation && !authority.grantor_may_delegate) {
+    issues.push("subdelegation is not authorized");
+  }
+  if (authority.valid_until && Date.parse(request.expires_at) > Date.parse(authority.valid_until)) {
+    issues.push("delegation outlives the grantor's current authority");
+  }
+  return issues;
+}
+
+function samePrincipal(a: PrincipalRef, b: PrincipalRef): boolean {
+  return a.principal_id === b.principal_id && a.principal_kind === b.principal_kind;
+}
+
+export function activateDelegation(
+  delegation: DelegationRecord,
+  now: Timestamp,
+): OperationResult<DelegationRecord> {
+  if (!isTimestamp(now)) return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
+    errors: [createOperationError("VALIDATION_ERROR", "Activation timestamp is invalid")] });
+  if (delegation.state !== "SCHEDULED" && delegation.state !== "PENDING_APPROVAL") {
+    return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
+      errors: [createOperationError("VERSION_CONFLICT", "Delegation cannot be activated from its current state")] });
+  }
+  if (Date.parse(delegation.not_before) > Date.parse(now) || Date.parse(delegation.expires_at) <= Date.parse(now)) {
+    return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
+      errors: [createOperationError("POLICY_DENIED", "Delegation is outside its validity window")] });
+  }
+  return createOperationResult({ status: "OK", correlation_id: "authorization",
+    data: { ...delegation, state: "ACTIVE" } });
+}
+
+export function transitionDelegation(
+  delegation: DelegationRecord,
+  to: DelegationState,
+  now: Timestamp,
+): OperationResult<DelegationRecord> {
+  if (!isTimestamp(now)) return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
+    errors: [createOperationError("VALIDATION_ERROR", "Delegation transition timestamp is invalid")] });
+  const allowed: Record<DelegationState, DelegationState[]> = {
+    PENDING_APPROVAL: ["SCHEDULED", "ACTIVE", "REVOKED", "EXPIRED"],
+    SCHEDULED: ["ACTIVE", "REVOKED", "EXPIRED"],
+    ACTIVE: ["SUSPENDED", "REVOKED", "EXPIRED"],
+    SUSPENDED: ["ACTIVE", "REVOKED", "EXPIRED"],
+    REVOKED: [],
+    EXPIRED: [],
+  };
+  if (!allowed[delegation.state].includes(to)) {
+    return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
+      errors: [createOperationError("VERSION_CONFLICT", "Delegation state transition is not permitted")] });
+  }
+  if (to === "ACTIVE" && Date.parse(delegation.not_before) > Date.parse(now)) {
+    return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
+      errors: [createOperationError("POLICY_DENIED", "Delegation is not yet valid")] });
+  }
+  if (to === "EXPIRED" && Date.parse(delegation.expires_at) > Date.parse(now)) {
+    return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
+      errors: [createOperationError("POLICY_DENIED", "Delegation has not yet expired")] });
+  }
+  return createOperationResult({ status: "OK", correlation_id: "authorization",
+    data: { ...delegation, state: to, ...(to === "REVOKED" ? { revoked_at: now } : {}) } });
+}
+
+export function transitionPolicyRelease(
+  release: PolicyRelease,
+  to: PolicyReleaseState,
+  now: Timestamp,
+): OperationResult<PolicyRelease> {
+  const sequence: PolicyReleaseState[] = [
+    "DRAFT", "VALIDATED", "STATIC_ANALYSIS_PASSED", "SCENARIO_TESTED",
+    "CONFLICT_TESTED", "REGRESSION_TESTED", "IMPACT_REVIEWED", "APPROVED",
+    "RELEASED", "MONITORING",
+  ];
+  const currentIndex = sequence.indexOf(release.state);
+  const nextIndex = sequence.indexOf(to);
+  const allowed = (nextIndex === currentIndex + 1) ||
+    ((release.state === "RELEASED" || release.state === "MONITORING") && to === "SUSPENDED") ||
+    ((release.state === "MONITORING" || release.state === "SUSPENDED") && to === "RETIRED");
+  if (!allowed || !isTimestamp(now)) {
+    return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
+      errors: [createOperationError("VERSION_CONFLICT", "Policy release transition is invalid")] });
+  }
+  if ((release.state === "RELEASED" || release.state === "MONITORING" ||
+    release.state === "SUSPENDED" || release.state === "RETIRED") &&
+    release.version === release.policy_release_ref.object_version &&
+    to !== "SUSPENDED" && to !== "RETIRED") {
+    return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
+      errors: [createOperationError("POLICY_DENIED", "Released policy versions are immutable; publish a new version")] });
+  }
+  return createOperationResult({ status: "OK", correlation_id: "authorization",
+    data: {
+      ...release,
+      state: to,
+      ...(to === "RELEASED" ? { effective_from: now } : {}),
+      ...(to === "SUSPENDED" ? { suspended_at: now } : {}),
+      ...(to === "RETIRED" ? { retired_at: now } : {}),
+    } });
+}
+
+export function isTrustAssessmentUsable(
+  trust: TrustAssessment,
+  scope: ScopeRef,
+  now: Timestamp,
+): boolean {
+  return trust.trust_state === "TRUSTED_FOR_SCOPE" &&
+    !!trust.trusted_scope_ref &&
+    sameScopeRef(trust.trusted_scope_ref, scope) &&
+    Date.parse(trust.assessed_at) <= Date.parse(now) &&
+    (!trust.valid_until || Date.parse(trust.valid_until) > Date.parse(now));
+}
