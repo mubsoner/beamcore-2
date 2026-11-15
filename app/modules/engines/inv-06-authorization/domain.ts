@@ -941,6 +941,9 @@ export function buildAuthorityFingerprintMaterial(input: {
       request_binding_fingerprint: input.approval.request_binding_fingerprint,
       requested_by_ref: input.approval.requested_by_ref,
       approver_ref: input.approval.approver_ref ?? null,
+      approver_authority_sources: sources(input.approval.approver_authority_source_refs ?? []),
+      approver_authority_observed_at: input.approval.approver_authority_observed_at ?? null,
+      approver_authority_valid_until: input.approval.approver_authority_valid_until ?? null,
       action: input.approval.action,
       resource_ref: input.approval.resource_ref,
       scope_ref: input.approval.scope_ref,
@@ -1474,6 +1477,21 @@ export function validateApprovalUse(
   if (!approval.approver_ref || !isPrincipalRef(approval.approver_ref) ||
       !approval.decided_at || !isTimestamp(approval.decided_at)) {
     issues.push("approval decision provenance is missing or invalid");
+  }
+  if ((approval.state === "APPROVED" || approval.state === "CONSUMED") &&
+      (!Array.isArray(approval.approver_authority_source_refs) ||
+       approval.approver_authority_source_refs.length === 0 ||
+       !approval.approver_authority_source_refs.every(source =>
+         !!source && typeof source.source_kind === "string" && !!source.source_kind.trim() &&
+         isObjectRef(source.object_ref) && isScopeWithin(source.object_ref.scope_ref, request.scope_ref) &&
+         isTimestamp(source.observed_at) &&
+         (source.source_version === undefined || isVersion(source.source_version))) ||
+       !isTimestamp(approval.approver_authority_observed_at) ||
+       !isTimestamp(approval.approver_authority_valid_until) ||
+       Date.parse(approval.approver_authority_observed_at) > Date.parse(now) ||
+       Date.parse(approval.approver_authority_valid_until) <= Date.parse(now) ||
+       Date.parse(approval.approver_authority_valid_until) <= Date.parse(approval.approver_authority_observed_at))) {
+    issues.push("approval lacks current, scoped approver authority provenance");
   }
   if (approval.revoked_at !== undefined) issues.push("approval has been revoked");
   if (!request.approval_ref || !isExactObjectRef(approval.approval_ref, request.approval_ref)) {
