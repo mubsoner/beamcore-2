@@ -488,21 +488,28 @@ export function validateAuthorizationRequest(
   return issues;
 }
 
-export function validateAuthenticationResult(
-  request: AuthenticationRequest,
-  result: AuthenticationResult,
-): string[] {
+export function validateAuthenticationRequest(request: AuthenticationRequest): string[] {
   const issues: string[] = [];
-  if (!request || !result || typeof request !== "object" || typeof result !== "object") {
-    return ["authentication request and result are required"];
-  }
+  if (!request || typeof request !== "object") return ["authentication request is required"];
   if (!request.authentication_request_id?.trim() ||
       !isObjectRef(request.proof_ref) ||
       !request.requested_audience?.trim() ||
       !isScopeRef(request.requested_scope_ref) ||
       !isTimestamp(request.requested_at) ||
-      !request.correlation_id?.trim()) {
+      !request.correlation_id?.trim() ||
+      (request.client_or_service_ref !== undefined && !isPrincipalRef(request.client_or_service_ref))) {
     issues.push("authentication request is malformed");
+  }
+  return issues;
+}
+
+export function validateAuthenticationResult(
+  request: AuthenticationRequest,
+  result: AuthenticationResult,
+): string[] {
+  const issues: string[] = validateAuthenticationRequest(request);
+  if (!result || typeof result !== "object") {
+    return [...issues, "authentication result is required"];
   }
   if (!result.authentication_result_id?.trim() ||
       !(AUTHENTICATION_STATES as readonly string[]).includes(result.state)) {
@@ -552,8 +559,8 @@ export function validatePrincipalContext(
   if (!isTimestamp(principal.resolved_at) || Date.parse(principal.resolved_at) > Date.parse(now)) {
     issues.push("principal resolution timestamp is invalid");
   }
-  if (!isTimestamp(principal.valid_until) || Date.parse(principal.valid_until) <= Date.parse(now)) {
-    issues.push("principal context must have a current bounded validity window");
+  if (!isTimestamp(principal.valid_until)) {
+    issues.push("principal context must have a bounded validity timestamp");
   }
   for (const group of [
     principal.organization_membership_refs,
@@ -1158,7 +1165,11 @@ export function transitionApproval(
   to: "EXPIRED" | "REVOKED",
   now: Timestamp,
 ): OperationResult<ApprovalRecord> {
-  if (!isTimestamp(now) || !isObjectRef(approval.approval_ref)) {
+  if (!approval || typeof approval !== "object" ||
+      !isObjectRef(approval.approval_ref) ||
+      !isTimestamp(approval.created_at) ||
+      !(APPROVAL_STATES as readonly string[]).includes(approval.state) ||
+      !isTimestamp(now)) {
     return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
       errors: [createOperationError("VALIDATION_ERROR", "Approval lifecycle input is invalid")] });
   }
