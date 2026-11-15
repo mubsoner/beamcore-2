@@ -39,7 +39,11 @@ const ref = (object_kind: string, object_id: string, object_version = "1"): Obje
   object_version,
   scope_ref: scope,
 });
-const fingerprint = (value: string) => value.repeat(64).slice(0, 64);
+const fingerprint = (value: string) => Array.from(value)
+  .map((character) => character.charCodeAt(0).toString(16).padStart(2, "0"))
+  .join("")
+  .padEnd(64, "0")
+  .slice(0, 64);
 
 function makeFixtures() {
   const work_ref = ref("WORK", "work-1");
