@@ -559,6 +559,14 @@ describe("INV-06 authorization domain", () => {
       ...snapshot, authority_source_refs: [],
     }, scope, "2026-11-15T10:00:00Z").length).toBeGreaterThan(0);
     expect(validateApprovalAuthoritySnapshot({
+      ...snapshot,
+      authority_source_refs: [{
+        source_kind: "approver-membership",
+        object_ref: ref("MEMBERSHIP", "admin-membership"),
+        observed_at: "2026-11-15T09:59:30Z",
+      }],
+    }, scope, "2026-11-15T10:00:00Z").length).toBeGreaterThan(0);
+    expect(validateApprovalAuthoritySnapshot({
       ...snapshot, authority_source_refs: [{
         ...snapshot.authority_source_refs[0],
         object_ref: ref("MEMBERSHIP", "foreign-admin", { scope_id: "foreign", scope_kind: "ORGANIZATION" }),
