@@ -308,6 +308,7 @@ export interface DelegationRequest {
 export interface DelegationGrantAuthority {
   grantor_authenticated: boolean;
   grantor_may_delegate: boolean;
+  grantor_may_subdelegate: boolean;
   grantor_allowed_actions: string[];
   grantor_scope_ref: ScopeRef;
   grantor_resource_constraints: ObjectRef[];
@@ -893,7 +894,9 @@ export function validateDelegationRequest(
     issues.push("delegation identity or actor references are invalid");
   }
   if (!request.purpose.trim() || !request.allowed_actions.length ||
-    new Set(request.allowed_actions).size !== request.allowed_actions.length) {
+    new Set(request.allowed_actions).size !== request.allowed_actions.length ||
+    !Array.isArray(request.resource_constraints) || !Array.isArray(request.limits) ||
+    !Array.isArray(request.conditions) || request.limits.some(limit => !limit.trim())) {
     issues.push("delegation purpose and unique allowed actions are required");
   }
   if (!isScopeRef(request.scope_ref) || !sameScopeRef(request.scope_ref, authority.grantor_scope_ref)) {
@@ -925,13 +928,20 @@ export function validateDelegationRequest(
       !sameObjectRef(parent.delegation_ref, request.parent_delegation_ref) ||
       !sameScopeRef(parent.scope_ref, request.scope_ref) ||
       request.allowed_actions.some(action => !parent.allowed_actions.includes(action)) ||
+      request.resource_constraints.some(resource => !parent.resource_constraints.some(allowed => isExactObjectRef(allowed, resource))) ||
+      request.limits.some(limit => !parent.limits.includes(limit)) ||
+      request.conditions.some(condition => !parent.conditions.some(parentCondition =>
+        parentCondition.condition_id === condition.condition_id &&
+        parentCondition.condition_kind === condition.condition_kind &&
+        parentCondition.must_hold_at_enforcement === condition.must_hold_at_enforcement &&
+        JSON.stringify(parentCondition.parameters_ref ?? null) === JSON.stringify(condition.parameters_ref ?? null))) ||
       Date.parse(request.expires_at) > Date.parse(parent.expires_at) ||
       Date.parse(request.not_before) < Date.parse(parent.not_before) ||
       !samePrincipal(request.grantor_ref, parent.delegate_ref)) {
       issues.push("child delegation exceeds or is not authorized by the parent delegation");
     }
-  } else if (request.allow_subdelegation && !authority.grantor_may_delegate) {
-    issues.push("subdelegation is not authorized");
+  } else if (request.allow_subdelegation && !authority.grantor_may_subdelegate) {
+    issues.push("subdelegation is not explicitly authorized");
   }
   if (authority.valid_until && Date.parse(request.expires_at) > Date.parse(authority.valid_until)) {
     issues.push("delegation outlives the grantor's current authority");
