@@ -673,7 +673,7 @@ export async function requestRetry(
       return propagateFailure<RetryDecision>(existing);
     }
 
-    const saved = await decisions.append(command.context, decision);
+    const saved = await decisions.append(command.context, decision.retry_decision_ref, decision);
     if (saved.status !== "OK" || !saved.data) return propagateFailure<RetryDecision>(saved);
     if (!sameObjectRef(saved.data.retry_decision_ref, decision.retry_decision_ref)) {
       return rejected(
