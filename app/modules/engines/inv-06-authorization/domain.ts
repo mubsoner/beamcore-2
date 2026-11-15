@@ -72,6 +72,15 @@ export interface AuthoritySourceRef {
   observed_at: Timestamp;
 }
 
+export interface ApprovalAuthoritySnapshot {
+  authorized: boolean;
+  independent_required: boolean;
+  satisfied_constraints: string[];
+  authority_source_refs: AuthoritySourceRef[];
+  observed_at: Timestamp;
+  valid_until: Timestamp;
+}
+
 export interface PrincipalContext {
   principal_ref: PrincipalRef;
   /** Verified service identity acting alongside the human/agent principal, when present. */
@@ -208,6 +217,9 @@ export interface ApprovalRecord {
   request_binding_fingerprint: string;
   requested_by_ref: PrincipalRef;
   approver_ref?: PrincipalRef;
+  approver_authority_source_refs?: AuthoritySourceRef[];
+  approver_authority_observed_at?: Timestamp;
+  approver_authority_valid_until?: Timestamp;
   required_approver_constraints: string[];
   action: string;
   resource_ref: ObjectRef;
@@ -631,6 +643,44 @@ function isScopeWithin(ancestor: ScopeRef, descendant: ScopeRef): boolean {
   return false;
 }
 
+export function validateApprovalAuthoritySnapshot(
+  snapshot: ApprovalAuthoritySnapshot | undefined,
+  scope: ScopeRef,
+  now: Timestamp,
+): string[] {
+  if (!snapshot || typeof snapshot !== "object") {
+    return ["current approver authority snapshot is required"];
+  }
+  const issues: string[] = [];
+  if (typeof snapshot.authorized !== "boolean" || typeof snapshot.independent_required !== "boolean") {
+    issues.push("approver authority result flags are invalid");
+  }
+  if (!Array.isArray(snapshot.satisfied_constraints) ||
+      snapshot.satisfied_constraints.some(value => typeof value !== "string" || !value.trim())) {
+    issues.push("approver constraint evidence is invalid");
+  }
+  if (!Array.isArray(snapshot.authority_source_refs) || snapshot.authority_source_refs.length === 0 ||
+      !snapshot.authority_source_refs.every(source =>
+        !!source &&
+        typeof source.source_kind === "string" && !!source.source_kind.trim() &&
+        isObjectRef(source.object_ref) && isScopeWithin(source.object_ref.scope_ref, scope) &&
+        isTimestamp(source.observed_at) && Date.parse(source.observed_at) <= Date.parse(now) &&
+        (source.source_version === undefined || isVersion(source.source_version)))) {
+    issues.push("approver authority must include current, scoped source-version provenance");
+  }
+  if (!isTimestamp(snapshot.observed_at) || Date.parse(snapshot.observed_at) > Date.parse(now)) {
+    issues.push("approver authority observation time is invalid");
+  }
+  if (!isTimestamp(snapshot.valid_until) || Date.parse(snapshot.valid_until) <= Date.parse(now)) {
+    issues.push("approver authority snapshot is stale or has no bounded validity");
+  }
+  if (isTimestamp(snapshot.observed_at) && isTimestamp(snapshot.valid_until) &&
+      Date.parse(snapshot.valid_until) <= Date.parse(snapshot.observed_at)) {
+    issues.push("approver authority validity window is not ordered");
+  }
+  return issues;
+}
+
 export function validateAuthorityFacts(
   facts: AuthorityFacts,
   request: AuthorizationRequest,
@@ -812,6 +862,7 @@ export function buildAuthorityFingerprintMaterial(input: {
   facts: AuthorityFacts;
   policy: PolicyEvaluation;
   approval?: ApprovalRecord;
+  approval_authority?: ApprovalAuthoritySnapshot;
   idempotency_key?: string;
 }): string {
   const operationKey = input.idempotency_key ?? input.request.idempotency_key;
@@ -870,6 +921,20 @@ export function buildAuthorityFingerprintMaterial(input: {
       valid_until: input.policy.valid_until ?? null,
       approval_expires_at: input.policy.approval_expires_at ?? null,
     },
+    approval_authority: input.approval_authority ? {
+      authorized: input.approval_authority.authorized,
+      independent_required: input.approval_authority.independent_required,
+      satisfied_constraints: [...input.approval_authority.satisfied_constraints].sort(),
+      observed_at: input.approval_authority.observed_at,
+      valid_until: input.approval_authority.valid_until,
+      authority_sources: input.approval_authority.authority_source_refs
+        .map(source => ({
+          source_kind: source.source_kind,
+          object_ref: source.object_ref,
+          source_version: source.source_version ?? null,
+        }))
+        .sort((a, b) => JSON.stringify(canonicalize(a)).localeCompare(JSON.stringify(canonicalize(b)))),
+    } : null,
     approval: input.approval ? {
       approval_ref: input.approval.approval_ref,
       request_ref: input.approval.request_ref,
