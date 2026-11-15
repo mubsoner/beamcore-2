@@ -610,6 +610,22 @@ describe("INV-06 authorization application boundary", () => {
     );
   });
 
+  it("fails closed on policy evaluator outage without committing an authorization decision", async () => {
+    const harness = makeDependencies();
+    vi.mocked(harness.sources.evaluatePolicy).mockResolvedValue(
+      createOperationResult({
+        status: "REJECTED",
+        correlation_id: context.correlation_id,
+        errors: [{ code: "DEPENDENCY_UNAVAILABLE", safe_message: "Policy evaluator unavailable", retryable: true }],
+      }),
+    );
+    const result = await recheckAuthorizationAtActionBoundary(
+      harness.deps, context, authorizationRequest(),
+    );
+    expect(result.status).toBe("REJECTED");
+    expect(harness.repository.commitDecision).not.toHaveBeenCalled();
+  });
+
   it("does not create an approval when policy changes after the preflight decision", async () => {
     const harness = makeDependencies();
     let evaluationCount = 0;
