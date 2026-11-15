@@ -39,7 +39,7 @@ export function createInMemoryEventInbox(): EventInboxPort {
         });
       }
 
-      const scopeKey = `${context.scope_ref.scope_kind}:${context.scope_ref.scope_id}`;
+      const scopeKey = JSON.stringify(context.scope_ref);
       const eventKey = JSON.stringify([scopeKey, consumer_id, event.event_id]);
       const aggregateKey = JSON.stringify([
         scopeKey,
