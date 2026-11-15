@@ -49,7 +49,7 @@ function incomingEvent(event_id: string): InboxEventEnvelope {
 describe("In-memory Unit of Work reference conformance", () => {
   it("commits repository, idempotency and outbox writes together on success", async () => {
     const unit = createInMemoryEngineUnitOfWork();
-    const outcome = await unit.execute(context, async (tx) => {
+    const outcome = await unit.execute<{ title: string }>(context, async (tx) => {
       const created = await tx.repository<{ title: string }>("work").create(
         context,
         ref,
@@ -62,7 +62,7 @@ describe("In-memory Unit of Work reference conformance", () => {
         result: created,
         recorded_at: "2026-11-15T10:00:01Z",
       });
-      if (idempotency.status !== "OK") return idempotency;
+      if (idempotency.status !== "OK") return createOperationResult<{ title: string }>({ status: idempotency.status, correlation_id: context.correlation_id, errors: idempotency.errors, warnings: idempotency.warnings });
       const outbox = await tx.outbox.append(context, {
         event_id: "event-1",
         event_type: "work.created",
@@ -74,7 +74,7 @@ describe("In-memory Unit of Work reference conformance", () => {
         correlation_id: context.correlation_id,
         payload: { work_id: "work-1" },
       });
-      return outbox.status === "OK" ? created : outbox;
+      return outbox.status === "OK" ? created : createOperationResult<{ title: string }>({ status: outbox.status, correlation_id: context.correlation_id, errors: outbox.errors, warnings: outbox.warnings });
     });
 
     expect(outcome.status).toBe("OK");
