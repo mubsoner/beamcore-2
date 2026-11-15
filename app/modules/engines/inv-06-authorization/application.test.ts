@@ -24,6 +24,7 @@ import {
 } from "./application";
 import { buildApprovalBindingFingerprint, buildCanonicalRequestFingerprint } from "./domain";
 import type {
+  ApprovalAuthoritySnapshot,
   ApprovalRecord,
   AuthorizationDecision,
   AuthorizationRequest,
@@ -152,6 +153,20 @@ const approval: ApprovalRecord = {
   expires_at: "2026-11-15T10:04:00Z",
 };
 
+const approverAuthority: ApprovalAuthoritySnapshot = {
+  authorized: true,
+  independent_required: true,
+  satisfied_constraints: ["INDEPENDENT_APPROVER"],
+  authority_source_refs: [{
+    source_kind: "approver-membership",
+    object_ref: ref("MEMBERSHIP", "membership-admin-1"),
+    source_version: "4",
+    observed_at: "2026-11-15T09:59:30Z",
+  }],
+  observed_at: "2026-11-15T09:59:30Z",
+  valid_until: "2026-11-15T10:05:00Z",
+};
+
 function makeDependencies(currentFacts: AuthorityFacts = facts) {
   const commitCalls: Array<{ decision: AuthorizationDecision; command: DecisionCommitCommand }> = [];
   const sources: AuthorizationSourcePort = {
@@ -161,7 +176,7 @@ function makeDependencies(currentFacts: AuthorityFacts = facts) {
     readApproval: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: approval, object_version: "1" })),
     readDelegation: vi.fn(async () => createOperationResult<DelegationRecord>({ status: "REJECTED", correlation_id: context.correlation_id })),
     readDelegationLineage: vi.fn(async () => createOperationResult<DelegationRecord[]>({ status: "REJECTED", correlation_id: context.correlation_id })),
-    verifyApprover: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { authorized: true, independent_required: true, satisfied_constraints: ["INDEPENDENT_APPROVER"] } })),
+    verifyApprover: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: approverAuthority })),
     resolveDelegationGrantAuthority: vi.fn(async () => createOperationResult<DelegationGrantAuthority>({ status: "REJECTED", correlation_id: context.correlation_id })),
     verifyDelegationDecision: vi.fn(async (_ctx: RequestContext, _request: DelegationRequest) => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { valid: false } })),
     verifyDelegationRevoker: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { authorized: false } })),
@@ -292,10 +307,34 @@ describe("INV-06 authorization application boundary", () => {
     expect(harness.repository.commitDecision).not.toHaveBeenCalled();
   });
 
+  it("fails closed when approver verification lacks source-version provenance", async () => {
+    const harness = makeDependencies();
+    vi.mocked(harness.sources.verifyApprover).mockResolvedValue(
+      createOperationResult({
+        status: "OK",
+        correlation_id: context.correlation_id,
+        data: {
+          authorized: true,
+          independent_required: true,
+          satisfied_constraints: ["INDEPENDENT_APPROVER"],
+          authority_source_refs: [],
+          observed_at: "2026-11-15T09:59:30Z",
+          valid_until: "2026-11-15T10:05:00Z",
+        },
+      }),
+    );
+    const result = await recheckAuthorizationAtActionBoundary(
+      harness.deps, context, authorizationRequest({ approval_ref: approval.approval_ref }),
+    );
+    expect(result.status).toBe("REJECTED");
+    expect(result.errors[0]?.code).toBe("INTEGRITY_OR_UNTRUSTED_INPUT");
+    expect(harness.repository.commitDecision).not.toHaveBeenCalled();
+  });
+
   it("fails closed on approval without independent approver proof when policy requires it", async () => {
     const harness = makeDependencies();
     vi.mocked(harness.sources.verifyApprover).mockResolvedValue(
-      createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { authorized: true, independent_required: false, satisfied_constraints: [] } }),
+      createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { ...approverAuthority, independent_required: false, satisfied_constraints: [] } }),
     );
     const request = authorizationRequest({ approval_ref: approval.approval_ref });
     const result = await recheckAuthorizationAtActionBoundary(harness.deps, context, request);
@@ -672,7 +711,7 @@ describe("INV-06 authorization application boundary", () => {
     );
     vi.mocked(harness.sources.verifyApprover).mockResolvedValue(
       createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: {
-        authorized: false, independent_required: true, satisfied_constraints: [],
+        ...approverAuthority, authorized: false, independent_required: true, satisfied_constraints: [],
       } }),
     );
     const approverContext = {
@@ -703,6 +742,7 @@ describe("INV-06 authorization application boundary", () => {
     );
     vi.mocked(harness.sources.verifyApprover).mockResolvedValue(
       createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: {
+        ...approverAuthority,
         authorized: true,
         independent_required: true,
         satisfied_constraints: ["INDEPENDENT_APPROVER"],
