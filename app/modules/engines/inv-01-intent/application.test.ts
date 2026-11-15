@@ -9,7 +9,7 @@ import {
   type RequestContext,
   type VersionedRepository,
 } from "../shared";
-import { submitIntent, type SubmitIntentCommand } from "./application";
+import { getDecision, getNormalizedIntent, submitIntent, type SubmitIntentCommand } from "./application";
 import type { IntentEvaluationResult } from "./domain";
 
 const scope = { scope_id: "scope-1", scope_kind: "WORK" as const };
@@ -59,9 +59,18 @@ function makeUnitOfWork() {
   const stored = new Map<string, unknown>();
   const outboxEvents: unknown[] = [];
   const repo: VersionedRepository<unknown> = {
-    get: vi.fn(async () => createOperationResult<unknown>({
-      status: "REJECTED", correlation_id: context.correlation_id,
-    })),
+    get: vi.fn(async (_ctx, objectRef) => {
+      const value = stored.get(objectRef.object_id);
+      if (value === undefined) {
+        return createOperationResult<unknown>({
+          status: "REJECTED", correlation_id: context.correlation_id,
+        });
+      }
+      return createOperationResult({
+        status: "OK", correlation_id: context.correlation_id,
+        data: value, object_version: objectRef.object_version ?? "1",
+      });
+    }),
     create: vi.fn(async (_ctx, objectRef, value) => {
       stored.set(objectRef.object_id, value);
       return createOperationResult({
@@ -294,4 +303,57 @@ describe("INV-01 submitIntent application use case", () => {
     expect(result.status).toBe("REJECTED");
     expect(repo.create).not.toHaveBeenCalled();
   });
+}
+
+  it("reads the persisted normalized Intent and Decision through their scoped owners", async () => {
+    const { unitOfWork, repo } = makeUnitOfWork();
+    const submitted = await submitIntent(unitOfWork, command);
+    expect(submitted.status).toBe("OK");
+    if (submitted.status !== "OK" || !submitted.data) return;
+
+    const intent = await getNormalizedIntent(
+      unitOfWork, context, submitted.data.normalized_intent.intent_ref,
+    );
+    const decision = await getDecision(
+      unitOfWork, context, submitted.data.decision_record.decision_ref,
+    );
+
+    expect(intent.status).toBe("OK");
+    expect(intent.data?.intent_ref).toEqual(submitted.data.normalized_intent.intent_ref);
+    expect(intent.object_version).toBe("1");
+    expect(decision.status).toBe("OK");
+    expect(decision.data?.decision_ref).toEqual(submitted.data.decision_record.decision_ref);
+    expect(decision.object_version).toBe("1");
+    expect(repo.get).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects cross-scope reads before querying the repository", async () => {
+    const { unitOfWork, repo } = makeUnitOfWork();
+    const foreignIntent = {
+      ...ref("INTENT", "foreign-intent"),
+      scope_ref: { scope_id: "scope-foreign", scope_kind: "WORK" as const },
+    };
+    const result = await getNormalizedIntent(unitOfWork, context, foreignIntent);
+    expect(result.status).toBe("REJECTED");
+    expect(result.errors[0]?.code).toBe("VALIDATION_ERROR");
+    expect(repo.get).not.toHaveBeenCalled();
+  });
+
+  it("rejects a repository response whose record identity does not match the requested reference", async () => {
+    const { unitOfWork, stored } = makeUnitOfWork();
+    const submitted = await submitIntent(unitOfWork, command);
+    expect(submitted.status).toBe("OK");
+    if (submitted.status !== "OK" || !submitted.data) return;
+
+    stored.set("intent-tampered", {
+      ...submitted.data.normalized_intent,
+      intent_ref: ref("INTENT", "another-intent"),
+    });
+    const result = await getNormalizedIntent(
+      unitOfWork, context, ref("INTENT", "intent-tampered"),
+    );
+    expect(result.status).toBe("REJECTED");
+    expect(result.errors[0]?.code).toBe("INTEGRITY_OR_UNTRUSTED_INPUT");
+  });
+
 });

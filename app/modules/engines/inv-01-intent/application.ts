@@ -530,3 +530,100 @@ export async function submitIntent(
     return result;
   });
 }
+
+
+/**
+ * Read an INV-01-owned record through its scoped repository boundary.
+ * Reads are version-aware and never infer visibility from a client-side cache.
+ */
+async function readOwnedRecord<T>(
+  unitOfWork: EngineUnitOfWorkPort,
+  context: RequestContext,
+  ref: ObjectRef,
+  expectedKind: "INTENT" | "DECISION_RECORD",
+  repositoryKey: string,
+  identityField: "intent_ref" | "decision_ref",
+): Promise<OperationResult<T>> {
+  const correlationId = context?.correlation_id ?? "unknown";
+  if (
+    !isRequestContext(context) ||
+    !isObjectRef(ref) ||
+    !isInScope(ref, context) ||
+    ref.object_kind !== expectedKind
+  ) {
+    return rejected(
+      "VALIDATION_ERROR",
+      `Read requires an in-scope ${expectedKind} reference and valid request context`,
+      correlationId,
+    );
+  }
+
+  return unitOfWork.execute(context, async (transaction) => {
+    const read = await transaction.repository<T>(repositoryKey).get(context, ref);
+    if (read.status !== "OK" || !read.data) return propagateFailure<T>(read);
+
+    const storedRef = recordRef(read.data, identityField);
+    const requestedVersionMatches =
+      ref.object_version === undefined || storedRef?.object_version === ref.object_version;
+    const resultVersionMatches =
+      read.object_version !== undefined &&
+      (ref.object_version === undefined || read.object_version === ref.object_version) &&
+      (storedRef?.object_version === undefined || storedRef.object_version === read.object_version);
+
+    if (
+      !storedRef ||
+      storedRef.object_kind !== expectedKind ||
+      storedRef.object_id !== ref.object_id ||
+      storedRef.scope_ref.scope_id !== context.scope_ref.scope_id ||
+      storedRef.scope_ref.scope_kind !== context.scope_ref.scope_kind ||
+      !requestedVersionMatches ||
+      !resultVersionMatches
+    ) {
+      return rejected(
+        "INTEGRITY_OR_UNTRUSTED_INPUT",
+        `${repositoryKey} returned a record with mismatched identity, scope or version`,
+        correlationId,
+      );
+    }
+
+    return createOperationResult({
+      status: "OK",
+      correlation_id: correlationId,
+      data: read.data,
+      object_version: read.object_version,
+      warnings: read.warnings,
+    });
+  });
+}
+
+/** Canonical INV-01 operation: get_normalized_intent(context, intent_ref). */
+export function getNormalizedIntent(
+  unitOfWork: EngineUnitOfWorkPort,
+  context: RequestContext,
+  intentRef: ObjectRef,
+): Promise<OperationResult<NormalizedIntent>> {
+  return readOwnedRecord<NormalizedIntent>(
+    unitOfWork,
+    context,
+    intentRef,
+    "INTENT",
+    "inv-01.normalized-intents",
+    "intent_ref",
+  );
+}
+
+/** Canonical INV-01 operation: get_decision(context, decision_ref). */
+export function getDecision(
+  unitOfWork: EngineUnitOfWorkPort,
+  context: RequestContext,
+  decisionRef: ObjectRef,
+): Promise<OperationResult<DecisionRecord>> {
+  return readOwnedRecord<DecisionRecord>(
+    unitOfWork,
+    context,
+    decisionRef,
+    "DECISION_RECORD",
+    "inv-01.decisions",
+    "decision_ref",
+  );
+}
