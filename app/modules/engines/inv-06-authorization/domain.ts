@@ -209,6 +209,7 @@ export interface AuthorityFacts {
   entitlement_state: EntitlementState;
   permission_state: PermissionState;
   delegation_state: "VALID" | "INVALID" | "NOT_REQUIRED" | "UNKNOWN";
+  trust_assessment_state: "VALID" | "INVALID" | "NOT_REQUIRED" | "UNKNOWN";
   external_authorization_state: ExternalAuthorizationState;
   verified_resource_scope_ref: ScopeRef;
   source_refs: AuthoritySourceRef[];
@@ -517,6 +518,7 @@ export function buildAuthorityFingerprintMaterial(input: {
       capability: input.request.capability_ref,
     },
     membership: input.facts.membership_state,
+    trust: input.facts.trust_assessment_state,
     entitlement: input.facts.entitlement_state,
     permission: input.facts.permission_state,
     delegation: input.facts.delegation_state,
@@ -533,6 +535,10 @@ export function buildAuthorityFingerprintMaterial(input: {
   });
 }
 
+function isExactObjectRef(a: ObjectRef, b: ObjectRef): boolean {
+  return sameObjectRef(a, b) && a.object_version === b.object_version;
+}
+
 function isApprovalForRequest(
   approval: ApprovalRecord,
   request: AuthorizationRequest,
@@ -540,17 +546,8 @@ function isApprovalForRequest(
   now: Timestamp,
   useMode?: ApprovalUseMode,
 ): boolean {
-  if (approval.state !== "APPROVED" ||
-    approval.action !== request.action ||
-    !sameObjectRef(approval.resource_ref, request.resource_ref) ||
-    !sameScopeRef(approval.scope_ref, request.scope_ref) ||
-    !sameObjectRef(approval.environment_ref, request.environment_ref) ||
-    (approval.work_ref && (!request.work_ref || !sameObjectRef(approval.work_ref, request.work_ref))) ||
-    (approval.policy_release_ref && !sameObjectRef(approval.policy_release_ref, policyReleaseRef)) ||
-    (useMode !== undefined && approval.approval_use_mode !== useMode) ||
-    (approval.valid_from && Date.parse(approval.valid_from) > Date.parse(now)) ||
-    !approval.expires_at || Date.parse(approval.expires_at) <= Date.parse(now)) return false;
-  return true;
+  return validateApprovalUse(approval, request, now, policyReleaseRef).length === 0 &&
+    (useMode === undefined || approval.approval_use_mode === useMode);
 }
 
 export function evaluateAuthorizationDecision(input: {
@@ -604,11 +601,12 @@ export function evaluateAuthorizationDecision(input: {
     result = "DENY"; reasons.push("SCOPE_MISMATCH");
   } else if (facts.membership_state === "SUSPENDED" || facts.membership_state === "REVOKED" ||
       facts.entitlement_state === "INELIGIBLE" || facts.permission_state === "NOT_GRANTED" ||
-      facts.delegation_state === "INVALID" || facts.external_authorization_state === "DENIED") {
+      facts.delegation_state === "INVALID" || facts.external_authorization_state === "DENIED" ||
+      facts.trust_assessment_state === "INVALID") {
     result = "DENY"; reasons.push("AUTHORITY_CONSTRAINT_NOT_SATISFIED");
   } else if (facts.membership_state === "UNKNOWN" || facts.entitlement_state === "UNKNOWN" ||
       facts.permission_state === "UNKNOWN" || facts.delegation_state === "UNKNOWN" ||
-      facts.external_authorization_state === "UNKNOWN") {
+      facts.external_authorization_state === "UNKNOWN" || facts.trust_assessment_state === "UNKNOWN") {
     result = "INDETERMINATE"; reasons.push("AUTHORITY_FACTS_UNAVAILABLE");
   } else if (principal.valid_until && Date.parse(principal.valid_until) <= Date.parse(input.evaluated_at)) {
     result = "REQUIRE_REAUTH"; reasons.push("PRINCIPAL_CONTEXT_EXPIRED");
@@ -639,7 +637,7 @@ export function evaluateAuthorizationDecision(input: {
     if (policy.risk_assessment_required && request.risk_context.assessment_state !== "ASSESSED") {
       result = "INDETERMINATE"; reasons.push("RISK_ASSESSMENT_REQUIRED");
     }
-    if (policy.trust_required && !principal.trust_assessment_refs.length) {
+    if (policy.trust_required && facts.trust_assessment_state !== "VALID") {
       result = "INDETERMINATE"; reasons.push("SCOPED_TRUST_ASSESSMENT_REQUIRED");
     }
     if (policy.approval_required) {
@@ -845,13 +843,13 @@ export function validateApprovalUse(
   const issues: string[] = [];
   if (approval.state !== "APPROVED") issues.push("approval is not approved");
   if (approval.action !== request.action) issues.push("approval action does not match");
-  if (!sameObjectRef(approval.resource_ref, request.resource_ref)) issues.push("approval resource does not match");
+  if (!isExactObjectRef(approval.resource_ref, request.resource_ref)) issues.push("approval resource does not match");
   if (!sameScopeRef(approval.scope_ref, request.scope_ref)) issues.push("approval scope does not match");
-  if (!sameObjectRef(approval.environment_ref, request.environment_ref)) issues.push("approval environment does not match");
-  if (approval.work_ref && (!request.work_ref || !sameObjectRef(approval.work_ref, request.work_ref))) {
+  if (!isExactObjectRef(approval.environment_ref, request.environment_ref)) issues.push("approval environment does not match");
+  if (approval.work_ref && (!request.work_ref || !isExactObjectRef(approval.work_ref, request.work_ref))) {
     issues.push("approval Work context does not match");
   }
-  if (approval.policy_release_ref && !sameObjectRef(approval.policy_release_ref, policyReleaseRef)) {
+  if (approval.policy_release_ref && !isExactObjectRef(approval.policy_release_ref, policyReleaseRef)) {
     issues.push("approval policy release does not match");
   }
   if (approval.valid_from && Date.parse(approval.valid_from) > Date.parse(now)) issues.push("approval is not yet valid");
