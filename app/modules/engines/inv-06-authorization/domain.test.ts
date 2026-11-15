@@ -415,6 +415,66 @@ describe("INV-06 authorization domain", () => {
     const broken = { ...parent, parent_delegation_ref: ref("DELEGATION", "missing-grandparent") };
     expect(validateDelegationLineage(child, [broken], "2026-11-15T10:00:00Z")).toContain("delegation ancestry is incomplete or incorrectly ordered");
   });
+  it("preserves constraints through a multi-level delegation ancestry", () => {
+    const root: DelegationRecord = {
+      delegation_id: "delegation-root",
+      delegation_ref: ref("DELEGATION", "delegation-root"),
+      grantor_ref: { principal_id: "root-user", principal_kind: "USER" },
+      delegate_ref: context.actor_ref,
+      purpose: "bounded artifact operations",
+      scope_ref: scope,
+      allowed_actions: ["artifact.read", "artifact.publish"],
+      resource_constraints: [ref("ARTIFACT", "artifact-1")],
+      limits: ["daily-10"],
+      conditions: [{ condition_id: "mfa", condition_kind: "MFA", must_hold_at_enforcement: true }],
+      not_before: "2026-11-15T09:00:00Z",
+      expires_at: "2026-11-15T11:00:00Z",
+      allow_subdelegation: true,
+      authorized_by_decision_ref: ref("AUTHORIZATION_DECISION", "root-grant"),
+      state: "ACTIVE",
+      created_at: "2026-11-15T09:00:00Z",
+    };
+    const parent: DelegationRecord = {
+      delegation_id: "delegation-parent",
+      delegation_ref: ref("DELEGATION", "delegation-parent"),
+      grantor_ref: context.actor_ref,
+      delegate_ref: { principal_id: "agent-parent", principal_kind: "AGENT" },
+      purpose: "read one artifact",
+      scope_ref: scope,
+      allowed_actions: ["artifact.read"],
+      resource_constraints: [ref("ARTIFACT", "artifact-1")],
+      limits: ["daily-10"],
+      conditions: [{ condition_id: "mfa", condition_kind: "MFA", must_hold_at_enforcement: true }],
+      not_before: "2026-11-15T09:30:00Z",
+      expires_at: "2026-11-15T10:45:00Z",
+      allow_subdelegation: true,
+      parent_delegation_ref: root.delegation_ref,
+      authorized_by_decision_ref: ref("AUTHORIZATION_DECISION", "parent-grant"),
+      state: "ACTIVE",
+      created_at: "2026-11-15T09:30:00Z",
+    };
+    const child: DelegationRequest = {
+      delegation_ref: ref("DELEGATION", "delegation-child"),
+      grantor_ref: parent.delegate_ref,
+      delegate_ref: { principal_id: "agent-child", principal_kind: "AGENT" },
+      purpose: "read the approved artifact",
+      scope_ref: scope,
+      allowed_actions: ["artifact.read"],
+      resource_constraints: [ref("ARTIFACT", "artifact-1")],
+      limits: ["daily-10"],
+      conditions: [{ condition_id: "mfa", condition_kind: "MFA", must_hold_at_enforcement: true }],
+      not_before: "2026-11-15T10:00:00Z",
+      expires_at: "2026-11-15T10:30:00Z",
+      allow_subdelegation: false,
+      parent_delegation_ref: parent.delegation_ref,
+      authorized_by_decision_ref: ref("AUTHORIZATION_DECISION", "child-grant"),
+    };
+    expect(validateDelegationLineage(child, [parent, root], "2026-11-15T10:05:00Z")).toEqual([]);
+    expect(validateDelegationLineage({
+      ...child, allowed_actions: ["artifact.delete"],
+    }, [parent, root], "2026-11-15T10:05:00Z")).toContain("child delegation exceeds an ancestor's effective authority");
+  });
+
   it("prevents delegation reactivation after its expiry", () => {
     const delegation: DelegationRecord = {
       delegation_id: "delegation-expired",
