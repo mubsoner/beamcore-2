@@ -18,8 +18,11 @@ import {
   createSafeDecisionExplanation,
   decideApproval,
   evaluateAuthorizationDecision,
+  transitionApproval,
   transitionDelegation,
+  transitionPolicyRelease,
   validateApprovalUse,
+  validateAuthenticationResult,
   validateAuthorizationRequest,
   validateAuthorityFacts,
   validateDelegationRequest,
@@ -64,10 +67,13 @@ export interface AuthorizationSourcePort {
   verifyDelegationDecision(context: RequestContext, request: DelegationRequest): Promise<OperationResult<{ valid: boolean }>>;
   /** Check the caller's current authority to suspend or revoke this delegation. */
   verifyDelegationRevoker(context: RequestContext, delegation: DelegationRecord): Promise<OperationResult<{ authorized: boolean }>>;
+  verifyDelegationLifecycleOperator(context: RequestContext, delegation: DelegationRecord, targetState: DelegationRecord["state"]): Promise<OperationResult<{ authorized: boolean }>>;
+  verifyApprovalRevoker(context: RequestContext, approval: ApprovalRecord): Promise<OperationResult<{ authorized: boolean }>>;
   authenticatePrincipal(context: RequestContext, request: AuthenticationRequest): Promise<OperationResult<AuthenticationResult>>;
   /** Must check current source authority, including membership, scope and revoker permission. */
   verifyAuthorityRevoker(context: RequestContext, request: AuthorityRevocationRequest): Promise<OperationResult<{ authorized: boolean; source_version?: Version }>>;
   readPolicyRelease(context: RequestContext, ref: ObjectRef): Promise<OperationResult<PolicyRelease>>;
+  verifyAuthorityRevoker(context: RequestContext, request: AuthorityRevocationRequest): Promise<OperationResult<{ authorized: boolean; source_version?: Version }>>;
   verifyPolicyReleaseOperator(context: RequestContext, release: PolicyRelease, targetState: PolicyReleaseState, operation: PolicyReleaseOperationContext): Promise<OperationResult<{ authorized: boolean }>>;
 }
 
@@ -131,6 +137,14 @@ export interface AuthorizationRepositoryPort {
     revocation: RevocationRecord,
     idempotency: { key: string; request_fingerprint: string },
   ): Promise<OperationResult<RevocationRecord>>;
+  /** Compare-and-set approval lifecycle, idempotency and corresponding Outbox event atomically. */
+  updateApprovalLifecycleWithEvent(
+    context: RequestContext,
+    approval: ApprovalRecord,
+    expectedVersion: Version,
+    eventType: string,
+    idempotency: { key: string; request_fingerprint: string },
+  ): Promise<OperationResult<ApprovalRecord>>;
   /** Compare-and-set policy lifecycle state, idempotency and corresponding Outbox event atomically. */
   updatePolicyReleaseWithEvent(
     context: RequestContext,
