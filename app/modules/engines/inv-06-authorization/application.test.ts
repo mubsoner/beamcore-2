@@ -169,6 +169,7 @@ function makeDependencies(currentFacts: AuthorityFacts = facts) {
       ...policy.policy_release, state: "APPROVED" as const, policy_release_ref: policyRef,
     } })),
     verifyPolicyReleaseOperator: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { authorized: true } })),
+    checkEnforcementConditions: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { satisfied: true, unresolved_condition_ids: [] } })),
   };
   const repository: AuthorizationRepositoryPort = {
     commitDecision: vi.fn(async (_ctx, decision, _audit, command) => {
@@ -202,6 +203,7 @@ describe("INV-06 authorization application boundary", () => {
     expect(result.status).toBe("OK");
     expect(result.data?.result).toBe("ALLOW");
     expect(harness.commitCalls).toHaveLength(1);
+    expect(harness.commitCalls[0].decision.audit_ref.object_kind).toBe("AUTHORIZATION_AUDIT");
     expect(harness.commitCalls[0].command.approval_claim).toEqual({
       approval_ref: approval.approval_ref,
       authorization_request_ref: ref("AUTHORIZATION_REQUEST", request.authorization_request_id),
@@ -209,6 +211,26 @@ describe("INV-06 authorization application boundary", () => {
       idempotency_key: context.idempotency_key,
       claimed_at: "2026-11-15T10:00:30Z",
     });
+  });
+
+  it("defers a protected action when a required enforcement condition is unsatisfied", async () => {
+    const harness = makeDependencies();
+    vi.mocked(harness.sources.evaluatePolicy).mockResolvedValue(
+      createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: {
+        ...policy,
+        approval_required: false,
+        conditions: [{ condition_id: "human-review", condition_kind: "HUMAN_REVIEW", must_hold_at_enforcement: true }],
+      } }),
+    );
+    vi.mocked(harness.sources.checkEnforcementConditions).mockResolvedValue(
+      createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: {
+        satisfied: false, unresolved_condition_ids: ["human-review"],
+      } }),
+    );
+    const result = await recheckAuthorizationAtActionBoundary(harness.deps, context, authorizationRequest());
+    expect(result.status).toBe("REJECTED");
+    expect(harness.commitCalls[0].decision.result).toBe("DEFER");
+    expect(harness.commitCalls[0].decision.reason_codes).toContain("ENFORCEMENT_CONDITIONS_UNSATISFIED");
   });
 
   it("does not claim a one-time approval when the resource version has changed", async () => {
