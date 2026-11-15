@@ -245,6 +245,7 @@ export interface AuthorizationDecision {
   policy_version?: Version;
   evaluator_version?: string;
   authority_fingerprint: string;
+  request_fingerprint: string;
   applicable_scope_ref: ScopeRef;
   constrained_action?: string;
   constrained_resource_ref?: ObjectRef;
@@ -454,6 +455,28 @@ export function validatePrincipalContext(
   return issues;
 }
 
+export function buildCanonicalRequestFingerprint(request: AuthorizationRequest): string {
+  return JSON.stringify({
+    actor: [request.actor_ref.principal_kind, request.actor_ref.principal_id],
+    service: request.service_identity_ref ? [request.service_identity_ref.principal_kind, request.service_identity_ref.principal_id] : null,
+    action: request.action,
+    resource: request.resource_ref,
+    scope: request.scope_ref,
+    environment: request.environment_ref,
+    work: request.work_ref ?? null,
+    plan: request.plan_revision_ref ?? null,
+    graph: request.graph_revision_ref ?? null,
+    execution: request.execution_ref ?? null,
+    capability: request.capability_ref ?? null,
+    delegation: request.delegation_ref ?? null,
+    approval: request.approval_ref ?? null,
+    risk: request.risk_context,
+    arguments_digest: request.action_arguments_digest ?? null,
+    expected_resource_version: request.expected_resource_version ?? null,
+    policy_context_refs: request.policy_context_refs,
+  });
+}
+
 export function buildAuthorityFingerprintMaterial(input: {
   request: AuthorizationRequest;
   principal: PrincipalContext;
@@ -653,6 +676,7 @@ export function evaluateAuthorizationDecision(input: {
     ...(policy?.policy_release?.version ? { policy_version: policy.policy_release.version } : {}),
     ...(policy?.evaluator_version ? { evaluator_version: policy.evaluator_version } : {}),
     authority_fingerprint: input.authority_fingerprint,
+    request_fingerprint: buildCanonicalRequestFingerprint(request),
     applicable_scope_ref: request.scope_ref,
     ...(result === "RESTRICT" && policy.constrained_action ? { constrained_action: policy.constrained_action } : {}),
     ...(result === "RESTRICT" && policy.constrained_resource_ref ? { constrained_resource_ref: policy.constrained_resource_ref } : {}),
@@ -683,6 +707,7 @@ export function isDecisionCurrentForRequest(
     decision.request_ref.object_kind === "AUTHORIZATION_REQUEST" &&
     sameScopeRef(decision.applicable_scope_ref, request.scope_ref) &&
     decision.decision_ref.scope_ref && sameScopeRef(decision.decision_ref.scope_ref, request.scope_ref) &&
+    decision.request_fingerprint === buildCanonicalRequestFingerprint(request) &&
     decision.reason_codes.length > 0;
 }
 
