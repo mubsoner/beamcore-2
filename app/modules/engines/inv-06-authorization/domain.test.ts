@@ -205,7 +205,8 @@ describe("INV-06 authorization domain", () => {
       required_approver_constraints: ["independent"],
       action: "artifact.publish", resource_ref: ref("ARTIFACT", "artifact-1"),
       scope_ref: scope, environment_ref: ref("ENVIRONMENT", "production"),
-      context_version_refs: [], approval_use_mode: "ONE_TIME",
+      context_version_refs: [], policy_release_ref: ref("POLICY_RELEASE", "policy-1"),
+      approval_use_mode: "ONE_TIME",
       created_at: "2026-11-15T10:00:00Z", expires_at: "2026-11-15T10:10:00Z",
     });
     expect(created.status).toBe("OK");
@@ -417,7 +418,8 @@ describe("INV-06 authorization domain", () => {
       requested_by_ref: context.actor_ref, required_approver_constraints: [],
       action: "artifact.publish", resource_ref: ref("ARTIFACT", "artifact-1"),
       scope_ref: scope, environment_ref: ref("ENVIRONMENT", "production"),
-      context_version_refs: [], approval_use_mode: "ONE_TIME",
+      context_version_refs: [], policy_release_ref: ref("POLICY_RELEASE", "policy-1"),
+      approval_use_mode: "ONE_TIME",
       created_at: "2026-11-15T10:00:00Z", expires_at: "2026-11-15T10:10:00Z",
     }).data!;
     expect(transitionApproval(pending, "EXPIRED", "2026-11-15T10:05:00Z").status).toBe("REJECTED");
