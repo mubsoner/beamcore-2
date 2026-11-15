@@ -140,6 +140,9 @@ describe("INV-06 authorization domain", () => {
       assessment_state: first.risk_context.assessment_state,
     } };
     expect(buildCanonicalRequestFingerprint(first)).toBe(buildCanonicalRequestFingerprint(reordered));
+    expect(buildCanonicalRequestFingerprint(first)).toBe(buildCanonicalRequestFingerprint(request({
+      approval_ref: ref("APPROVAL", "approval-added-after-review"),
+    })));
     expect(buildCanonicalRequestFingerprint(first)).not.toBe(buildCanonicalRequestFingerprint(request({ action: "artifact.delete" })));
   });
   it("changes the authority fingerprint when source versions, policy release or approvals change", () => {
