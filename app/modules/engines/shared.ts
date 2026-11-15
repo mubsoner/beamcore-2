@@ -132,6 +132,26 @@ export function isDomainEventEnvelope(value: unknown): value is DomainEventEnvel
   );
 }
 
+/**
+ * Inbox input extends the domain event with the aggregate identity and
+ * monotonic version used by a specific consumer for deduplication/order.
+ */
+export interface InboxEventEnvelope<T = unknown> extends DomainEventEnvelope<T> {
+  aggregate_ref: ObjectRef;
+  aggregate_version: RevisionNumber;
+}
+
+export type InboxDisposition = "ACCEPTED" | "DUPLICATE";
+
+export interface InboxAcceptance {
+  event_id: ID;
+  consumer_id: string;
+  aggregate_ref: ObjectRef;
+  aggregate_version: RevisionNumber;
+  disposition: InboxDisposition;
+  received_at: Timestamp;
+}
+
 export const OPERATION_ERROR_CODES = [
   "VALIDATION_ERROR",
   "UNAUTHENTICATED",
@@ -141,6 +161,7 @@ export const OPERATION_ERROR_CODES = [
   "NOT_FOUND_OR_NOT_VISIBLE",
   "VERSION_CONFLICT",
   "IDEMPOTENCY_CONFLICT",
+  "EVENT_ID_REUSED_WITH_DIFFERENT_PAYLOAD",
   "DEPENDENCY_UNAVAILABLE",
   "CAPABILITY_UNAVAILABLE",
   "TIMEOUT",
@@ -194,6 +215,20 @@ export interface IdempotencyPort {
   record<T>(context: RequestContext, record: IdempotencyRecord<T>): Promise<OperationResult<IdempotencyRecord<T>>>;
 }
 
+/**
+ * Incoming facts are recorded only in the consumer Inbox. This port is only
+ * for facts produced by the local authoritative mutation.
+ */
+export interface EventInboxPort {
+  accept(
+    context: RequestContext,
+    consumer_id: string,
+    event: InboxEventEnvelope,
+    fingerprint: string,
+  ): Promise<OperationResult<InboxAcceptance>>;
+}
+
+/** Transaction-coupled append of locally produced domain facts. */
 export interface EventOutboxPort {
   append(context: RequestContext, event: DomainEventEnvelope): Promise<OperationResult<{ event_id: ID }>>;
 }
@@ -206,12 +241,15 @@ export interface EngineTransaction {
   repository<T>(key: string): VersionedRepository<T>;
   appendOnly<T>(key: string): AppendOnlyRepository<T>;
   idempotency: IdempotencyPort;
+  inbox: EventInboxPort;
   outbox: EventOutboxPort;
 }
 
 /**
  * A command runs in one unit of work. The adapter must commit domain writes,
- * idempotency result and outbox append atomically, or commit none of them.
+ * idempotency result, inbox receipt (when consuming), and outbox append atomically,
+ * or commit none of them. Incoming events stay in Inbox; they are never copied to
+ * Outbox. Provider delivery happens outside this local transaction.
  */
 export interface EngineUnitOfWorkPort {
   execute<T>(
