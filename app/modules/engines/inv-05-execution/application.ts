@@ -20,8 +20,10 @@ import {
   createExecutionRecord,
   validateExecutionRequest,
   type ExecutionRecord,
+  validateTrustedRuntimeAssurance,
   type ExecutionRequest,
   type RuntimeAdmission,
+  type TrustedRuntimeAssurance,
 } from "./domain";
 
 export interface ExecutionAdmissionSnapshot {
@@ -61,6 +63,15 @@ export interface ExecutionAdmissionReaderPort {
     request: ExecutionRequest,
     checked_at: Timestamp,
   ): Promise<OperationResult<ExecutionAdmissionSnapshot>>;
+  /**
+   * Must be backed by a trusted attestation verifier, not caller-supplied
+   * readiness booleans. Required for UNTRUSTED_GENERATED_CODE.
+   */
+  readTrustedRuntimeAssurance?(
+    context: RequestContext,
+    profile: ExecutionRequest["runtime_profile"],
+    checked_at: Timestamp,
+  ): Promise<OperationResult<TrustedRuntimeAssurance>>;
 }
 
 export interface SubmitExecutionCommand {
@@ -290,6 +301,38 @@ export async function submitExecution(
   );
   if (admissionValidation.status !== "OK") {
     return propagateFailure<ExecutionRecord>(admissionValidation);
+  }
+
+  if (command.request.runtime_profile.trust_class === "UNTRUSTED_GENERATED_CODE") {
+    if (!admissionReader.readTrustedRuntimeAssurance) {
+      return rejected(
+        command.context,
+        "POLICY_DENIED",
+        "Untrusted generated code is hard-disabled until a trusted runtime-attestation verifier is configured",
+      );
+    }
+    let assurance: OperationResult<TrustedRuntimeAssurance>;
+    try {
+      assurance = await admissionReader.readTrustedRuntimeAssurance(
+        command.context,
+        command.request.runtime_profile,
+        now,
+      );
+    } catch {
+      return rejected(command.context, "DEPENDENCY_UNAVAILABLE", "Trusted runtime assurance could not be verified");
+    }
+    if (assurance.status !== "OK" || !assurance.data) {
+      return propagateFailure<ExecutionRecord>(assurance);
+    }
+    const assuranceValidation = validateTrustedRuntimeAssurance(
+      command.context,
+      command.request.runtime_profile,
+      assurance.data,
+      now,
+    );
+    if (assuranceValidation.status !== "OK") {
+      return propagateFailure<ExecutionRecord>(assuranceValidation);
+    }
   }
 
   const execution = createExecutionRecord(command.context, command.request, command.created_at);
