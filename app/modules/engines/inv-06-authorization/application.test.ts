@@ -6,7 +6,9 @@ import {
   getAuthorityDecision,
   publishPolicyRelease,
   revokeApproval,
+  expireApproval,
   revokeAuthority,
+  suspendPolicyRelease,
   recheckAuthorizationAtActionBoundary,
   suspendDelegation,
   type AuthorizationDependencies,
@@ -329,6 +331,52 @@ describe("INV-06 authorization application boundary", () => {
       ...operation, impact_report_ref: undefined,
     });
     expect(missingImpact.status).toBe("REJECTED");
+  });
+
+  it("revokes an approval only after lifecycle authority is verified", async () => {
+    const harness = makeDependencies();
+    const result = await revokeApproval(harness.deps, context, approval.approval_ref, "1");
+    expect(result.status).toBe("OK");
+    expect(result.data?.state).toBe("REVOKED");
+    expect(harness.repository.updateApprovalLifecycleWithEvent).toHaveBeenCalledWith(
+      context, expect.objectContaining({ state: "REVOKED" }), "1", "approval.revoked", expect.any(Object),
+    );
+  });
+
+  it("expires an approval only after its policy-derived expiry has passed", async () => {
+    const harness = makeDependencies();
+    vi.mocked(harness.sources.readApproval).mockResolvedValue(
+      createOperationResult({ status: "OK", correlation_id: context.correlation_id,
+        data: { ...approval, expires_at: "2026-11-15T10:00:00Z" }, object_version: "1" }),
+    );
+    const result = await expireApproval(harness.deps, context, approval.approval_ref, "1");
+    expect(result.status).toBe("OK");
+    expect(result.data?.state).toBe("EXPIRED");
+  });
+
+  it("suspends a monitoring policy release under current authority with a reason", async () => {
+    const harness = makeDependencies();
+    vi.mocked(harness.sources.readPolicyRelease).mockResolvedValue(
+      createOperationResult({ status: "OK", correlation_id: context.correlation_id,
+        data: { ...policy.policy_release, state: "MONITORING" },
+        object_version: "1" }),
+    );
+    const policyRef = { ...ref("POLICY_RELEASE", "policy-1"), object_version: "1" };
+    const operation = {
+      requested_by_ref: actor,
+      change_ref: ref("POLICY_CHANGE", "change-suspend"),
+      reason_code: "POLICY_CONFLICT",
+      expected_version: "1",
+      correlation_id: context.correlation_id,
+      idempotency_key: context.idempotency_key!,
+    };
+    const result = await suspendPolicyRelease(harness.deps, context, policyRef, operation);
+    expect(result.status).toBe("OK");
+    expect(result.data?.state).toBe("SUSPENDED");
+    expect(harness.repository.updatePolicyReleaseWithEvent).toHaveBeenCalledWith(
+      context, expect.objectContaining({ state: "SUSPENDED" }), "1",
+      "policy.version_suspended", expect.any(Object), operation,
+    );
   });
 
   it("masks unavailable and out-of-scope decision reads with the same response", async () => {
