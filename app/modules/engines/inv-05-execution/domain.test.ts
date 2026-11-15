@@ -8,6 +8,9 @@ import {
   createReconciliationRecord,
   createResourceMeasurement,
   createRuntimeCheckpoint,
+  captureExecutionOutput,
+  transitionExecutionAttempt,
+  transitionExecutionCleanup,
   requestExecutionCancellation,
   startExecutionAttempt,
   transitionExecution,
@@ -358,6 +361,97 @@ describe("INV-05 execution runtime domain", () => {
       created_at: "2026-11-15T08:00:05Z",
     });
     expect(invalid.status).toBe("REJECTED");
+  });
+
+  it("updates the immutable attempt state only with observed termination evidence", () => {
+    const { execution, attempt } = startRecord();
+    const missingProof = transitionExecutionAttempt(context, execution, attempt, {
+      expected_state_version: attempt.state_version,
+      to_state: "SUCCEEDED",
+      changed_at: "2026-11-15T08:00:05Z",
+      process_exit_code: 0,
+    });
+    expect(missingProof.status).toBe("REJECTED");
+    expect(missingProof.errors[0]?.code).toBe("OUTCOME_UNKNOWN_OR_RECONCILIATION_REQUIRED");
+
+    const completed = transitionExecutionAttempt(context, execution, attempt, {
+      expected_state_version: attempt.state_version,
+      to_state: "SUCCEEDED",
+      changed_at: "2026-11-15T08:00:05Z",
+      termination_knowledge: "CONFIRMED_TERMINATED",
+      process_exit_code: 0,
+      output_completeness: "COMPLETE",
+      output_digest: "sha256-final-output",
+    });
+    expect(completed.status).toBe("OK");
+    expect(completed.data?.state).toBe("SUCCEEDED");
+    expect(completed.data?.termination_knowledge).toBe("CONFIRMED_TERMINATED");
+  });
+
+  it("captures output with attempt lineage and does not call partial output complete", () => {
+    const { execution, attempt } = startRecord();
+    const completeWhileRunning = captureExecutionOutput(context, execution, attempt, {
+      expected_execution_version: execution.state_version,
+      expected_attempt_version: attempt.state_version,
+      output_ref: ref("ARTIFACT", "output-1"),
+      output_digest: "sha256-output-1",
+      output_completeness: "COMPLETE",
+      captured_at: "2026-11-15T08:00:05Z",
+    });
+    expect(completeWhileRunning.status).toBe("REJECTED");
+
+    const partial = captureExecutionOutput(context, execution, attempt, {
+      expected_execution_version: execution.state_version,
+      expected_attempt_version: attempt.state_version,
+      output_ref: ref("ARTIFACT", "output-partial-1"),
+      output_digest: "sha256-output-partial",
+      output_completeness: "PARTIAL",
+      captured_at: "2026-11-15T08:00:05Z",
+    });
+    expect(partial.status).toBe("OK");
+    expect(partial.data?.execution.output_refs).toEqual([ref("ARTIFACT", "output-partial-1")]);
+    expect(partial.data?.attempt.output_completeness).toBe("PARTIAL");
+  });
+
+  it("tracks cleanup independently from the runtime execution result", () => {
+    const { execution } = startRecord();
+    const failed = transitionExecution(context, execution, {
+      expected_state_version: execution.state_version,
+      to_state: "FAILED",
+      changed_at: "2026-11-15T08:00:05Z",
+      termination_knowledge: "CONFIRMED_TERMINATED",
+      effect_knowledge: "UNKNOWN",
+      output_completeness: "PARTIAL",
+    });
+    expect(failed.status).toBe("OK");
+    if (!failed.data) return;
+
+    const pending = transitionExecutionCleanup(context, failed.data, {
+      expected_state_version: failed.data.state_version,
+      to_state: "PENDING",
+      changed_at: "2026-11-15T08:00:06Z",
+    });
+    expect(pending.status).toBe("OK");
+    if (!pending.data) return;
+
+    const cleaning = transitionExecutionCleanup(context, pending.data, {
+      expected_state_version: pending.data.state_version,
+      to_state: "CLEANING",
+      changed_at: "2026-11-15T08:00:07Z",
+    });
+    expect(cleaning.status).toBe("OK");
+    if (!cleaning.data) return;
+
+    const cleanupFailed = transitionExecutionCleanup(context, cleaning.data, {
+      expected_state_version: cleaning.data.state_version,
+      to_state: "FAILED",
+      changed_at: "2026-11-15T08:00:08Z",
+      error_refs: [ref("RUNTIME_CLEANUP_ERROR", "cleanup-error-1")],
+    });
+    expect(cleanupFailed.status).toBe("OK");
+    expect(cleanupFailed.data?.state).toBe("FAILED");
+    expect(cleanupFailed.data?.cleanup_state).toBe("FAILED");
+    expect(cleanupFailed.data?.error_refs).toEqual([ref("RUNTIME_CLEANUP_ERROR", "cleanup-error-1")]);
   });
 
   it("emits a canonical INV-05 event with the exact execution and scope references", () => {
