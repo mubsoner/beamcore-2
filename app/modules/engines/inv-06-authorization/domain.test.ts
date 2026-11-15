@@ -1,0 +1,222 @@
+import { describe, expect, it } from "vitest";
+import type { ObjectRef, RequestContext, ScopeRef } from "../shared";
+import {
+  createPendingApproval,
+  decideApproval,
+  evaluateAuthorizationDecision,
+  isDecisionCurrentForRequest,
+  transitionDelegation,
+  transitionPolicyRelease,
+  validateApprovalUse,
+  validateDelegationRequest,
+  validateAuthorizationRequest,
+  type ApprovalRecord,
+  type AuthorizationRequest,
+  type AuthorityFacts,
+  type DelegationRecord,
+  type DelegationRequest,
+  type PolicyEvaluation,
+  type PrincipalContext,
+} from "./domain";
+
+const scope: ScopeRef = { scope_id: "org-1", scope_kind: "ORGANIZATION" };
+const context: RequestContext = {
+  request_id: "req-1", correlation_id: "corr-1",
+  actor_ref: { principal_id: "user-1", principal_kind: "USER" },
+  scope_ref: scope, issued_at: "2026-11-15T10:00:00Z",
+};
+const ref = (kind: string, id: string, objectScope = scope): ObjectRef => ({
+  object_kind: kind, object_id: id, object_version: "1", scope_ref: objectScope,
+});
+const request = (overrides: Partial<AuthorizationRequest> = {}): AuthorizationRequest => ({
+  authorization_request_id: "auth-req-1",
+  actor_ref: context.actor_ref,
+  action: "artifact.publish",
+  resource_ref: ref("ARTIFACT", "artifact-1"),
+  scope_ref: scope,
+  environment_ref: ref("ENVIRONMENT", "production"),
+  risk_context: {
+    assessment_state: "ASSESSED", impact_dimensions: ["external-effect"],
+    sensitivity_refs: [], uncertainty_flags: [], scope_blast_radius_refs: [],
+    assessed_at: "2026-11-15T09:59:00Z", valid_until: "2026-11-15T10:10:00Z",
+  },
+  requested_at: "2026-11-15T10:00:00Z",
+  policy_context_refs: [], correlation_id: context.correlation_id,
+  ...overrides,
+});
+const principal = (overrides: Partial<PrincipalContext> = {}): PrincipalContext => ({
+  principal_ref: context.actor_ref,
+  authentication_state: "AUTHENTICATED",
+  organization_membership_refs: [ref("MEMBERSHIP", "membership-1")],
+  role_binding_refs: [ref("ROLE_BINDING", "role-1")],
+  delegation_refs: [], trust_assessment_refs: [],
+  authority_source_refs: [{
+    source_kind: "membership", object_ref: ref("MEMBERSHIP", "membership-1"),
+    source_version: "3", observed_at: "2026-11-15T09:59:30Z",
+  }],
+  resolved_at: "2026-11-15T09:59:30Z", valid_until: "2026-11-15T10:05:00Z",
+  ...overrides,
+});
+const facts = (overrides: Partial<AuthorityFacts> = {}): AuthorityFacts => ({
+  membership_state: "ACTIVE", entitlement_state: "ELIGIBLE",
+  permission_state: "GRANTED", delegation_state: "NOT_REQUIRED",
+  external_authorization_state: "NOT_REQUIRED",
+  verified_resource_scope_ref: scope,
+  source_refs: [{
+    source_kind: "membership", object_ref: ref("MEMBERSHIP", "membership-1"),
+    source_version: "3", observed_at: "2026-11-15T09:59:30Z",
+  }],
+  observed_at: "2026-11-15T09:59:30Z", valid_until: "2026-11-15T10:05:00Z",
+  current_resource_version: "1",
+  ...overrides,
+});
+const policy = (overrides: Partial<PolicyEvaluation> = {}): PolicyEvaluation => ({
+  effect: "ALLOW",
+  policy_release: {
+    policy_release_id: "policy-1", policy_family_id: "artifact-policy",
+    policy_release_ref: ref("POLICY_RELEASE", "policy-1"),
+    version: "7", state: "RELEASED", ruleset_digest: "sha256:policy",
+    evaluator_contract_version: "1", effective_from: "2026-11-15T09:00:00Z",
+    valid_until: "2026-11-15T11:00:00Z",
+  },
+  evaluator_version: "evaluator-1", reason_codes: ["POLICY_MATCHED"],
+  conditions: [], obligations: [], valid_until: "2026-11-15T10:04:00Z",
+  approval_required: false, independent_approver_required: false,
+  risk_assessment_required: true, trust_required: false,
+  ...overrides,
+});
+function evaluate(overrides: {
+  req?: Partial<AuthorizationRequest>;
+  principal?: Partial<PrincipalContext>;
+  facts?: Partial<AuthorityFacts>;
+  policy?: Partial<PolicyEvaluation>;
+  approval?: ApprovalRecord;
+} = {}) {
+  const req = request(overrides.req);
+  const principalCtx = principal(overrides.principal);
+  const policyEval = policy(overrides.policy);
+  return evaluateAuthorizationDecision({
+    context, request: req, principal: principalCtx, facts: facts(overrides.facts),
+    policy: policyEval, approval: overrides.approval,
+    decision_ref: ref("AUTHORIZATION_DECISION", "decision-1"),
+    decision_id: "decision-1",
+    request_ref: ref("AUTHORIZATION_REQUEST", req.authorization_request_id),
+    audit_ref: ref("AUTHORIZATION_AUDIT", "audit-1"),
+    evaluated_at: "2026-11-15T10:00:00Z",
+    authority_fingerprint: "sha256:fingerprint",
+  });
+}
+
+describe("INV-06 authorization domain", () => {
+  it("allows only when authenticated, in-scope, current authority and released policy agree", () => {
+    expect(evaluate().data?.result).toBe("ALLOW");
+  });
+  it("rejects actor spoofing and mismatched scope before evaluation", () => {
+    expect(validateAuthorizationRequest(context, request({
+      actor_ref: { principal_id: "attacker", principal_kind: "USER" },
+    }))).toContain("actor_ref must match the authenticated request actor");
+    expect(validateAuthorizationRequest(context, request({
+      scope_ref: { scope_id: "other", scope_kind: "ORGANIZATION" },
+    })).length).toBeGreaterThan(0);
+  });
+  it("fails closed for unauthenticated, revoked, unknown and stale authority", () => {
+    expect(evaluate({ principal: { authentication_state: "UNAUTHENTICATED" } }).data?.result).toBe("DENY");
+    expect(evaluate({ facts: { membership_state: "REVOKED" } }).data?.result).toBe("DENY");
+    expect(evaluate({ facts: { permission_state: "UNKNOWN" } }).data?.result).toBe("INDETERMINATE");
+    expect(evaluate({ facts: { valid_until: "2026-11-15T09:59:59Z" } }).data?.result).toBe("INDETERMINATE");
+  });
+  it("does not turn UNKNOWN or suspended policy into ALLOW", () => {
+    expect(evaluate({ policy: { effect: "UNKNOWN" } }).data?.result).toBe("INDETERMINATE");
+    expect(evaluate({ policy: { policy_release: { ...policy().policy_release, state: "SUSPENDED" } } }).data?.result).toBe("INDETERMINATE");
+  });
+  it("requires approval as a separate, exact-scope input", () => {
+    const result = evaluate({ policy: { approval_required: true, approval_use_mode: "ONE_TIME" } });
+    expect(result.data?.result).toBe("REQUIRE_APPROVAL");
+  });
+  it("creates pending approvals and rejects self-approval when independent approval is required", () => {
+    const created = createPendingApproval({
+      approval_ref: ref("APPROVAL", "approval-1"),
+      approval_id: "approval-1",
+      request_ref: ref("AUTHORIZATION_REQUEST", "auth-req-1"),
+      requested_by_ref: context.actor_ref,
+      required_approver_constraints: ["independent"],
+      action: "artifact.publish", resource_ref: ref("ARTIFACT", "artifact-1"),
+      scope_ref: scope, environment_ref: ref("ENVIRONMENT", "production"),
+      context_version_refs: [], approval_use_mode: "ONE_TIME",
+      created_at: "2026-11-15T10:00:00Z", expires_at: "2026-11-15T10:10:00Z",
+    });
+    expect(created.status).toBe("OK");
+    const approval = created.data!;
+    const rejected = decideApproval({
+      approval,
+      decision: {
+        approval_ref: approval.approval_ref, approver_ref: context.actor_ref,
+        decision: "APPROVE", expected_version: "1", decided_at: "2026-11-15T10:01:00Z",
+      },
+      expected_current_version: "1", approver_is_authorized: true,
+      independent_approval_required: true, now: "2026-11-15T10:01:00Z",
+    });
+    expect(rejected.status).toBe("REJECTED");
+  });
+  it("rejects approvals with a different action, target, environment, tenant or expiry", () => {
+    const approval: ApprovalRecord = {
+      approval_id: "approval-1", approval_ref: ref("APPROVAL", "approval-1"),
+      request_ref: ref("AUTHORIZATION_REQUEST", "auth-req-1"),
+      requested_by_ref: context.actor_ref, required_approver_constraints: [],
+      approver_ref: { principal_id: "admin-1", principal_kind: "USER" },
+      action: "artifact.delete", resource_ref: ref("ARTIFACT", "artifact-1"),
+      scope_ref: scope, environment_ref: ref("ENVIRONMENT", "production"),
+      context_version_refs: [], approval_use_mode: "ONE_TIME",
+      state: "APPROVED", created_at: "2026-11-15T09:00:00Z",
+      decided_at: "2026-11-15T09:01:00Z", expires_at: "2026-11-15T11:00:00Z",
+    };
+    expect(validateApprovalUse(approval, request(), "2026-11-15T10:00:00Z", ref("POLICY_RELEASE", "policy-1")).length).toBeGreaterThan(0);
+  });
+  it("prevents delegation from exceeding grantor actions, resources, scope or expiry", () => {
+    const delegationRequest: DelegationRequest = {
+      delegation_ref: ref("DELEGATION", "delegation-1"),
+      grantor_ref: context.actor_ref,
+      delegate_ref: { principal_id: "agent-1", principal_kind: "AGENT" },
+      purpose: "publish approved artifact",
+      scope_ref: scope, allowed_actions: ["artifact.publish"],
+      resource_constraints: [ref("ARTIFACT", "artifact-1")],
+      limits: [], conditions: [],
+      not_before: "2026-11-15T10:00:00Z",
+      expires_at: "2026-11-15T10:30:00Z",
+      allow_subdelegation: false,
+      authorized_by_decision_ref: ref("AUTHORIZATION_DECISION", "grant-decision"),
+    };
+    const grantor = {
+      grantor_authenticated: true, grantor_may_delegate: true,
+      grantor_allowed_actions: ["artifact.read"],
+      grantor_scope_ref: scope,
+      grantor_resource_constraints: [ref("ARTIFACT", "artifact-1")],
+    };
+    expect(validateDelegationRequest(delegationRequest, grantor).length).toBeGreaterThan(0);
+  });
+  it("keeps delegation terminal after revocation", () => {
+    const delegation: DelegationRecord = {
+      delegation_id: "delegation-1", delegation_ref: ref("DELEGATION", "delegation-1"),
+      grantor_ref: context.actor_ref, delegate_ref: { principal_id: "agent-1", principal_kind: "AGENT" },
+      purpose: "read", scope_ref: scope, allowed_actions: ["artifact.read"],
+      resource_constraints: [], limits: [], conditions: [],
+      not_before: "2026-11-15T09:00:00Z", expires_at: "2026-11-15T12:00:00Z",
+      allow_subdelegation: false, authorized_by_decision_ref: ref("AUTHORIZATION_DECISION", "decision-1"),
+      state: "ACTIVE", created_at: "2026-11-15T09:00:00Z",
+    };
+    const revoked = transitionDelegation(delegation, "REVOKED", "2026-11-15T10:00:00Z");
+    expect(revoked.data?.state).toBe("REVOKED");
+    expect(transitionDelegation(revoked.data!, "ACTIVE", "2026-11-15T10:01:00Z").status).toBe("REJECTED");
+  });
+  it("does not reuse a released policy version for edits", () => {
+    const released = policy().policy_release;
+    expect(transitionPolicyRelease(released, "SUSPENDED", "2026-11-15T10:00:00Z").data?.state).toBe("SUSPENDED");
+    expect(transitionPolicyRelease(released, "RETIRED", "2026-11-15T10:00:00Z").status).toBe("REJECTED");
+  });
+  it("rejects stale or mismatched decisions at the enforcement boundary", () => {
+    const decision = evaluate().data!;
+    expect(isDecisionCurrentForRequest(decision, request(), "2026-11-15T10:01:00Z", "sha256:fingerprint")).toBe(true);
+    expect(isDecisionCurrentForRequest(decision, request(), "2026-11-15T10:05:00Z", "sha256:fingerprint")).toBe(false);
+    expect(isDecisionCurrentForRequest(decision, request({ action: "artifact.delete" }), "2026-11-15T10:01:00Z", "sha256:fingerprint")).toBe(true);
+  });
+});
