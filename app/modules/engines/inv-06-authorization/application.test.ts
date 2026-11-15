@@ -570,7 +570,7 @@ describe("INV-06 authorization application boundary", () => {
       decision: "APPROVE" as const,
       expected_version: "2",
       idempotency_key: approverContext.idempotency_key!,
-      decided_at: "2026-11-15T10:01:00Z",
+      decided_at: "2026-11-15T10:00:20Z",
     };
     const result = await decideApprovalRequest(
       harness.deps, approverContext, approval.approval_ref, input, "2",
