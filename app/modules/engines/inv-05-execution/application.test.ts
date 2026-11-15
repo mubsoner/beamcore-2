@@ -2,12 +2,22 @@ import { describe, expect, it } from "vitest";
 import type { ClockPort, EngineTransaction, ObjectRef, OperationResult, RequestContext } from "../shared";
 import {
   submitExecution,
+  readExecutionSnapshot,
+  readExecutionInvocationManifest,
   validateExecutionAdmission,
   type ExecutionAdmissionReaderPort,
   type ExecutionAdmissionSnapshot,
+  type ExecutionInvocationManifest,
+  type ExecutionReadPort,
 } from "./application";
 import type { EngineUnitOfWorkPort } from "../shared";
-import type { ExecutionRequest, RuntimeProfile } from "./domain";
+import {
+  createExecutionRecord,
+  startExecutionAttempt,
+  transitionExecution,
+  type ExecutionRequest,
+  type RuntimeProfile,
+} from "./domain";
 import type { DispatchAttempt } from "../inv-04-orchestration/domain";
 
 const scope = { scope_id: "scope-1", scope_kind: "WORK" as const };
@@ -111,6 +121,12 @@ const admission = (overrides: Partial<ExecutionAdmissionSnapshot> = {}): Executi
   ...overrides,
 });
 
+function executionFixture() {
+  const result = createExecutionRecord(context, request(), "2026-11-15T08:00:01Z");
+  if (result.status !== "OK" || !result.data) throw new Error("Execution fixture failed");
+  return result.data;
+}
+
 const admissionReader = (
   overrides: Partial<ExecutionAdmissionReaderPort> = {},
   sourceProfile: RuntimeProfile = profile(),
@@ -140,6 +156,94 @@ const admissionReader = (
 });
 
 describe("INV-05 execution application admission boundary", () => {
+  it("reads Execution state and complete attempt history without changing separate status dimensions", async () => {
+    const created = createExecutionRecord(context, request(), "2026-11-15T08:00:01Z");
+    if (!created.data) throw new Error("Execution fixture missing");
+    const reader: ExecutionReadPort = {
+      readExecution: async () => ({
+        status: "OK", correlation_id: context.correlation_id,
+        data: { ...created.data!, state: "UNKNOWN", effect_knowledge: "UNKNOWN", cleanup_state: "FAILED" },
+        errors: [], warnings: [],
+      }),
+      readAttempts: async () => ({ status: "OK", correlation_id: context.correlation_id, data: [], errors: [], warnings: [] }),
+      readInvocationManifest: async () => { throw new Error("Not used"); },
+    };
+    const result = await readExecutionSnapshot(reader, context, created.data.execution_ref);
+    expect(result.status).toBe("OK");
+    expect(result.data?.execution.state).toBe("UNKNOWN");
+    expect(result.data?.execution.effect_knowledge).toBe("UNKNOWN");
+    expect(result.data?.execution.cleanup_state).toBe("FAILED");
+    expect(result.data?.attempts).toEqual([]);
+  });
+
+  it("rejects incomplete, reordered or cross-Execution attempt history", async () => {
+    const execution = executionFixture();
+    const queued = transitionExecution(context, execution, {
+      expected_state_version: execution.state_version,
+      to_state: "QUEUED",
+      changed_at: "2026-11-15T08:00:02Z",
+    });
+    if (!queued.data) throw new Error("Queue fixture failed");
+    const started = startExecutionAttempt(context, queued.data, {
+      expected_execution_version: queued.data.state_version,
+      attempt_ref: ref("EXECUTION_ATTEMPT", "attempt-read-1"),
+      invocation_digest: "sha256-invocation-read-1",
+      input_digest: "sha256-input-read-1",
+      created_at: "2026-11-15T08:00:03Z",
+    });
+    if (!started.data) throw new Error("Attempt fixture failed");
+    const reader: ExecutionReadPort = {
+      readExecution: async () => ({ status: "OK", correlation_id: context.correlation_id, data: started.data!.execution, errors: [], warnings: [] }),
+      readAttempts: async () => ({ status: "OK", correlation_id: context.correlation_id, data: [], errors: [], warnings: [] }),
+      readInvocationManifest: async () => { throw new Error("Not used"); },
+    };
+    const incomplete = await readExecutionSnapshot(reader, context, execution.execution_ref);
+    expect(incomplete.status).toBe("REJECTED");
+    expect(incomplete.errors[0]?.code).toBe("INTEGRITY_OR_UNTRUSTED_INPUT");
+
+    const foreign = await readExecutionSnapshot(reader, context, ref("EXECUTION", "foreign-execution", "1", otherScope));
+    expect(foreign.status).toBe("REJECTED");
+    expect(foreign.errors[0]?.code).toBe("FORBIDDEN");
+  });
+
+  it("reads only the exact immutable invocation manifest accepted for an Execution", async () => {
+    const execution = executionFixture();
+    const acceptedRequest = request();
+    const manifest: ExecutionInvocationManifest = {
+      execution_ref: execution.execution_ref,
+      request_digest: execution.request_digest,
+      capability_ref: execution.capability_ref,
+      capability_version: execution.capability_version,
+      runtime_profile_ref: execution.runtime_profile_ref,
+      runtime_profile_version: execution.runtime_profile_version,
+      input_refs: [...acceptedRequest.input_refs],
+      input_digests: [...acceptedRequest.input_digests],
+      side_effect_class: acceptedRequest.side_effect_class,
+      request: acceptedRequest,
+      created_at: "2026-11-15T08:00:01Z",
+    };
+    const reader: ExecutionReadPort = {
+      readExecution: async () => ({ status: "OK", correlation_id: context.correlation_id, data: execution, errors: [], warnings: [] }),
+      readAttempts: async () => ({ status: "OK", correlation_id: context.correlation_id, data: [], errors: [], warnings: [] }),
+      readInvocationManifest: async () => ({ status: "OK", correlation_id: context.correlation_id, data: manifest, errors: [], warnings: [] }),
+    };
+    const valid = await readExecutionInvocationManifest(reader, context, execution);
+    expect(valid.status).toBe("OK");
+    expect(valid.data?.input_refs).toEqual(acceptedRequest.input_refs);
+
+    const tamperedReader: ExecutionReadPort = {
+      ...reader,
+      readInvocationManifest: async () => ({
+        status: "OK", correlation_id: context.correlation_id,
+        data: { ...manifest, input_digests: ["sha256-tampered-input"] },
+        errors: [], warnings: [],
+      }),
+    };
+    const tampered = await readExecutionInvocationManifest(tamperedReader, context, execution);
+    expect(tampered.status).toBe("REJECTED");
+    expect(tampered.errors[0]?.code).toBe("INTEGRITY_OR_UNTRUSTED_INPUT");
+  });
+
   it("accepts only fresh, exact, source-owned admission references", () => {
     const result = validateExecutionAdmission(
       context, request(), admission(), "2026-11-15T08:00:06Z",
@@ -400,7 +504,7 @@ describe("INV-05 execution application admission boundary", () => {
       memory_limit: { value: 1024, unit: "MiB" },
     });
     let admissionSawAuthoritativeProfile = false;
-    let persistedExecution: unknown;
+    const persistedRecords: Array<{ key: string; value: unknown }> = [];
     let outboxEventId: string | undefined;
     let idempotencyRecorded = false;
 
@@ -424,7 +528,7 @@ describe("INV-05 execution application admission boundary", () => {
           throw new Error("Unexpected repository read");
         },
         create: async (_context: RequestContext, _ref: ObjectRef, value: T): Promise<OperationResult<T>> => {
-          persistedExecution = value;
+          persistedRecords.push({ key: _ref.object_kind, value });
           return {
             status: "OK",
             correlation_id: context.correlation_id,
@@ -511,7 +615,11 @@ describe("INV-05 execution application admission boundary", () => {
     expect(result.data?.state).toBe("CREATED");
     expect(result.data?.runtime_profile_version).toBe("1");
     expect(admissionSawAuthoritativeProfile).toBe(true);
-    expect(persistedExecution).toBeTruthy();
+    expect(persistedRecords).toHaveLength(2);
+    const manifest = persistedRecords[1]?.value as ExecutionInvocationManifest;
+    expect(manifest.request_digest).toBe(result.data?.request_digest);
+    expect(manifest.input_refs).toEqual(request().input_refs);
+    expect(manifest.input_digests).toEqual(request().input_digests);
     expect(outboxEventId).toBe("event-accepted-success");
     expect(idempotencyRecorded).toBe(true);
   });
