@@ -304,6 +304,36 @@ describe("INV-06 authorization application boundary", () => {
     expect(harness.commitCalls[0].command.approval_claim).toBeUndefined();
   });
 
+  it("rejects an expired resolved principal before reading authority or policy", async () => {
+    const harness = makeDependencies();
+    vi.mocked(harness.sources.resolvePrincipal).mockResolvedValue(
+      createOperationResult({
+        status: "OK",
+        correlation_id: context.correlation_id,
+        data: { ...principal, valid_until: "2026-11-15T10:00:20Z" },
+      }),
+    );
+    const result = await recheckAuthorizationAtActionBoundary(
+      harness.deps, context, authorizationRequest(),
+    );
+    expect(result.status).toBe("REJECTED");
+    expect(result.errors[0]?.code).toBe("UNAUTHENTICATED");
+    expect(harness.sources.readAuthorityFacts).not.toHaveBeenCalled();
+    expect(harness.sources.evaluatePolicy).not.toHaveBeenCalled();
+  });
+
+  it("requires the requested service identity to match the independently resolved service identity", async () => {
+    const harness = makeDependencies();
+    const request = authorizationRequest({
+      service_identity_ref: { principal_id: "service-1", principal_kind: "SERVICE" },
+    });
+    const result = await recheckAuthorizationAtActionBoundary(harness.deps, context, request);
+    expect(result.status).toBe("REJECTED");
+    expect(result.errors[0]?.code).toBe("FORBIDDEN");
+    expect(harness.sources.readAuthorityFacts).not.toHaveBeenCalled();
+    expect(harness.repository.commitDecision).not.toHaveBeenCalled();
+  });
+
   it("fails closed when current approver authority cannot be verified", async () => {
     const harness = makeDependencies();
     vi.mocked(harness.sources.verifyApprover).mockResolvedValue(
