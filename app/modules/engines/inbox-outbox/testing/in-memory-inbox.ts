@@ -12,6 +12,8 @@ import { fingerprintInboxEvent, validateInboxEvent } from "../domain";
 export interface InMemoryEventInboxOptions {
   /** Injectable clock for deterministic tests. Defaults to the local runtime clock. */
   now?: () => string;
+  /** Shared test state when Inbox must participate in an enclosing Unit of Work. */
+  state?: InMemoryInboxState;
   /**
    * Same-version distinct fact types are permitted only when the owning
    * aggregate/consumer contract explicitly opts in.
@@ -22,9 +24,43 @@ export interface InMemoryEventInboxOptions {
   ) => boolean;
 }
 
-interface AggregateCursor {
+export interface InMemoryAggregateCursor {
   version: number;
   event_types: Set<string>;
+}
+
+export interface InMemoryInboxEventRecord {
+  fingerprint: string;
+  acceptance: InboxAcceptance;
+}
+
+/** Injectable state lets the test Unit of Work roll Inbox writes back with other writes. */
+export interface InMemoryInboxState {
+  events: Map<string, InMemoryInboxEventRecord>;
+  aggregateCursors: Map<string, InMemoryAggregateCursor>;
+}
+
+export function createInMemoryInboxState(): InMemoryInboxState {
+  return {
+    events: new Map(),
+    aggregateCursors: new Map(),
+  };
+}
+
+export function cloneInMemoryInboxState(state: InMemoryInboxState): InMemoryInboxState {
+  return {
+    events: new Map([...state.events].map(([key, record]) => [
+      key,
+      {
+        fingerprint: record.fingerprint,
+        acceptance: structuredClone(record.acceptance),
+      },
+    ])),
+    aggregateCursors: new Map([...state.aggregateCursors].map(([key, cursor]) => [
+      key,
+      { version: cursor.version, event_types: new Set(cursor.event_types) },
+    ])),
+  };
 }
 
 function copyScopeRef(scope: ScopeRef): ScopeRef {
@@ -54,11 +90,8 @@ export function createInMemoryEventInbox(
   options: InMemoryEventInboxOptions = {},
 ): EventInboxPort {
   const now = options.now ?? (() => new Date().toISOString());
-  const events = new Map<string, {
-    fingerprint: string;
-    acceptance: InboxAcceptance;
-  }>();
-  const aggregateCursors = new Map<string, AggregateCursor>();
+  const state = options.state ?? createInMemoryInboxState();
+  const { events, aggregateCursors } = state;
 
   return {
     accept: async (
