@@ -1430,7 +1430,8 @@ export function validateDelegationRequest(
     samePrincipal(request.grantor_ref, request.delegate_ref)) {
     issues.push("delegation identity or actor references are invalid");
   }
-  if (!request.purpose?.trim() || !request.allowed_actions.length ||
+  if (typeof request.allow_subdelegation !== "boolean" ||
+    !request.purpose?.trim() || !request.allowed_actions.length ||
     request.allowed_actions.some(action => typeof action !== "string" || !action.trim()) ||
     new Set(request.allowed_actions).size !== request.allowed_actions.length ||
     request.limits.some(limit => typeof limit !== "string" || !limit.trim()) ||
@@ -1450,6 +1451,9 @@ export function validateDelegationRequest(
       !isScopeRef(authority.grantor_scope_ref) ||
       !isTimestamp(now ?? request.not_before)) {
     issues.push("grantor is not currently authorized to delegate");
+  }
+  if (request.allow_subdelegation && !authority.grantor_may_subdelegate) {
+    issues.push("subdelegation is not explicitly authorized by the current grantor");
   }
   if (request.allowed_actions.some(action => !authority.grantor_allowed_actions.includes(action))) {
     issues.push("delegation cannot grant actions the grantor does not hold");
@@ -1492,6 +1496,12 @@ export function validateDelegationRequest(
       request.allowed_actions.some(action => !parent.allowed_actions.includes(action)) ||
       request.resource_constraints.some(resource => !parent.resource_constraints.some(allowed => isExactObjectRef(allowed, resource))) ||
       request.limits.some(limit => !parent.limits.includes(limit)) ||
+      parent.limits.some(limit => !request.limits.includes(limit)) ||
+      parent.conditions.some(parentCondition => !request.conditions.some(condition =>
+        condition.condition_id === parentCondition.condition_id &&
+        condition.condition_kind === parentCondition.condition_kind &&
+        condition.must_hold_at_enforcement === parentCondition.must_hold_at_enforcement &&
+        JSON.stringify(condition.parameters_ref ?? null) === JSON.stringify(parentCondition.parameters_ref ?? null))) ||
       request.conditions.some(condition => !parent.conditions.some(parentCondition =>
         parentCondition.condition_id === condition.condition_id &&
         parentCondition.condition_kind === condition.condition_kind &&
