@@ -364,6 +364,7 @@ describe("INV-06 authorization domain", () => {
   });
   it("fails closed for unauthenticated, revoked, unknown and stale authority", () => {
     expect(evaluate({ principal: { authentication_state: "UNAUTHENTICATED" } }).data?.result).toBe("DENY");
+    expect(evaluate({ principal: { authentication_state: "REVOKED" } }).data?.result).toBe("DENY");
     expect(evaluate({ facts: { membership_state: "REVOKED" } }).data?.result).toBe("DENY");
     expect(evaluate({ facts: { permission_state: "NOT_GRANTED" } }).data?.result).toBe("DENY");
     expect(evaluate({ facts: { permission_state: "UNKNOWN" } }).data?.result).toBe("INDETERMINATE");
@@ -603,6 +604,13 @@ describe("INV-06 authorization domain", () => {
       policy_release_ref: ref("POLICY_RELEASE", "old-policy"),
       request_ref: ref("AUTHORIZATION_REQUEST", "auth-req-1"),
     }, currentRequest, "2026-11-15T10:00:00Z", policyRef)).toContain("approval policy release does not match");
+    expect(validateApprovalUse({
+      ...approval, approval_ref: currentRequest.approval_ref!, action: currentRequest.action,
+      state: "REVOKED",
+      request_ref: ref("AUTHORIZATION_REQUEST", "auth-req-1"),
+      policy_release_ref: policyRef,
+      request_binding_fingerprint: buildApprovalBindingFingerprint(currentRequest, "ONE_TIME"),
+    }, currentRequest, "2026-11-15T10:00:00Z", policyRef)).toContain("approval is not approved");
     expect(validateApprovalUse({
       ...approval, approval_ref: currentRequest.approval_ref!, action: currentRequest.action,
       request_binding_fingerprint: buildApprovalBindingFingerprint(currentRequest, "ONE_TIME"),
@@ -897,6 +905,7 @@ describe("INV-06 authorization domain", () => {
   it("rejects stale or mismatched decisions at the enforcement boundary", () => {
     const decision = evaluate().data!;
     expect(isDecisionCurrentForRequest(decision, request(), "2026-11-15T10:01:00Z", "sha256:fingerprint")).toBe(true);
+    expect(isDecisionCurrentForRequest(decision, request(), "2026-11-15T10:01:00Z", "sha256:changed-authority")).toBe(false);
     expect(isDecisionCurrentForRequest(decision, request(), "2026-11-15T10:05:00Z", "sha256:fingerprint")).toBe(false);
     expect(isDecisionCurrentForRequest(decision, request({ action: "artifact.delete" }), "2026-11-15T10:01:00Z", "sha256:fingerprint")).toBe(false);
   });
