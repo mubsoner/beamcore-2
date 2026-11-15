@@ -20,6 +20,7 @@ import {
   type ExecutionRecord,
   type ExecutionRequest,
   type RuntimeProfile,
+  type TrustedRuntimeAssurance,
 } from "./domain";
 
 const scope = { scope_id: "scope-1", scope_kind: "WORK" as const };
@@ -170,7 +171,7 @@ describe("INV-05 execution runtime domain", () => {
     });
     expect(validateRuntimeProfile(context, untrustedProfile).status).toBe("OK");
 
-    const assurance = {
+    const assurance: TrustedRuntimeAssurance = {
       attestation_ref: ref("RUNTIME_ASSURANCE_ATTESTATION", "attestation-1"),
       runtime_identity_ref: ref("RUNTIME_IDENTITY", "runtime-identity-1"),
       runtime_profile_ref: untrustedProfile.profile_ref,
@@ -185,7 +186,7 @@ describe("INV-05 execution runtime domain", () => {
         "PROCESS_LIMIT", "OUTPUT_SIZE_LIMIT", "CONCURRENCY_LIMIT",
         "NETWORK_EGRESS", "FILESYSTEM_ISOLATION", "SECRET_ISOLATION",
         "PROCESS_TERMINATION", "CLEANUP",
-      ] as const,
+      ],
       verified_at: "2026-11-15T08:00:04Z",
       valid_until: "2026-11-15T08:05:00Z",
     };
