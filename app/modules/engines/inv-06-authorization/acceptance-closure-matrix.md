@@ -11,7 +11,7 @@
 - **INTEGRATION BLOCKER** — completion needs an actual provider, persistent repository, or another engine's enforcement/source adapter; a port or fake test adapter is not proof.
 - **GAP** — required logical behavior or test is still missing/incomplete.
 
-**Current engine test inventory:** 31 domain tests + 29 application tests = 60 focused INV-06 tests. Latest branch head inspected: `26cdbecdfef9e7bacc536e1b6789ad60df29b2ce`; CI for that exact head was pending/in progress at matrix update time. This inventory is a test count, not a pass count. Passing unit tests are not substitutes for the provider/integration blockers below.
+**Current engine test inventory:** 33 domain tests + 35 application tests = 68 focused INV-06 tests. Latest verified branch head: `b642a0095bf423a0e9d3dcbad7dcd1b4e2cf9bf8`. GitHub Actions run `43776867171` passed Build, Typecheck and all tests: 26 test files, 310 tests passed, 0 failed. This includes the current INV-06 focused tests and the rest of the repository test suite. Passing tests are not substitutes for the provider/integration blockers below.
 
 ## Acceptance status
 
@@ -20,7 +20,7 @@
 | T01 | Valid principal, in-scope action and allow policy returns ALLOW | TEST EXISTS — domain allow case | Re-run against current head and real policy/identity adapters |
 | T02 | Missing authentication blocks protected action | TEST EXISTS — unauthenticated state is denied | Verify at INV-05/07 action boundaries |
 | T03 | Expired session requires reauthentication or denial | TEST EXISTS — application test rejects an already-expired authenticated session result | Bind session freshness and revocation to the selected IdP adapter |
-| T04 | Revoked session blocks subsequent actions | LOGIC ONLY — REVOKED authentication state is denied; session revocation workflow emits session.revoked | Add session-provider revocation integration test |
+| T04 | Revoked session blocks subsequent actions | TEST EXISTS — REVOKED authentication state is denied; current application tests also reject expired session results | Verify live session revocation against the selected IdP adapter |
 | T05 | Authentication without action permission is denied | TEST EXISTS — NOT_GRANTED returns DENY even when the principal has an OWNER role binding | Verify current permission facts against INV-18 |
 | T06 | Ownership alone cannot bypass policy | TEST EXISTS — OWNER role binding does not override NOT_GRANTED | Verify ownership and authority remain separate in live INV-18 facts |
 | T07 | Admin without action entitlement is denied | INTEGRATION BLOCKER | Bind role/entitlement facts from INV-18 and test |
@@ -30,10 +30,10 @@
 | T11 | Caller cannot spoof another principal | TEST EXISTS — actor/context mismatch validation | Re-run current CI and verify IdP adapter |
 | T12 | Caller-supplied scope inconsistent with target is rejected | TEST EXISTS — scope mismatch validation | Add cross-tenant repository test |
 | T13 | Cross-tenant guessed object read is denied | INTEGRATION BLOCKER — readDecision port masks not-visible records | Implement real object-level repository filtering and test |
-| T14 | Not-visible target does not leak existence | LOGIC ONLY — generic NOT_FOUND_OR_NOT_VISIBLE response | Prove against persistent multi-tenant repository |
+| T14 | Not-visible target does not leak existence | TEST EXISTS — application test asserts identical safe response for out-of-scope and missing decision records | Prove object-level filtering against the persistent multi-tenant repository |
 | T15 | Membership removal takes effect within declared propagation objective | INTEGRATION BLOCKER | INV-18 event/read adapter and an approved, measurable propagation SLO are open |
-| T16 | Stale cached decision rejected after membership/entitlement version changes | LOGIC ONLY — decision fingerprint includes current source versions | Add cache and INV-18 version-change integration test |
-| T17 | Policy version change forces next action re-evaluation | LOGIC ONLY — action boundary re-resolves policy on each call | Add policy-version mutation/action-boundary test |
+| T16 | Stale cached decision rejected after membership/entitlement version changes | TEST EXISTS — material source-version changes alter the authority fingerprint; mismatched current fingerprint rejects the decision | Add cache and live INV-18 version-change integration test |
+| T17 | Policy version change forces next action re-evaluation | TEST EXISTS — action-boundary test re-evaluates and records a newer released policy version | Verify with the selected live policy store/evaluator and invalidation transport |
 | T18 | Policy timeout returns unavailable/indeterminate and prevents side effect | TEST EXISTS — policy evaluator outage rejects the request and does not commit a decision | Prove no side effect at INV-05/07 protected boundaries |
 | T19 | Policy UNKNOWN/conflict cannot become ALLOW | TEST EXISTS — UNKNOWN maps to INDETERMINATE | Add evaluator conflict fixture when policy evaluator is selected |
 | T20 | Draft/suspended policy cannot authorize | TEST EXISTS — suspended policy case; draft is guarded by the same release-state gate | Add explicit draft test |
@@ -57,8 +57,8 @@
 | T38 | Subdelegation, when explicitly allowed, preserves lineage, scope limits and parent expiry | TEST EXISTS — multi-level ancestry is checked root-to-parent; widening, broken chain and cycles are rejected | Verify full ancestry retrieval and event ordering in durable source adapter |
 | T39 | Circular/self-delegation and attempted privilege escalation are rejected | TEST EXISTS — self-delegation, self-reference/cycle and ancestor widening checks are covered | Add property-based cyclic graph tests and live ancestry integration |
 | T40 | Expired/suspended/revoked delegation cannot be used | TEST EXISTS — expired activation is denied; reactivation rechecks grantor authority and cited decision | Verify current INV-18/delegation source and event-consumer freshness |
-| T41 | Delegation revocation invalidates later actions and produces an auditable event | LOGIC ONLY — revocation and suspension use CAS plus atomic Outbox repository contracts | Prove revoke-to-action denial through INV-05/07 with durable event delivery |
-| T42 | Role/scope/expiry/risk/context changes trigger action-time re-evaluation | LOGIC ONLY — boundary re-resolves principal/facts/policy and rechecks conditions | Add source-version change matrix test |
+| T41 | Delegation revocation invalidates later actions and produces an auditable event | TEST EXISTS — revocation requires current revoker authority and calls the version-checked atomic event repository contract; domain rejects reactivation after revoke | Prove durable revoke-to-action denial through INV-05/07 and event delivery |
+| T42 | Role/scope/expiry/risk/context changes trigger action-time re-evaluation | TEST EXISTS — application test changes current permission facts before the action boundary and verifies DENY; stale authority fingerprints are rejected | Expand the matrix against live membership, scope, risk and context-version adapters |
 | T43 | A long-running Work is rechecked before its next consequential action after a policy/membership/delegation change | INTEGRATION BLOCKER | Integrate recheck hook into INV-04 and enforcement points in INV-05/07 |
 | T44 | A caller cannot substitute its own service identity for an acting user without an explicit permitted delegation | TEST EXISTS — service identity must resolve independently and be bound to a verified delegation | Verify with real application/service identity provider and delegation source |
 | T45 | External authorization failure/uncertainty blocks action | TEST EXISTS — DENIED blocks and UNKNOWN returns INDETERMINATE | Add external authority source integration test |
@@ -71,7 +71,7 @@
 | T52 | Decision fingerprint changes on material authority source version | TEST EXISTS — source-version changes alter the authority fingerprint and idempotency binding | Add full INV-18/IdP/policy source contract fixture |
 | T53 | Decision expiry prevents reuse without event invalidation | TEST EXISTS — decision currentness checks validity deadline; expired request deadline is denied | Verify on actual enforcement adapter |
 | T54 | Safe denial does not reveal secret/private policy/hidden data | TEST EXISTS — private reason whitelist and no caller-supplied refs | Add audience-specific integration/redaction tests |
-| T55 | Audit contains source/version/correlation lineage, excludes secrets | LOGIC ONLY — expanded audit fields and atomic commit port exist | Add audit payload assertions and real protected audit-store test |
+| T55 | Audit contains source/version/correlation lineage, excludes secrets | TEST EXISTS — application test asserts correlation, decision/source-version lineage and absence of credential-like fields in the audit payload | Verify redaction and durable audit retention/access controls in the selected store |
 | T56 | Revocation does not claim to undo completed external effect; downstream reconcile signalled | INTEGRATION BLOCKER | INV-04/05 reconciliation path and external-effect uncertainty proof |
 | T57 | Decision history/list/search access filtered by object and tenant scope | LOGIC ONLY — filtered single-decision read port exists | List/history API and persistent repository filtering are not implemented |
 | T58 | Malformed/unsupported request rejected before evaluation | TEST EXISTS — request validation rejects actor/scope/reference errors | Add malformed payload fuzz/property tests |
