@@ -281,7 +281,17 @@ async function authorizeActionCore(
       return fail(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Approval source returned a different or out-of-scope record");
     }
 
-    if (approval.state === "APPROVED") {
+    const consumedBySameOperation = approval.state === "CONSUMED" &&
+      approval.approval_use_mode === "ONE_TIME" &&
+      approval.consumed_idempotency_key === idempotencyKey &&
+      !!approval.consumed_by_request_ref &&
+      sameObjectRef(approval.consumed_by_request_ref, {
+        object_kind: "AUTHORIZATION_REQUEST",
+        object_id: request.authorization_request_id,
+        object_version: "1",
+        scope_ref: request.scope_ref,
+      });
+    if (approval.state === "APPROVED" || consumedBySameOperation) {
       if (!approval.approver_ref) {
         approvalAuthorityVerified = false;
       } else {
@@ -327,6 +337,7 @@ async function authorizeActionCore(
     facts: factsResult.data,
     policy: policyResult.data,
     approval,
+    idempotency_key: idempotencyKey,
   });
   const fingerprint = await digestSha256(fingerprintMaterial);
   const evaluatedAt = deps.clock.now();
@@ -338,6 +349,7 @@ async function authorizeActionCore(
     policy: policyResult.data,
     approval,
     approval_authority_verified: approvalAuthorityVerified,
+    idempotency_key: idempotencyKey,
     decision_ref: decisionRef,
     decision_id: decisionRef.object_id,
     request_ref: requestRef,
@@ -419,7 +431,10 @@ async function authorizeActionCore(
 
   const saved = await deps.repository.commitDecision(context, decision, audit, {
     idempotency_key: idempotencyKey,
-    request_fingerprint: buildCanonicalRequestFingerprint(request),
+    request_fingerprint: await digestSha256(JSON.stringify({
+      request_fingerprint: buildCanonicalRequestFingerprint(request),
+      authority_fingerprint: fingerprint,
+    })),
     ...(approvalClaim ? { approval_claim: approvalClaim } : {}),
   });
   if (saved.status !== "OK" || !saved.data) return propagate(context, saved);
