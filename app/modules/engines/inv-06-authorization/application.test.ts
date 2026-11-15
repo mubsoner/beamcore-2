@@ -610,6 +610,32 @@ describe("INV-06 authorization application boundary", () => {
     );
   });
 
+  it("does not create an approval when policy changes after the preflight decision", async () => {
+    const harness = makeDependencies();
+    let evaluationCount = 0;
+    vi.mocked(harness.sources.evaluatePolicy).mockImplementation(async () => {
+      evaluationCount += 1;
+      const selectedPolicy = evaluationCount === 1 ? policy : {
+        ...policy,
+        policy_release: {
+          ...policy.policy_release,
+          policy_release_ref: ref("POLICY_RELEASE", "policy-1", "2"),
+          version: "2",
+          ruleset_digest: "sha256:policy-v2",
+        },
+      };
+      return createOperationResult({
+        status: "OK",
+        correlation_id: context.correlation_id,
+        data: selectedPolicy,
+      });
+    });
+    const result = await requestApproval(harness.deps, context, authorizationRequest());
+    expect(result.status).toBe("REJECTED");
+    expect(result.errors[0]?.code).toBe("VERSION_CONFLICT");
+    expect(harness.repository.createApprovalWithEvent).not.toHaveBeenCalled();
+  });
+
   it("does not create an approval when current policy does not require one", async () => {
     const harness = makeDependencies();
     vi.mocked(harness.sources.evaluatePolicy).mockResolvedValue(
