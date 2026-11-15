@@ -206,12 +206,15 @@ describe("INV-06 authorization domain", () => {
       authorized_by_decision_ref: ref("AUTHORIZATION_DECISION", "grant-decision"),
     };
     const grantor = {
-      grantor_authenticated: true, grantor_may_delegate: true,
+      grantor_authenticated: true, grantor_may_delegate: true, grantor_may_subdelegate: false,
       grantor_allowed_actions: ["artifact.read"],
       grantor_scope_ref: scope,
       grantor_resource_constraints: [ref("ARTIFACT", "artifact-1")],
     };
     expect(validateDelegationRequest(delegationRequest, grantor).length).toBeGreaterThan(0);
+    expect(validateDelegationRequest({
+      ...delegationRequest, allow_subdelegation: true,
+    }, { ...grantor, grantor_allowed_actions: ["artifact.publish"] })).toContain("subdelegation is not explicitly authorized");
   });
   it("keeps delegation terminal after revocation", () => {
     const delegation: DelegationRecord = {
