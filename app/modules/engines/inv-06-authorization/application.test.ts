@@ -388,6 +388,8 @@ describe("INV-06 authorization application boundary", () => {
         grantor_allowed_actions: ["artifact.read"],
         grantor_scope_ref: scope,
         grantor_resource_constraints: [ref("ARTIFACT", "artifact-1")],
+        grantor_limits: [],
+        grantor_conditions: [],
         valid_until: "2026-11-15T10:30:00Z",
       } }),
     );
@@ -432,6 +434,8 @@ describe("INV-06 authorization application boundary", () => {
         grantor_allowed_actions: [],
         grantor_scope_ref: scope,
         grantor_resource_constraints: [],
+        grantor_limits: [],
+        grantor_conditions: [],
         valid_until: "2026-11-15T10:30:00Z",
       } }),
     );
