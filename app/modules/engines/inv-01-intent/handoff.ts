@@ -215,23 +215,10 @@ export async function requestRouteHandoff(
       if (prior.data.request_fingerprint !== command.request_fingerprint) {
         return rejected(context, "IDEMPOTENCY_CONFLICT", "Handoff idempotency key was reused with a different payload");
       }
-      if (prior.data.result.data?.receipt_state !== "UNKNOWN") {
-        return createOperationResult({
-          status: "OK",
-          correlation_id: context.correlation_id,
-          data: {
-            route: {} as RouteProposal,
-            decision: {} as DecisionRecord,
-            decision_version: "1",
-            should_emit_request: false,
-            prior_receipt: {
-              route_proposal_ref: command.route_proposal_ref,
-              decision_ref: command.decision_ref,
-              receipt: prior.data.result.data!,
-              recorded_at: command.requested_at,
-            },
-          },
-        });
+      const priorReceipt = prior.data.result.data;
+      if (!priorReceipt ||
+          !sameRef(priorReceipt.route_proposal_ref, command.route_proposal_ref)) {
+        return rejected(context, "IDEMPOTENCY_CONFLICT", "Handoff idempotency key is already bound to another route proposal");
       }
     }
 
@@ -277,6 +264,8 @@ export async function requestRouteHandoff(
       receiptRead.errors[0]?.code !== "NOT_FOUND_OR_NOT_VISIBLE"
     ) {
       return propagated<StagedHandoff>(context, receiptRead);
+    } else if (prior.data && prior.data.result.data?.receipt_state !== "UNKNOWN") {
+      return rejected(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "A completed handoff idempotency record has no matching durable receipt");
     }
 
     let decision = decisionResult.data;
@@ -333,7 +322,18 @@ export async function requestRouteHandoff(
 
   const route = staged.data.route;
   const decision = staged.data.decision;
-  const handoffKey = context.idempotency_key!;
+  // Scope the recipient idempotency key to this exact logical handoff. A caller
+  // may reuse a request key for another command, but that must never collide at
+  // the recipient with a different route or decision.
+  const handoffKey = [
+    context.scope_ref.scope_kind,
+    context.scope_ref.scope_id,
+    route.route_ref.object_id,
+    route.route_ref.object_version ?? "unversioned",
+    decision.decision_ref.object_id,
+    decision.decision_ref.object_version ?? "unversioned",
+    context.idempotency_key!,
+  ].join(":");
   let receipt: HandoffReceipt;
   const lookup = await handoffPort.lookup(context, route, handoffKey);
   if (lookup.status === "OK" && lookup.data?.state === "RECEIPT_AVAILABLE" && lookup.data.receipt) {

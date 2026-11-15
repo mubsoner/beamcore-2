@@ -183,6 +183,46 @@ describe("INV-01 durable route handoff", () => {
     expect(port.submit).not.toHaveBeenCalled();
   });
 
+  it("rejects reuse of a completed idempotency key for a different RouteProposal", async () => {
+    const harness = makeHarness();
+    const port: RouteHandoffPort = {
+      lookup: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { state: "NOT_SUBMITTED" as const } })),
+      submit: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: {
+        route_proposal_ref: route.route_ref, recipient_engine_id: "INV-13",
+        receipt_state: "ACCEPTED" as const, received_at: "2026-11-15T02:00:02Z",
+      } })),
+    };
+    const first = await requestRouteHandoff(harness.unitOfWork, port, command);
+    expect(first.status).toBe("OK");
+    const changedRoute = ref("ROUTE_PROPOSAL", "another-route");
+    const replay = await requestRouteHandoff(harness.unitOfWork, port, {
+      ...command,
+      route_proposal_ref: changedRoute,
+    });
+    expect(replay.status).toBe("REJECTED");
+    expect(replay.errors[0]?.code).toBe("IDEMPOTENCY_CONFLICT");
+    expect(port.submit).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses a recipient idempotency key bound to scope, route and decision", async () => {
+    const harness = makeHarness();
+    const port: RouteHandoffPort = {
+      lookup: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { state: "NOT_SUBMITTED" as const } })),
+      submit: vi.fn(async (_ctx, _route, key) => {
+        expect(key).toContain("scope-1");
+        expect(key).toContain("route-1");
+        expect(key).toContain("decision-1");
+        return createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: {
+          route_proposal_ref: route.route_ref, recipient_engine_id: "INV-13",
+          receipt_state: "ACCEPTED" as const, received_at: "2026-11-15T02:00:02Z",
+        } });
+      }),
+    };
+    const result = await requestRouteHandoff(harness.unitOfWork, port, command);
+    expect(result.status).toBe("OK");
+    expect(port.submit).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects a route reference from another scope before persistence or handoff", async () => {
     const harness = makeHarness();
     const port: RouteHandoffPort = {
