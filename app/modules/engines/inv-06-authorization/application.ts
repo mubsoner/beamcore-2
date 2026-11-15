@@ -633,6 +633,283 @@ export async function revokeDelegation(
   });
 }
 
+/** Authenticate through the configured identity adapter; caller-supplied claims are never accepted as proof. */
+export async function authenticatePrincipal(
+  deps: AuthorizationDependencies,
+  context: RequestContext,
+  request: AuthenticationRequest,
+): Promise<OperationResult<AuthenticationResult>> {
+  if (!request || !isRequestContextLike(context) ||
+      !request.authentication_request_id?.trim() ||
+      !request.correlation_id || request.correlation_id !== context.correlation_id ||
+      !sameScopeRef(request.requested_scope_ref, context.scope_ref) ||
+      !request.requested_audience?.trim() ||
+      request.requested_at > deps.clock.now()) {
+    return fail(context, "VALIDATION_ERROR", "Authentication request is invalid or outside the authenticated scope");
+  }
+  const result = await deps.sources.authenticatePrincipal(context, request);
+  if (result.status !== "OK" || !result.data) return propagate(context, result);
+  const issues = validateAuthenticationResult(request, result.data);
+  if (issues.length) return fail(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Authentication adapter returned an invalid result");
+  if (result.data.state === "AUTHENTICATED" &&
+      (!samePrincipal(result.data.principal_ref!, context.actor_ref) ||
+       !sameScopeRef(result.data.session_ref!.scope_ref, context.scope_ref))) {
+    return fail(context, "UNAUTHENTICATED", "Authentication result does not match the requested principal or scope");
+  }
+  return result;
+}
+
+/** Revoke an authority subject through the source-system revoker and persist an invalidation event. */
+export async function revokeAuthority(
+  deps: AuthorizationDependencies,
+  context: RequestContext,
+  request: AuthorityRevocationRequest,
+): Promise<OperationResult<RevocationRecord>> {
+  const idempotencyKey = operationIdempotencyKey(context, request.idempotency_key);
+  if (!idempotencyKey || !isObjectRef(request.subject_ref) ||
+      !request.reason_code?.trim() ||
+      !sameScopeRef(request.scope_ref, context.scope_ref) ||
+      !sameScopeRef(request.subject_ref.scope_ref, request.scope_ref) ||
+      (request.expected_version !== undefined && request.subject_ref.object_version !== request.expected_version)) {
+    return fail(context, "VALIDATION_ERROR", "Authority revocation request is invalid or cross-scope");
+  }
+  const now = deps.clock.now();
+  const effectiveAt = request.effective_at ?? now;
+  if (effectiveAt > now) return fail(context, "VALIDATION_ERROR", "Future-dated revocation requires a separately scheduled lifecycle operation");
+  const authorization = await deps.sources.verifyAuthorityRevoker(context, request);
+  if (authorization.status !== "OK" || !authorization.data) {
+    return fail(context, "DEPENDENCY_UNAVAILABLE", "Current authority to revoke this subject could not be verified");
+  }
+  if (!authorization.data.authorized) return fail(context, "FORBIDDEN", "Caller is not authorized to revoke this authority");
+  if (request.expected_version && authorization.data.source_version &&
+      request.expected_version !== authorization.data.source_version) {
+    return fail(context, "VERSION_CONFLICT", "Authority source changed before revocation");
+  }
+
+  const record: RevocationRecord = {
+    revocation_ref: {
+      object_kind: "AUTHORITY_REVOCATION",
+      object_id: deps.ids.next("AUTHORITY_REVOCATION", context.scope_ref),
+      object_version: "1",
+      scope_ref: context.scope_ref,
+    },
+    subject_ref: request.subject_ref,
+    reason_code: request.reason_code,
+    requested_by_ref: context.actor_ref,
+    effective_at: effectiveAt,
+    ...(authorization.data.source_version ? { source_version: authorization.data.source_version } : {}),
+    affected_scope_refs: [request.scope_ref],
+    correlation_id: context.correlation_id,
+  };
+  return deps.repository.createRevocationWithEvent(context, record, {
+    key: "authority.revoke:" + idempotencyKey,
+    request_fingerprint: await digestSha256(JSON.stringify({
+      subject_ref: request.subject_ref,
+      reason_code: request.reason_code,
+      scope_ref: request.scope_ref,
+      expected_version: request.expected_version ?? null,
+      effective_at: effectiveAt,
+    })),
+  });
+}
+
+async function transitionDelegationLifecycle(
+  deps: AuthorizationDependencies,
+  context: RequestContext,
+  delegationRef: ObjectRef,
+  expectedVersion: Version,
+  targetState: DelegationRecord["state"],
+): Promise<OperationResult<DelegationRecord>> {
+  if (!context.idempotency_key || !isObjectRef(delegationRef) ||
+      delegationRef.object_kind !== "DELEGATION" ||
+      !sameScopeRef(delegationRef.scope_ref, context.scope_ref)) {
+    return fail(context, "VALIDATION_ERROR", "Delegation lifecycle request is invalid or cross-scope");
+  }
+  const current = await deps.sources.readDelegation(context, delegationRef);
+  if (current.status !== "OK" || !current.data) {
+    return fail(context, "NOT_FOUND_OR_NOT_VISIBLE", "Delegation was not found or is not visible");
+  }
+  if (!sameObjectRef(current.data.delegation_ref, delegationRef) ||
+      !sameScopeRef(current.data.scope_ref, context.scope_ref)) {
+    return fail(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Delegation source returned a different or out-of-scope record");
+  }
+  const version = current.object_version ?? current.data.delegation_ref.object_version;
+  if (!version || version !== expectedVersion) {
+    return fail(context, "VERSION_CONFLICT", "Delegation version changed before lifecycle transition");
+  }
+  const operator = await deps.sources.verifyDelegationLifecycleOperator(context, current.data, targetState);
+  if (operator.status !== "OK" || !operator.data) {
+    return fail(context, "DEPENDENCY_UNAVAILABLE", "Current authority for delegation lifecycle transition could not be verified");
+  }
+  if (!operator.data.authorized) return fail(context, "FORBIDDEN", "Caller is not authorized for this delegation lifecycle transition");
+
+  const transitioned = transitionDelegation(current.data, targetState, deps.clock.now());
+  if (transitioned.status !== "OK" || !transitioned.data) return propagate(context, transitioned);
+  const eventType = targetState === "ACTIVE" ? "delegation.activated" :
+    targetState === "SUSPENDED" ? "delegation.suspended" :
+      targetState === "EXPIRED" ? "delegation.expired" : "delegation.revoked";
+  return deps.repository.updateDelegationWithEvent(context, transitioned.data, expectedVersion, {
+    key: "delegation." + targetState.toLowerCase() + ":" + context.idempotency_key,
+    request_fingerprint: await digestSha256(JSON.stringify({
+      delegation_ref: delegationRef,
+      expected_version: expectedVersion,
+      target_state: targetState,
+    })),
+  });
+}
+
+export function suspendDelegation(
+  deps: AuthorizationDependencies,
+  context: RequestContext,
+  delegationRef: ObjectRef,
+  expectedVersion: Version,
+): Promise<OperationResult<DelegationRecord>> {
+  return transitionDelegationLifecycle(deps, context, delegationRef, expectedVersion, "SUSPENDED");
+}
+
+export function activateDelegation(
+  deps: AuthorizationDependencies,
+  context: RequestContext,
+  delegationRef: ObjectRef,
+  expectedVersion: Version,
+): Promise<OperationResult<DelegationRecord>> {
+  return transitionDelegationLifecycle(deps, context, delegationRef, expectedVersion, "ACTIVE");
+}
+
+export function expireDelegation(
+  deps: AuthorizationDependencies,
+  context: RequestContext,
+  delegationRef: ObjectRef,
+  expectedVersion: Version,
+): Promise<OperationResult<DelegationRecord>> {
+  return transitionDelegationLifecycle(deps, context, delegationRef, expectedVersion, "EXPIRED");
+}
+
+/** Policy release mutations are version-checked, authority-gated and committed with their Outbox event. */
+async function transitionPolicyReleaseLifecycle(
+  deps: AuthorizationDependencies,
+  context: RequestContext,
+  policyRef: ObjectRef,
+  targetState: PolicyReleaseState,
+  operation: PolicyReleaseOperationContext,
+): Promise<OperationResult<PolicyRelease>> {
+  const idempotencyKey = operationIdempotencyKey(context, operation.idempotency_key);
+  if (!idempotencyKey ||
+      !samePrincipal(operation.requested_by_ref, context.actor_ref) ||
+      !sameScopeRef(operation.change_ref.scope_ref, context.scope_ref) ||
+      operation.correlation_id !== context.correlation_id ||
+      !sameScopeRef(policyRef.scope_ref, context.scope_ref) ||
+      (operation.impact_report_ref && !sameScopeRef(operation.impact_report_ref.scope_ref, context.scope_ref)) ||
+      (operation.approval_ref && !sameScopeRef(operation.approval_ref.scope_ref, context.scope_ref))) {
+    return fail(context, "VALIDATION_ERROR", "Policy release operation context is invalid or cross-scope");
+  }
+  if ((targetState === "RELEASED" || targetState === "SUSPENDED" || targetState === "RETIRED") &&
+      !operation.approval_ref) {
+    return fail(context, "APPROVAL_REQUIRED", "Policy release or suspension requires an explicit approval reference");
+  }
+  if (targetState === "RELEASED" && !operation.impact_report_ref) {
+    return fail(context, "VALIDATION_ERROR", "Policy release requires an impact report reference");
+  }
+
+  const current = await deps.sources.readPolicyRelease(context, policyRef);
+  if (current.status !== "OK" || !current.data) {
+    return fail(context, "NOT_FOUND_OR_NOT_VISIBLE", "Policy release was not found or is not visible");
+  }
+  if (!sameObjectRef(current.data.policy_release_ref, policyRef) ||
+      !sameScopeRef(current.data.policy_release_ref.scope_ref, context.scope_ref)) {
+    return fail(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Policy source returned a different or out-of-scope release");
+  }
+  const version = current.object_version ?? current.data.version;
+  if (!version || version !== operation.expected_version ||
+      current.data.version !== version) {
+    return fail(context, "VERSION_CONFLICT", "Policy release version changed before lifecycle transition");
+  }
+  const authority = await deps.sources.verifyPolicyReleaseOperator(context, current.data, targetState, operation);
+  if (authority.status !== "OK" || !authority.data) {
+    return fail(context, "DEPENDENCY_UNAVAILABLE", "Current policy release authority could not be verified");
+  }
+  if (!authority.data.authorized) return fail(context, "FORBIDDEN", "Caller is not authorized for this policy release transition");
+
+  const transitioned = transitionPolicyRelease(current.data, targetState, deps.clock.now());
+  if (transitioned.status !== "OK" || !transitioned.data) return propagate(context, transitioned);
+  const eventType = targetState === "RELEASED" ? "policy.version_released" :
+    targetState === "SUSPENDED" ? "policy.version_suspended" : "policy.version_retired";
+  return deps.repository.updatePolicyReleaseWithEvent(context, transitioned.data, version, eventType, {
+    key: "policy." + targetState.toLowerCase() + ":" + idempotencyKey,
+    request_fingerprint: await digestSha256(JSON.stringify({
+      policy_ref: policyRef,
+      target_state: targetState,
+      expected_version: version,
+      change_ref: operation.change_ref,
+      impact_report_ref: operation.impact_report_ref ?? null,
+      approval_ref: operation.approval_ref ?? null,
+    })),
+  });
+}
+
+export function publishPolicyRelease(
+  deps: AuthorizationDependencies,
+  context: RequestContext,
+  policyRef: ObjectRef,
+  operation: PolicyReleaseOperationContext,
+): Promise<OperationResult<PolicyRelease>> {
+  return transitionPolicyReleaseLifecycle(deps, context, policyRef, "RELEASED", operation);
+}
+
+export function suspendPolicyRelease(
+  deps: AuthorizationDependencies,
+  context: RequestContext,
+  policyRef: ObjectRef,
+  operation: PolicyReleaseOperationContext,
+): Promise<OperationResult<PolicyRelease>> {
+  return transitionPolicyReleaseLifecycle(deps, context, policyRef, "SUSPENDED", operation);
+}
+
+export function retirePolicyRelease(
+  deps: AuthorizationDependencies,
+  context: RequestContext,
+  policyRef: ObjectRef,
+  operation: PolicyReleaseOperationContext,
+): Promise<OperationResult<PolicyRelease>> {
+  return transitionPolicyReleaseLifecycle(deps, context, policyRef, "RETIRED", operation);
+}
+
+/** Access-filtered decision read; out-of-scope and absent records share the same safe response. */
+export async function getAuthorityDecision(
+  deps: AuthorizationDependencies,
+  context: RequestContext,
+  decisionRef: ObjectRef,
+): Promise<OperationResult<AuthorizationDecision>> {
+  if (!isObjectRef(decisionRef) || decisionRef.object_kind !== "AUTHORIZATION_DECISION" ||
+      !sameScopeRef(decisionRef.scope_ref, context.scope_ref)) {
+    return fail(context, "NOT_FOUND_OR_NOT_VISIBLE", "Authorization decision was not found or is not visible");
+  }
+  const result = await deps.repository.readDecision(context, decisionRef);
+  if (result.status !== "OK" || !result.data ||
+      !sameObjectRef(result.data.decision_ref, decisionRef) ||
+      !sameScopeRef(result.data.applicable_scope_ref, context.scope_ref)) {
+    return fail(context, "NOT_FOUND_OR_NOT_VISIBLE", "Authorization decision was not found or is not visible");
+  }
+  return result;
+}
+
+export async function explainDenialSafe(
+  deps: AuthorizationDependencies,
+  context: RequestContext,
+  decisionRef: ObjectRef,
+): Promise<OperationResult<SafeDecisionExplanation>> {
+  const current = await getAuthorityDecision(deps, context, decisionRef);
+  if (current.status !== "OK" || !current.data) return propagate(context, current);
+  if (current.data.result === "ALLOW") {
+    return fail(context, "FORBIDDEN", "A denial explanation is not available for an allowed decision");
+  }
+  return createOperationResult({
+    status: "OK",
+    correlation_id: context.correlation_id,
+    data: createSafeDecisionExplanation(current.data),
+  });
+}
+
 async function digestSha256(value: string): Promise<string> {
   const bytes = new TextEncoder().encode(value);
   const digest = await crypto.subtle.digest("SHA-256", bytes);
