@@ -215,7 +215,7 @@ export interface ApprovalRecord {
   environment_ref: ObjectRef;
   work_ref?: ObjectRef;
   context_version_refs: ObjectRef[];
-  policy_release_ref?: ObjectRef;
+  policy_release_ref: ObjectRef;
   approval_use_mode: ApprovalUseMode;
   state: ApprovalState;
   reason_ref?: ObjectRef;
@@ -1089,7 +1089,7 @@ export function createPendingApproval(input: {
   environment_ref: ObjectRef;
   work_ref?: ObjectRef;
   context_version_refs: ObjectRef[];
-  policy_release_ref?: ObjectRef;
+  policy_release_ref: ObjectRef;
   approval_use_mode: ApprovalUseMode;
   created_at: Timestamp;
   expires_at: Timestamp;
@@ -1105,7 +1105,10 @@ export function createPendingApproval(input: {
     !isObjectRef(input.resource_ref) || !sameScopeRef(input.resource_ref.scope_ref, input.scope_ref) ||
     !isObjectRef(input.environment_ref) || !sameScopeRef(input.environment_ref.scope_ref, input.scope_ref) ||
     !Array.isArray(input.required_approver_constraints) ||
+    !input.required_approver_constraints.every(value => typeof value === "string" && !!value.trim()) ||
     !Array.isArray(input.context_version_refs) || !input.context_version_refs.every(isObjectRef) ||
+    !isObjectRef(input.policy_release_ref) || input.policy_release_ref.object_kind !== "POLICY_RELEASE" ||
+    !sameScopeRef(input.policy_release_ref.scope_ref, input.scope_ref) ||
     !isTimestamp(input.created_at) ||
     !isTimestamp(input.expires_at) ||
     Date.parse(input.expires_at) <= Date.parse(input.created_at)) {
@@ -1129,7 +1132,7 @@ export function createPendingApproval(input: {
       environment_ref: input.environment_ref,
       ...(input.work_ref ? { work_ref: input.work_ref } : {}),
       context_version_refs: [...input.context_version_refs],
-      ...(input.policy_release_ref ? { policy_release_ref: input.policy_release_ref } : {}),
+      policy_release_ref: input.policy_release_ref,
       approval_use_mode: input.approval_use_mode,
       state: "PENDING",
       created_at: input.created_at,
@@ -1278,6 +1281,9 @@ export function validateApprovalUse(
       !isObjectRef(approval.approval_ref) || !isObjectRef(approval.request_ref) ||
       !isPrincipalRef(approval.requested_by_ref) || !isObjectRef(approval.resource_ref) ||
       !isScopeRef(approval.scope_ref) || !isObjectRef(approval.environment_ref) ||
+      !isObjectRef(approval.policy_release_ref) ||
+      !Array.isArray(approval.required_approver_constraints) ||
+      !approval.required_approver_constraints.every(value => typeof value === "string" && !!value.trim()) ||
       !Array.isArray(approval.context_version_refs) ||
       !approval.context_version_refs.every(isObjectRef)) {
     return ["approval record is malformed"];
