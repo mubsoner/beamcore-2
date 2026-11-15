@@ -14,6 +14,7 @@ import {
   createSafeDecisionExplanation,
   validateApprovalUse,
   validateDelegationRequest,
+  validateDelegationLineage,
   validateAuthorizationRequest,
   validateAuthorityFacts,
   validatePolicyEvaluation,
@@ -311,6 +312,47 @@ describe("INV-06 authorization domain", () => {
     expect(validateDelegationRequest({
       ...delegationRequest, allow_subdelegation: true,
     }, { ...grantor, grantor_allowed_actions: ["artifact.publish"] })).toContain("subdelegation is not explicitly authorized");
+  });
+  it("requires a complete non-circular parent delegation lineage", () => {
+    const parent: DelegationRecord = {
+      delegation_id: "parent-1",
+      delegation_ref: ref("DELEGATION", "parent-1"),
+      grantor_ref: { principal_id: "root-user", principal_kind: "USER" },
+      delegate_ref: context.actor_ref,
+      purpose: "delegate read access",
+      scope_ref: scope,
+      allowed_actions: ["artifact.read", "artifact.publish"],
+      resource_constraints: [ref("ARTIFACT", "artifact-1")],
+      limits: ["daily-10"],
+      conditions: [],
+      not_before: "2026-11-15T09:00:00Z",
+      expires_at: "2026-11-15T11:00:00Z",
+      allow_subdelegation: true,
+      authorized_by_decision_ref: ref("AUTHORIZATION_DECISION", "parent-grant"),
+      state: "ACTIVE",
+      created_at: "2026-11-15T09:00:00Z",
+    };
+    const child: DelegationRequest = {
+      delegation_ref: ref("DELEGATION", "child-1"),
+      grantor_ref: context.actor_ref,
+      delegate_ref: { principal_id: "agent-1", principal_kind: "AGENT" },
+      purpose: "read one artifact",
+      scope_ref: scope,
+      allowed_actions: ["artifact.read"],
+      resource_constraints: [ref("ARTIFACT", "artifact-1")],
+      limits: ["daily-10"],
+      conditions: [],
+      not_before: "2026-11-15T09:01:00Z",
+      expires_at: "2026-11-15T10:30:00Z",
+      allow_subdelegation: false,
+      parent_delegation_ref: parent.delegation_ref,
+      authorized_by_decision_ref: ref("AUTHORIZATION_DECISION", "child-grant"),
+    };
+    expect(validateDelegationLineage(child, [parent], "2026-11-15T10:00:00Z")).toEqual([]);
+    const cyclic = { ...child, delegation_ref: parent.delegation_ref };
+    expect(validateDelegationLineage(cyclic, [parent], "2026-11-15T10:00:00Z")).toContain("delegation cycle or self-reference detected");
+    const broken = { ...parent, parent_delegation_ref: ref("DELEGATION", "missing-grandparent") };
+    expect(validateDelegationLineage(child, [broken], "2026-11-15T10:00:00Z")).toContain("delegation ancestry is incomplete or incorrectly ordered");
   });
   it("prevents delegation reactivation after its expiry", () => {
     const delegation: DelegationRecord = {
