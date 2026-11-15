@@ -249,6 +249,7 @@ async function authorizeActionCore(
   }
 
   let approval: ApprovalRecord | undefined;
+  let approvalCurrentVersion: Version | undefined;
   let approvalAuthorityVerified = false;
   if (request.approval_ref) {
     const approvalResult = await deps.sources.readApproval(context, request.approval_ref);
@@ -256,6 +257,7 @@ async function authorizeActionCore(
       return fail(context, "APPROVAL_REQUIRED", "The referenced approval is unavailable or not visible");
     }
     approval = approvalResult.data;
+    approvalCurrentVersion = approvalResult.object_version ?? approval.approval_ref.object_version;
     if (!sameObjectRef(approval.approval_ref, request.approval_ref) ||
         !sameScopeRef(approval.approval_ref.scope_ref, context.scope_ref)) {
       return fail(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Approval source returned a different or out-of-scope record");
@@ -381,13 +383,13 @@ async function authorizeActionCore(
       decision.approval_use_mode === "ONE_TIME") {
     if (!approval || !request.approval_ref ||
         approval.approval_use_mode !== "ONE_TIME" ||
-        !approval.approval_ref.object_version) {
-      return fail(context, "APPROVAL_REQUIRED", "One-time approval cannot be consumed without its current version");
+        !approvalCurrentVersion) {
+      return fail(context, "APPROVAL_REQUIRED", "One-time approval cannot be consumed without its repository current version");
     }
     approvalClaim = {
       approval_ref: approval.approval_ref,
       authorization_request_ref: requestRef,
-      expected_version: approval.approval_ref.object_version,
+      expected_version: approvalCurrentVersion,
       idempotency_key: idempotencyKey,
       claimed_at: evaluatedAt,
     };
