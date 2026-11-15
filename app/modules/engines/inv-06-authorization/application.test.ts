@@ -369,28 +369,26 @@ describe("INV-06 authorization application boundary", () => {
     expect(harness.repository.commitDecision).not.toHaveBeenCalled();
   });
 
-  it("fails closed when approver verification lacks source-version provenance", async () => {
-    const harness = makeDependencies();
-    vi.mocked(harness.sources.verifyApprover).mockResolvedValue(
-      createOperationResult({
-        status: "OK",
-        correlation_id: context.correlation_id,
-        data: {
-          authorized: true,
-          independent_required: true,
-          satisfied_constraints: ["INDEPENDENT_APPROVER"],
-          authority_source_refs: [],
-          observed_at: "2026-11-15T09:59:30Z",
-          valid_until: "2026-11-15T10:05:00Z",
-        },
-      }),
-    );
+  it("rechecks current permission facts immediately before a protected action", async () => {
+    const currentFacts = {
+      ...facts,
+      permission_state: "NOT_GRANTED" as const,
+      source_refs: [{
+        source_kind: "permission",
+        object_ref: ref("PERMISSION_BINDING", "permission-1"),
+        source_version: "5",
+        observed_at: "2026-11-15T10:00:25Z",
+      }],
+      observed_at: "2026-11-15T10:00:25Z",
+      valid_until: "2026-11-15T10:05:00Z",
+    };
+    const harness = makeDependencies(currentFacts);
     const result = await recheckAuthorizationAtActionBoundary(
-      harness.deps, context, authorizationRequest({ approval_ref: approval.approval_ref }),
+      harness.deps, context, authorizationRequest(),
     );
     expect(result.status).toBe("REJECTED");
-    expect(result.errors[0]?.code).toBe("INTEGRITY_OR_UNTRUSTED_INPUT");
-    expect(harness.repository.commitDecision).not.toHaveBeenCalled();
+    expect(harness.commitCalls[0].decision.result).toBe("DENY");
+    expect(harness.commitCalls[0].decision.reason_codes).toContain("AUTHORITY_CONSTRAINT_NOT_SATISFIED");
   });
 
   it("fails closed on approval without independent approver proof when policy requires it", async () => {
