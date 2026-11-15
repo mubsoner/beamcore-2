@@ -450,8 +450,8 @@ export function validatePrincipalContext(
   if (!isTimestamp(principal.resolved_at) || Date.parse(principal.resolved_at) > Date.parse(now)) {
     issues.push("principal resolution timestamp is invalid");
   }
-  if (principal.valid_until !== undefined && !isTimestamp(principal.valid_until)) {
-    issues.push("principal context validity timestamp is invalid");
+  if (!isTimestamp(principal.valid_until) || Date.parse(principal.valid_until) <= Date.parse(now)) {
+    issues.push("principal context must have a current bounded validity window");
   }
   for (const group of [
     principal.organization_membership_refs,
@@ -499,8 +499,8 @@ export function validateAuthorityFacts(
   if (!isTimestamp(facts.observed_at) || Date.parse(facts.observed_at) > Date.parse(now)) {
     issues.push("authority observation timestamp is invalid");
   }
-  if (facts.valid_until !== undefined && !isTimestamp(facts.valid_until)) {
-    issues.push("authority validity timestamp is invalid");
+  if (!isTimestamp(facts.valid_until) || Date.parse(facts.valid_until) <= Date.parse(now)) {
+    issues.push("authority facts must have a current bounded validity window");
   }
   if (!Array.isArray(facts.source_refs) || facts.source_refs.length === 0 ||
       !facts.source_refs.every(source =>
@@ -548,7 +548,9 @@ export function validatePolicyEvaluation(
       !isVersion(release.version) ||
       (release.policy_release_ref.object_version !== undefined &&
         release.policy_release_ref.object_version !== release.version) ||
-      !release.ruleset_digest?.trim() || !release.evaluator_contract_version?.trim()) {
+      !release.ruleset_digest?.trim() || !release.evaluator_contract_version?.trim() ||
+      !isTimestamp(release.effective_from) || !isTimestamp(release.valid_until) ||
+      Date.parse(release.valid_until) <= Date.parse(release.effective_from)) {
     issues.push("policy release identity, version or digest is invalid");
   }
   if (!policy.evaluator_version?.trim() ||
@@ -571,6 +573,9 @@ export function validatePolicyEvaluation(
       policy.approval_use_mode !== "ONE_TIME" &&
       policy.approval_use_mode !== "REUSABLE_WITHIN_SCOPE") {
     issues.push("approval-required policy must explicitly declare an approval use mode");
+  }
+  if (policy.effect === "REQUIRE_APPROVAL" && !policy.approval_required) {
+    issues.push("REQUIRE_APPROVAL effect must declare approval_required");
   }
   if (policy.approval_required &&
       (!isTimestamp(policy.approval_expires_at) ||
@@ -1081,6 +1086,14 @@ export function validateApprovalUse(
   policyReleaseRef: ObjectRef,
 ): string[] {
   const issues: string[] = [];
+  if (!approval || typeof approval !== "object" ||
+      !isObjectRef(approval.approval_ref) || !isObjectRef(approval.request_ref) ||
+      !isPrincipalRef(approval.requested_by_ref) || !isObjectRef(approval.resource_ref) ||
+      !isScopeRef(approval.scope_ref) || !isObjectRef(approval.environment_ref) ||
+      !Array.isArray(approval.context_version_refs) ||
+      !approval.context_version_refs.every(isObjectRef)) {
+    return ["approval record is malformed"];
+  }
   if (approval.state !== "APPROVED") issues.push("approval is not approved");
   if (!approval.approver_ref || !isPrincipalRef(approval.approver_ref) ||
       !approval.decided_at || !isTimestamp(approval.decided_at)) {
@@ -1115,7 +1128,13 @@ export function validateApprovalUse(
   const sameContextRefs = expectedContextRefs.length === approval.context_version_refs.length &&
     expectedContextRefs.every(expected => approval.context_version_refs.some(actual => isExactObjectRef(actual, expected)));
   if (!sameContextRefs) issues.push("approval context versions do not match the current request");
-  if (approval.valid_from && Date.parse(approval.valid_from) > Date.parse(now)) issues.push("approval is not yet valid");
+  if (approval.valid_from && (!isTimestamp(approval.valid_from) || Date.parse(approval.valid_from) > Date.parse(now))) {
+    issues.push("approval is not yet valid");
+  }
+  if (!isTimestamp(approval.created_at) || Date.parse(approval.created_at) > Date.parse(now) ||
+      !isTimestamp(approval.decided_at) || Date.parse(approval.decided_at) > Date.parse(now)) {
+    issues.push("approval creation or decision timestamp is invalid");
+  }
   if (!approval.expires_at || !isTimestamp(approval.expires_at) || Date.parse(approval.expires_at) <= Date.parse(now)) {
     issues.push("approval is expired or has no enforceable expiry");
   }
