@@ -11,7 +11,7 @@
 - **INTEGRATION BLOCKER** — completion needs an actual provider, persistent repository, or another engine's enforcement/source adapter; a port or fake test adapter is not proof.
 - **GAP** — required logical behavior or test is still missing/incomplete.
 
-**Current engine test inventory:** 25 domain tests + 24 application tests = 49 focused INV-06 tests. Latest branch head inspected: `34b88da286bde41ac499ae0997b093d6386e87a8`; CI for that head at matrix authoring time: `in_progress`. Passing unit tests are not substitutes for the provider/integration blockers below.
+**Current engine test inventory:** 30 domain tests + 26 application tests = 56 focused INV-06 tests. Latest branch head inspected: `1358f79fc74276b0e7122cfb980b6588f2adb026`; CI run `43775152004` for that exact head was `queued` at matrix update time. This inventory is a test count, not a pass count. Passing unit tests are not substitutes for the provider/integration blockers below.
 
 ## Acceptance status
 
@@ -19,7 +19,7 @@
 |---|---|---|---|
 | T01 | Valid principal, in-scope action and allow policy returns ALLOW | TEST EXISTS — domain allow case | Re-run against current head and real policy/identity adapters |
 | T02 | Missing authentication blocks protected action | TEST EXISTS — unauthenticated state is denied | Verify at INV-05/07 action boundaries |
-| T03 | Expired session requires reauthentication or denial | LOGIC ONLY — expired principal maps to REQUIRE_REAUTH | Add explicit test and bind session freshness to IdP adapter |
+| T03 | Expired session requires reauthentication or denial | TEST EXISTS — application test rejects an already-expired authenticated session result | Bind session freshness and revocation to the selected IdP adapter |
 | T04 | Revoked session blocks subsequent actions | LOGIC ONLY — REVOKED authentication state is denied; session revocation workflow emits session.revoked | Add session-provider revocation integration test |
 | T05 | Authentication without action permission is denied | LOGIC ONLY — NOT_GRANTED permission is denied | Add focused test using current INV-18 permission facts |
 | T06 | Ownership alone cannot bypass policy | LOGIC ONLY — authorization is action/policy based; no owner bypass exists | Add explicit owner fixture and test |
@@ -49,7 +49,7 @@
 | T30 | Expired approval is rejected | TEST EXISTS — approval expiry and expiry lifecycle transitions are tested | Verify scheduler/persistence expiry and action-boundary reads |
 | T31 | Revoked approval is rejected even if an earlier allow decision is cached | LOGIC ONLY — action boundary reloads approval and checks current state | Add cached-decision plus durable approval revocation integration test |
 | T32 | A one-time approval cannot be consumed by two concurrent authorization requests | INTEGRATION BLOCKER — claim command carries exact current row version and request; database compare-and-set is required | Prove concurrent CAS and transaction rollback on selected persistent repository |
-| T33 | Replayed one-time approval is rejected with an auditable safe reason | TEST EXISTS — pure claim/replay and stale row-version cases are covered | Prove durable idempotent replay and audit/outbox in database adapter |
+| T33 | Replayed one-time approval is rejected with an auditable safe reason | TEST EXISTS — same request + same idempotency key can replay its claim; another key/request is denied | Prove durable idempotent replay and audit/outbox in database adapter |
 | T34 | Reusable approval works only where the current policy explicitly permits reusable use within scope | TEST EXISTS — reusable binding allows equivalent requests but rejects changed resource/action/scope/context | Add integration test against live policy and approval store |
 | T35 | Delegation cannot grant a permission the grantor does not currently possess | TEST EXISTS — current grantor action set and inherited limits/conditions constrain the child | Verify source adapter against live INV-18 and policy facts |
 | T36 | Delegation scope cannot exceed grantor authority or the parent delegation | TEST EXISTS — direct parent and full ancestor chain constrain scope/actions/resources/limits/conditions/time | Add live multi-level lineage-source conformance test |
@@ -64,12 +64,12 @@
 | T45 | External authorization failure/uncertainty blocks action | LOGIC ONLY — denied/unknown external authority states fail closed | Add dedicated test and external authority adapter |
 | T46 | Capability fallback cannot broaden permissions or reuse unrelated approval | INTEGRATION BLOCKER | INV-07 capability fallback and approval binding integration test |
 | T47 | Authorization request with wrong expected version returns a conflict and performs no partial mutation | TEST EXISTS — current approval row version is passed separately from stable ObjectRef version; stale CAS is rejected | Prove database compare-and-set and rollback under race/fault injection |
-| T48 | Repeated request with the same idempotency key and same canonical payload returns the same logical operation result | INTEGRATION BLOCKER | Verify persistent idempotency replay with the selected repository/transaction adapter |
-| T49 | Reusing an idempotency key with different canonical payload returns an idempotency conflict | LOGIC ONLY — canonical request fingerprint and idempotency contracts exist | Add durable application replay/conflict tests against persistent repository |
+| T48 | Repeated request with the same idempotency key and same canonical payload returns the same logical operation result | LOGIC ONLY — decision fingerprint binds canonical request plus current authority fingerprint; one-time claim replay is keyed to the same request/operation | Verify persistent idempotency replay and stable results with the selected repository/transaction adapter |
+| T49 | Reusing an idempotency key with different canonical payload returns an idempotency conflict | LOGIC ONLY — canonical request and authority fingerprints are bound to the idempotency record | Add durable application replay/conflict tests against persistent repository |
 | T50 | Duplicate/delayed/reordered authority events cannot restore older state | INTEGRATION BLOCKER | Connect INV-18 authority event versions to Inbox ordering/consumer state |
 | T51 | Approval consumption is atomic and version-checked under concurrent use | INTEGRATION BLOCKER — application sends claim and decision/audit/outbox in a single repository command | Prove concurrent database CAS, rollback and replay behavior |
-| T52 | Decision fingerprint changes on material authority source version | TEST EXISTS — source-version change alters authority fingerprint | Add full INV-18/IdP/policy source contract fixture |
-| T53 | Decision expiry prevents reuse without event invalidation | TEST EXISTS — decision currentness checks validity deadline | Verify on actual enforcement adapter |
+| T52 | Decision fingerprint changes on material authority source version | TEST EXISTS — source-version changes alter the authority fingerprint and idempotency binding | Add full INV-18/IdP/policy source contract fixture |
+| T53 | Decision expiry prevents reuse without event invalidation | TEST EXISTS — decision currentness checks validity deadline; expired request deadline is denied | Verify on actual enforcement adapter |
 | T54 | Safe denial does not reveal secret/private policy/hidden data | TEST EXISTS — private reason whitelist and no caller-supplied refs | Add audience-specific integration/redaction tests |
 | T55 | Audit contains source/version/correlation lineage, excludes secrets | LOGIC ONLY — expanded audit fields and atomic commit port exist | Add audit payload assertions and real protected audit-store test |
 | T56 | Revocation does not claim to undo completed external effect; downstream reconcile signalled | INTEGRATION BLOCKER | INV-04/05 reconciliation path and external-effect uncertainty proof |
