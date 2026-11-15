@@ -499,8 +499,8 @@ export function validateAuthorityFacts(
   if (!isTimestamp(facts.observed_at) || Date.parse(facts.observed_at) > Date.parse(now)) {
     issues.push("authority observation timestamp is invalid");
   }
-  if (!isTimestamp(facts.valid_until) || Date.parse(facts.valid_until) <= Date.parse(now)) {
-    issues.push("authority facts must have a current bounded validity window");
+  if (!isTimestamp(facts.valid_until)) {
+    issues.push("authority facts must have a bounded validity timestamp");
   }
   if (!Array.isArray(facts.source_refs) || facts.source_refs.length === 0 ||
       !facts.source_refs.every(source =>
@@ -778,8 +778,8 @@ export function evaluateAuthorizationDecision(input: {
   } else if (!sameScopeRef(facts.verified_resource_scope_ref, request.resource_ref.scope_ref) ||
       !sameScopeRef(facts.verified_resource_scope_ref, request.scope_ref)) {
     result = "DENY"; reasons.push("SCOPE_MISMATCH");
-  } else if (request.expected_resource_version !== undefined &&
-      facts.current_resource_version !== request.expected_resource_version) {
+  } else if ((request.expected_resource_version ?? request.resource_ref.object_version) !== undefined &&
+      facts.current_resource_version !== (request.expected_resource_version ?? request.resource_ref.object_version)) {
     result = "INDETERMINATE"; reasons.push("RESOURCE_VERSION_STALE");
   } else if (request.delegation_ref &&
       (!facts.verified_delegation_ref || !isExactObjectRef(facts.verified_delegation_ref, request.delegation_ref))) {
