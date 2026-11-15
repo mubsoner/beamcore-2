@@ -297,6 +297,57 @@ export function validateExecutionAdmission(
   });
 }
 
+function isExecutionInvocationManifestConsistent(
+  execution: ExecutionRecord,
+  manifest: ExecutionInvocationManifest,
+): boolean {
+  if (!manifest || typeof manifest !== "object" || !manifest.request ||
+      typeof manifest.request !== "object") return false;
+  const request = manifest.request;
+  const referencePairs: Array<[unknown, unknown]> = [
+    [manifest.execution_ref, execution.execution_ref],
+    [manifest.capability_ref, execution.capability_ref],
+    [manifest.runtime_profile_ref, execution.runtime_profile_ref],
+    [request.execution_ref, execution.execution_ref],
+    [request.work_ref, execution.work_ref],
+    [request.orchestration_run_ref, execution.orchestration_run_ref],
+    [request.graph_revision_ref, execution.graph_revision_ref],
+    [request.graph_node_ref, execution.graph_node_ref],
+    [request.dispatch_ref, execution.dispatch_ref],
+    [request.capability_ref, execution.capability_ref],
+    [request.authorization_decision_ref, execution.authorization_decision_ref],
+    [request.runtime_profile?.profile_ref, execution.runtime_profile_ref],
+  ];
+  if (referencePairs.some(([actual, expected]) => !sameExactObjectRef(actual, expected))) return false;
+  if (
+    manifest.request_digest !== execution.request_digest ||
+    request.request_digest !== execution.request_digest ||
+    manifest.capability_version !== execution.capability_version ||
+    request.capability_version !== execution.capability_version ||
+    manifest.runtime_profile_version !== execution.runtime_profile_version ||
+    request.runtime_profile?.profile_version !== execution.runtime_profile_version ||
+    request.idempotency_key !== execution.idempotency_key ||
+    !isPrincipalRef(request.actor_ref) ||
+    request.actor_ref.principal_id !== execution.actor_ref.principal_id ||
+    request.actor_ref.principal_kind !== execution.actor_ref.principal_kind ||
+    !Array.isArray(manifest.input_refs) ||
+    !Array.isArray(manifest.input_digests) ||
+    !Array.isArray(request.input_refs) ||
+    !Array.isArray(request.input_digests) ||
+    manifest.input_refs.length !== manifest.input_digests.length ||
+    manifest.input_refs.length !== request.input_refs.length ||
+    manifest.input_digests.length !== request.input_digests.length ||
+    manifest.input_digests.some((digest, index) =>
+      !isVersion(digest) || digest !== request.input_digests[index]) ||
+    manifest.input_refs.some((inputRef, index) =>
+      !sameExactObjectRef(inputRef, request.input_refs[index]) ||
+      !isObjectRef(inputRef) ||
+      !sameScopeRef(inputRef.scope_ref, execution.scope_ref)) ||
+    manifest.side_effect_class !== request.side_effect_class
+  ) return false;
+  return true;
+}
+
 async function persistExecution(
   unitOfWork: EngineUnitOfWorkPort,
   command: SubmitExecutionCommand,
@@ -330,15 +381,7 @@ async function persistExecution(
         return propagateFailure<ExecutionRecord>(priorManifestResult);
       }
       const priorManifest = priorManifestResult.data;
-      if (
-        !sameExactObjectRef(priorManifest.execution_ref, priorExecution.execution_ref) ||
-        priorManifest.request_digest !== priorExecution.request_digest ||
-        !sameExactObjectRef(priorManifest.runtime_profile_ref, priorExecution.runtime_profile_ref) ||
-        priorManifest.runtime_profile_version !== priorExecution.runtime_profile_version ||
-        priorManifest.input_digests.length !== priorManifest.request.input_digests.length ||
-        priorManifest.input_digests.some((digest, index) => digest !== priorManifest.request.input_digests[index]) ||
-        priorManifest.request.request_digest !== priorManifest.request_digest
-      ) {
+      if (!isExecutionInvocationManifestConsistent(priorExecution, priorManifest)) {
         return rejected(
           command.context,
           "INTEGRITY_OR_UNTRUSTED_INPUT",
@@ -673,48 +716,8 @@ export async function readExecutionInvocationManifest(
     const result = await reader.readInvocationManifest(context, execution.execution_ref);
     if (result.status !== "OK" || !result.data) return propagateFailure<ExecutionInvocationManifest>(result);
     const manifest = result.data;
-    if (
-      !manifest || typeof manifest !== "object" ||
-      !isObjectRef(manifest.execution_ref) ||
-      !sameExactObjectRef(manifest.execution_ref, execution.execution_ref) ||
-      manifest.request_digest !== execution.request_digest ||
-      !isObjectRef(manifest.capability_ref) ||
-      !sameExactObjectRef(manifest.capability_ref, execution.capability_ref) ||
-      manifest.capability_version !== execution.capability_version ||
-      !isObjectRef(manifest.runtime_profile_ref) ||
-      !sameExactObjectRef(manifest.runtime_profile_ref, execution.runtime_profile_ref) ||
-      manifest.runtime_profile_version !== execution.runtime_profile_version ||
-      !Array.isArray(manifest.input_refs) || !Array.isArray(manifest.input_digests) ||
-      manifest.input_refs.length !== manifest.input_digests.length ||
-      manifest.input_refs.some((ref) => !isObjectRef(ref) || !sameScopeRef(ref.scope_ref, context.scope_ref)) ||
-      manifest.input_digests.some((digest) => !isVersion(digest)) ||
-      !manifest.request || manifest.request.request_digest !== execution.request_digest ||
-      !isObjectRef(manifest.request.execution_ref) ||
-      !sameExactObjectRef(manifest.request.execution_ref, execution.execution_ref) ||
-      !sameExactObjectRef(manifest.request.work_ref, execution.work_ref) ||
-      !sameExactObjectRef(manifest.request.orchestration_run_ref, execution.orchestration_run_ref) ||
-      !sameExactObjectRef(manifest.request.graph_revision_ref, execution.graph_revision_ref) ||
-      !sameExactObjectRef(manifest.request.graph_node_ref, execution.graph_node_ref) ||
-      !sameExactObjectRef(manifest.request.dispatch_ref, execution.dispatch_ref) ||
-      !sameExactObjectRef(manifest.request.capability_ref, execution.capability_ref) ||
-      !sameExactObjectRef(manifest.request.authorization_decision_ref, execution.authorization_decision_ref) ||
-      !isPrincipalRef(manifest.request.actor_ref) ||
-      manifest.request.actor_ref.principal_id !== execution.actor_ref.principal_id ||
-      manifest.request.actor_ref.principal_kind !== execution.actor_ref.principal_kind ||
-      manifest.request.idempotency_key !== execution.idempotency_key ||
-      !manifest.request.runtime_profile ||
-      !isObjectRef(manifest.request.runtime_profile.profile_ref) ||
-      !sameExactObjectRef(manifest.request.runtime_profile.profile_ref, execution.runtime_profile_ref) ||
-      manifest.request.runtime_profile.profile_version !== execution.runtime_profile_version ||
-      !Array.isArray(manifest.request.input_refs) ||
-      !Array.isArray(manifest.request.input_digests) ||
-      manifest.request.input_refs.length !== manifest.input_refs.length ||
-      manifest.request.input_digests.length !== manifest.input_digests.length ||
-      manifest.request.input_refs.some((ref, index) =>
-        !isObjectRef(ref) || !sameExactObjectRef(ref, manifest.input_refs[index])) ||
-      manifest.request.input_digests.some((digest, index) => digest !== manifest.input_digests[index]) ||
-      manifest.side_effect_class !== manifest.request.side_effect_class
-    ) {
+    if (!isExecutionInvocationManifestConsistent(execution, manifest) ||
+        manifest.input_refs.some((inputRef) => !sameScopeRef(inputRef.scope_ref, context.scope_ref))) {
       return rejected(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Stored invocation manifest does not bind the exact accepted Execution and immutable inputs");
     }
     return createOperationResult({
