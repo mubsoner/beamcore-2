@@ -23,8 +23,10 @@ import {
   validateTrustedRuntimeAssurance,
   type ExecutionRequest,
   type RuntimeAdmission,
+  type RuntimeProfile,
   type TrustedRuntimeAssurance,
 } from "./domain";
+import type { DispatchAttempt } from "../inv-04-orchestration/domain";
 
 export interface ExecutionAdmissionSnapshot {
   checked_at: Timestamp;
@@ -58,6 +60,16 @@ export interface ExecutionAdmissionSnapshot {
  * flags are not accepted as substitutes for these reads.
  */
 export interface ExecutionAdmissionReaderPort {
+  /** Read the authoritative INV-05-owned profile by exact versioned reference. */
+  readRuntimeProfile(
+    context: RequestContext,
+    profile_ref: ObjectRef,
+  ): Promise<OperationResult<RuntimeProfile>>;
+  /** Read the authoritative INV-04 dispatch record; do not trust a caller-built copy. */
+  readDispatchAttempt(
+    context: RequestContext,
+    dispatch_ref: ObjectRef,
+  ): Promise<OperationResult<DispatchAttempt>>;
   readCurrentAdmission(
     context: RequestContext,
     request: ExecutionRequest,
@@ -69,7 +81,7 @@ export interface ExecutionAdmissionReaderPort {
    */
   readTrustedRuntimeAssurance?(
     context: RequestContext,
-    profile: ExecutionRequest["runtime_profile"],
+    profile: RuntimeProfile,
     checked_at: Timestamp,
   ): Promise<OperationResult<TrustedRuntimeAssurance>>;
 }
@@ -112,6 +124,57 @@ function propagateFailure<T>(source: OperationResult<unknown>): OperationResult<
 
 function sameExactObjectRef(a: ObjectRef, b: ObjectRef): boolean {
   return sameObjectRef(a, b) && a.object_version === b.object_version;
+}
+
+function validateAcceptedDispatchBinding(
+  context: RequestContext,
+  request: ExecutionRequest,
+  dispatch: DispatchAttempt,
+): OperationResult<void> {
+  const refs: Array<[ObjectRef, string]> = [
+    [dispatch.dispatch_ref, "DISPATCH_ATTEMPT"],
+    [dispatch.orchestration_ref, "ORCHESTRATION_RUN"],
+    [dispatch.node_coordination_ref, "NODE_COORDINATION"],
+    [dispatch.work_ref, "WORK"],
+    [dispatch.graph_revision_ref, "WORK_GRAPH_REVISION"],
+    [dispatch.graph_node_ref, "GRAPH_NODE"],
+    [dispatch.target_capability_ref, "CAPABILITY"],
+    [dispatch.authorization_decision_ref, "AUTHORITY_DECISION"],
+    [dispatch.resource_admission_ref, "RESOURCE_ADMISSION"],
+  ];
+  if (refs.some(([ref, kind]) =>
+      !isObjectRef(ref) ||
+      ref.object_kind !== kind ||
+      !sameScopeRef(ref.scope_ref, context.scope_ref))) {
+    return rejected(context, "FORBIDDEN", "Authoritative dispatch references must use canonical kinds and the authenticated scope");
+  }
+  if (
+    !sameExactObjectRef(dispatch.dispatch_ref, request.dispatch_ref) ||
+    !sameExactObjectRef(dispatch.orchestration_ref, request.orchestration_run_ref) ||
+    !sameExactObjectRef(dispatch.work_ref, request.work_ref) ||
+    !sameExactObjectRef(dispatch.graph_revision_ref, request.graph_revision_ref) ||
+    !sameExactObjectRef(dispatch.graph_node_ref, request.graph_node_ref) ||
+    !sameExactObjectRef(dispatch.target_capability_ref, request.capability_ref) ||
+    dispatch.target_capability_version !== request.capability_version ||
+    !sameExactObjectRef(dispatch.authorization_decision_ref, request.authorization_decision_ref)
+  ) {
+    return rejected(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Execution request does not match the exact references and versions of the authoritative INV-04 dispatch");
+  }
+  if (
+    dispatch.state !== "CREATED" ||
+    dispatch.execution_ref !== undefined ||
+    !Number.isSafeInteger(dispatch.attempt_number) ||
+    dispatch.attempt_number < 1 ||
+    dispatch.idempotency_key !== request.idempotency_key ||
+    dispatch.idempotency_key !== context.idempotency_key ||
+    dispatch.request_correlation_id !== context.correlation_id
+  ) {
+    return rejected(context, "INVALID_TRANSITION", "Dispatch must be an unconsumed CREATED attempt bound to this idempotency key and request correlation");
+  }
+  return createOperationResult({
+    status: "OK",
+    correlation_id: context.correlation_id,
+  });
 }
 
 function validateSubmissionEnvelope(command: SubmitExecutionCommand): string | undefined {
@@ -206,7 +269,7 @@ async function persistExecution(
     const prior = await transaction.idempotency.get<ExecutionRecord>(command.context, idempotencyKey);
     if (prior.status !== "OK") return propagateFailure<ExecutionRecord>(prior);
     if (prior.data) {
-      if (prior.data.request_fingerprint !== command.request.request_digest) {
+      if (prior.data.request_fingerprint !== execution.request_digest) {
         return rejected(
           command.context,
           "IDEMPOTENCY_CONFLICT",
@@ -255,7 +318,7 @@ async function persistExecution(
     });
     const recorded = await transaction.idempotency.record(command.context, {
       idempotency_key: idempotencyKey,
-      request_fingerprint: command.request.request_digest,
+      request_fingerprint: execution.request_digest,
       result,
       recorded_at: command.created_at,
     } satisfies IdempotencyRecord<ExecutionRecord>);
@@ -278,9 +341,6 @@ export async function submitExecution(
   const envelopeIssue = validateSubmissionEnvelope(command);
   if (envelopeIssue) return rejected(command.context, "VALIDATION_ERROR", envelopeIssue);
 
-  const requestValidation = validateExecutionRequest(command.context, command.request);
-  if (requestValidation.status !== "OK") return propagateFailure<ExecutionRecord>(requestValidation);
-
   const now = clock.now();
   if (!isTimestamp(now)) {
     return rejected(command.context, "INTERNAL_ERROR", "Execution clock returned an invalid timestamp");
@@ -288,10 +348,67 @@ export async function submitExecution(
   if (command.request.deadline && Date.parse(command.request.deadline) <= Date.parse(now)) {
     return rejected(command.context, "TIMEOUT", "Execution deadline elapsed before submission");
   }
+  if (
+    !isObjectRef(command.request.runtime_profile?.profile_ref) ||
+    command.request.runtime_profile.profile_ref.object_kind !== "RUNTIME_PROFILE" ||
+    !sameScopeRef(command.request.runtime_profile.profile_ref.scope_ref, command.context.scope_ref) ||
+    typeof command.request.runtime_profile.profile_version !== "string" ||
+    !command.request.runtime_profile.profile_version.trim()
+  ) {
+    return rejected(command.context, "VALIDATION_ERROR", "Execution must identify an in-scope versioned INV-05 runtime profile");
+  }
+
+  let authoritativeProfileResult: OperationResult<RuntimeProfile>;
+  try {
+    authoritativeProfileResult = await admissionReader.readRuntimeProfile(
+      command.context,
+      command.request.runtime_profile.profile_ref,
+    );
+  } catch {
+    return rejected(command.context, "DEPENDENCY_UNAVAILABLE", "The authoritative INV-05 runtime profile could not be read");
+  }
+  if (authoritativeProfileResult.status !== "OK" || !authoritativeProfileResult.data) {
+    return propagateFailure<ExecutionRecord>(authoritativeProfileResult);
+  }
+  const authoritativeProfile = authoritativeProfileResult.data;
+  if (
+    !sameExactObjectRef(authoritativeProfile.profile_ref, command.request.runtime_profile.profile_ref) ||
+    authoritativeProfile.profile_version !== command.request.runtime_profile.profile_version
+  ) {
+    return rejected(command.context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Caller profile locator does not match the exact authoritative INV-05 profile version");
+  }
+  const trustedRequest: ExecutionRequest = {
+    ...command.request,
+    runtime_profile: authoritativeProfile,
+  };
+
+  let dispatchResult: OperationResult<DispatchAttempt>;
+  try {
+    dispatchResult = await admissionReader.readDispatchAttempt(
+      command.context,
+      trustedRequest.dispatch_ref,
+    );
+  } catch {
+    return rejected(command.context, "DEPENDENCY_UNAVAILABLE", "The authoritative INV-04 dispatch could not be read");
+  }
+  if (dispatchResult.status !== "OK" || !dispatchResult.data) {
+    return propagateFailure<ExecutionRecord>(dispatchResult);
+  }
+  const dispatchValidation = validateAcceptedDispatchBinding(
+    command.context,
+    trustedRequest,
+    dispatchResult.data,
+  );
+  if (dispatchValidation.status !== "OK") {
+    return propagateFailure<ExecutionRecord>(dispatchValidation);
+  }
+
+  const requestValidation = validateExecutionRequest(command.context, trustedRequest);
+  if (requestValidation.status !== "OK") return propagateFailure<ExecutionRecord>(requestValidation);
 
   let admission: OperationResult<ExecutionAdmissionSnapshot>;
   try {
-    admission = await admissionReader.readCurrentAdmission(command.context, command.request, now);
+    admission = await admissionReader.readCurrentAdmission(command.context, trustedRequest, now);
   } catch {
     return rejected(command.context, "DEPENDENCY_UNAVAILABLE", "Current admission evidence could not be read");
   }
@@ -299,15 +416,25 @@ export async function submitExecution(
 
   const admissionValidation = validateExecutionAdmission(
     command.context,
-    command.request,
+    trustedRequest,
     admission.data,
     now,
   );
   if (admissionValidation.status !== "OK") {
     return propagateFailure<ExecutionRecord>(admissionValidation);
   }
+  if (!sameExactObjectRef(
+        dispatchResult.data.resource_admission_ref,
+        admission.data.resource.admission_ref,
+      ) ||
+      !sameExactObjectRef(
+        dispatchResult.data.authorization_decision_ref,
+        admission.data.authorization.decision_ref,
+      )) {
+    return rejected(command.context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Current authorization and resource admission do not match the exact decisions bound to the INV-04 dispatch");
+  }
 
-  if (command.request.runtime_profile.trust_class === "UNTRUSTED_GENERATED_CODE") {
+  if (trustedRequest.runtime_profile.trust_class === "UNTRUSTED_GENERATED_CODE") {
     if (!admissionReader.readTrustedRuntimeAssurance) {
       return rejected(
         command.context,
@@ -319,7 +446,7 @@ export async function submitExecution(
     try {
       assurance = await admissionReader.readTrustedRuntimeAssurance(
         command.context,
-        command.request.runtime_profile,
+        trustedRequest.runtime_profile,
         now,
       );
     } catch {
@@ -330,7 +457,7 @@ export async function submitExecution(
     }
     const assuranceValidation = validateTrustedRuntimeAssurance(
       command.context,
-      command.request.runtime_profile,
+      trustedRequest.runtime_profile,
       assurance.data,
       now,
     );
@@ -339,7 +466,7 @@ export async function submitExecution(
     }
   }
 
-  const execution = createExecutionRecord(command.context, command.request, command.created_at);
+  const execution = createExecutionRecord(command.context, trustedRequest, command.created_at);
   if (execution.status !== "OK" || !execution.data) return propagateFailure<ExecutionRecord>(execution);
 
   try {
