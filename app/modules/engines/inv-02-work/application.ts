@@ -194,7 +194,7 @@ export async function submitWork(
     }
 
     const revisionResult = await transaction.appendOnly<WorkRevision>("inv-02.work-revisions")
-      .append(command.context, revision);
+      .append(command.context, revision.revision_ref, revision);
     if (revisionResult.status !== "OK") {
       return propagateFailure<WorkRecord>(revisionResult);
     }
@@ -313,7 +313,7 @@ export async function changeWorkState(
     }
 
     const revisionResult = await transaction.appendOnly<WorkRevision>("inv-02.work-revisions")
-      .append(command.context, transitioned.value.revision);
+      .append(command.context, transitioned.value.revision.revision_ref, transitioned.value.revision);
     if (revisionResult.status !== "OK") {
       return propagateFailure<WorkRecord>(revisionResult);
     }
@@ -620,14 +620,14 @@ export async function applyRequestedPlanGraphActivation(
     };
     const revisionResult = await transaction
       .appendOnly<WorkRevision>("inv-02.work-revisions")
-      .append(command.context, revision);
+      .append(command.context, revision.revision_ref, revision);
     if (revisionResult.status !== "OK") {
       return propagateFailure<WorkRecord>(revisionResult);
     }
 
     const receiptResult = await transaction
       .appendOnly<PlanGraphActivationBindingReceipt>("inv-02.plan-graph-activation-receipts")
-      .append(command.context, receipt);
+      .append(command.context, receipt.receipt_ref, receipt);
     if (receiptResult.status !== "OK") {
       return propagateFailure<WorkRecord>(receiptResult);
     }
@@ -1021,14 +1021,14 @@ export async function acceptWorkOutcome(
     }
 
     const revisionResult = await transaction.appendOnly<WorkRevision>("inv-02.work-revisions")
-      .append(command.context, accepted.value.revision);
+      .append(command.context, accepted.value.revision.revision_ref, accepted.value.revision);
     if (revisionResult.status !== "OK") {
       return propagateFailure<WorkRecord>(revisionResult);
     }
 
     const receiptResult = await transaction.appendOnly<AcceptOutcomeProposalResult["receipt"]>(
       "inv-02.outcome-acceptance-receipts",
-    ).append(command.context, accepted.value.receipt);
+    ).append(command.context, accepted.value.receipt.receipt_ref, accepted.value.receipt);
     if (receiptResult.status !== "OK") {
       return propagateFailure<WorkRecord>(receiptResult);
     }
