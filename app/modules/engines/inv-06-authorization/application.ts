@@ -521,6 +521,18 @@ export async function requestApproval(
   const factsData = facts.data;
   const policyIssues = validatePolicyEvaluation(policyData, request);
   if (policyIssues.length) return fail(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Policy evaluator output failed validation");
+  const refreshedAuthorityFingerprint = await digestSha256(buildAuthorityFingerprintMaterial({
+    request,
+    principal: principalData,
+    facts: factsData,
+    policy: policyData,
+    idempotency_key: idempotencyKey,
+  }));
+  if (preflight.data.decision.authority_fingerprint !== refreshedAuthorityFingerprint ||
+      !preflight.data.decision.policy_release_ref ||
+      !sameObjectRef(preflight.data.decision.policy_release_ref, policyData.policy_release.policy_release_ref)) {
+    return fail(context, "VERSION_CONFLICT", "Authority facts or policy release changed while preparing the approval; re-evaluate the request");
+  }
   if (!policyData.approval_required || !policyData.approval_use_mode || !policyData.approval_expires_at) {
     return fail(context, "POLICY_DENIED", "Current policy does not require or define this approval");
   }
