@@ -27,6 +27,9 @@ import {
   validatePrincipalContext,
   type ApprovalDecisionInput,
   type ApprovalRecord,
+  type AuthenticationRequest,
+  type AuthenticationResult,
+  type AuthorityRevocationRequest,
   type AuthorityFacts,
   type AuthorizationDecision,
   type AuthorizationRequest,
@@ -35,6 +38,10 @@ import {
   type DelegationRequest,
   type PolicyEvaluation,
   type PolicyEvaluationAudit,
+  type PolicyRelease,
+  type PolicyReleaseOperationContext,
+  type PolicyReleaseState,
+  type RevocationRecord,
   type PrincipalContext,
   type SafeDecisionExplanation,
 } from "./domain";
@@ -57,6 +64,11 @@ export interface AuthorizationSourcePort {
   verifyDelegationDecision(context: RequestContext, request: DelegationRequest): Promise<OperationResult<{ valid: boolean }>>;
   /** Check the caller's current authority to suspend or revoke this delegation. */
   verifyDelegationRevoker(context: RequestContext, delegation: DelegationRecord): Promise<OperationResult<{ authorized: boolean }>>;
+  authenticatePrincipal(context: RequestContext, request: AuthenticationRequest): Promise<OperationResult<AuthenticationResult>>;
+  /** Must check current source authority, including membership, scope and revoker permission. */
+  verifyAuthorityRevoker(context: RequestContext, request: AuthorityRevocationRequest): Promise<OperationResult<{ authorized: boolean; source_version?: Version }>>;
+  readPolicyRelease(context: RequestContext, ref: ObjectRef): Promise<OperationResult<PolicyRelease>>;
+  verifyPolicyReleaseOperator(context: RequestContext, release: PolicyRelease, targetState: PolicyReleaseState, operation: PolicyReleaseOperationContext): Promise<OperationResult<{ authorized: boolean }>>;
 }
 
 export interface ApprovalClaimCommand {
@@ -111,6 +123,22 @@ export interface AuthorizationRepositoryPort {
     expectedVersion: Version,
     idempotency: { key: string; request_fingerprint: string },
   ): Promise<OperationResult<DelegationRecord>>;
+  /** Access-filtered read: cross-scope records must be indistinguishable from not-found. */
+  readDecision(context: RequestContext, decisionRef: ObjectRef): Promise<OperationResult<AuthorizationDecision>>;
+  /** Commit immutable revocation record and authority.revoked Outbox event atomically. */
+  createRevocationWithEvent(
+    context: RequestContext,
+    revocation: RevocationRecord,
+    idempotency: { key: string; request_fingerprint: string },
+  ): Promise<OperationResult<RevocationRecord>>;
+  /** Compare-and-set policy lifecycle state, idempotency and corresponding Outbox event atomically. */
+  updatePolicyReleaseWithEvent(
+    context: RequestContext,
+    release: PolicyRelease,
+    expectedVersion: Version,
+    eventType: string,
+    idempotency: { key: string; request_fingerprint: string },
+  ): Promise<OperationResult<PolicyRelease>>;
 }
 
 export interface AuthorizationDependencies {
