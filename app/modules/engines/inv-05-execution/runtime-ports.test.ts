@@ -132,6 +132,8 @@ const buildInvocation = (
   runtime_profile_version: runtimeProfile.profile_version,
   ...(runtimeProfile.profile_digest ? { runtime_profile_digest: runtimeProfile.profile_digest } : {}),
   ...(runtimeAssurance ? { runtime_assurance: runtimeAssurance } : {}),
+  invocation_digest: attempt.invocation_digest,
+  input_digest: attempt.input_digest,
   inputs: [{ input_ref: ref("ARTIFACT", "runtime-input-1"), input_digest: "sha256-runtime-input-1" }],
   idempotency_key: execution.idempotency_key,
 });
@@ -185,6 +187,32 @@ describe("INV-05 provider-neutral runtime start receipt", () => {
       "2026-11-15T08:00:05Z",
     );
     expect(wrongProfileVersion.status).toBe("REJECTED");
+  });
+
+  it("rejects invocation and input digests that differ from the immutable attempt", () => {
+    const state = makeStartingExecution();
+    const invocation = buildInvocation(state.execution, state.attempt, state.runtimeProfile);
+    const wrongInvocation = validateRuntimeStartReceipt(
+      context,
+      state.execution,
+      state.attempt,
+      state.runtimeProfile,
+      { ...invocation, invocation_digest: "sha256-other-invocation" },
+      receiptFor(state.runtimeProfile),
+      "2026-11-15T08:00:05Z",
+    );
+    expect(wrongInvocation.status).toBe("REJECTED");
+
+    const wrongInputSet = validateRuntimeStartReceipt(
+      context,
+      state.execution,
+      state.attempt,
+      state.runtimeProfile,
+      { ...invocation, input_digest: "sha256-other-input-set" },
+      receiptFor(state.runtimeProfile),
+      "2026-11-15T08:00:05Z",
+    );
+    expect(wrongInputSet.status).toBe("REJECTED");
   });
 
   it("rejects a runtime receipt outside the authenticated scope or with an invalid time", () => {
