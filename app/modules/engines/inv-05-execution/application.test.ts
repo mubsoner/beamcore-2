@@ -22,7 +22,7 @@ const context: RequestContext = {
 const ref = (object_kind: string, object_id: string, object_version = "1", refScope = scope): ObjectRef => ({
   object_kind, object_id, object_version, scope_ref: refScope,
 });
-const profile = (): RuntimeProfile => ({
+const profile = (overrides: Partial<RuntimeProfile> = {}): RuntimeProfile => ({
   profile_ref: ref("RUNTIME_PROFILE", "profile-1"),
   profile_version: "1",
   profile_status: "APPROVED",
@@ -40,8 +40,9 @@ const profile = (): RuntimeProfile => ({
   allowed_capability_refs: [ref("CAPABILITY", "capability-1", "1")],
   permitted_output_kinds: ["TEXT", "JSON"],
   created_at: "2026-11-15T07:59:00Z",
+  ...overrides,
 });
-const request = (): ExecutionRequest => ({
+const request = (overrides: Partial<ExecutionRequest> = {}): ExecutionRequest => ({
   execution_ref: ref("EXECUTION", "execution-1"),
   work_ref: ref("WORK", "work-1"),
   orchestration_run_ref: ref("ORCHESTRATION_RUN", "run-1"),
@@ -59,6 +60,7 @@ const request = (): ExecutionRequest => ({
   idempotency_key: "execution-idem-1",
   side_effect_class: "NON_IDEMPOTENT",
   deadline: "2026-11-15T08:01:00Z",
+  ...overrides,
 });
 const admission = (overrides: Partial<ExecutionAdmissionSnapshot> = {}): ExecutionAdmissionSnapshot => ({
   checked_at: "2026-11-15T08:00:05Z",
@@ -175,6 +177,67 @@ describe("INV-05 execution application admission boundary", () => {
       "2026-11-15T08:00:06Z",
     );
     expect(foreignResource.status).toBe("REJECTED");
+  });
+
+  it("requires exact object versions in current authorization and capability evidence", () => {
+    const wrongAuthorizationVersion = validateExecutionAdmission(
+      context,
+      request(),
+      admission({ authorization: {
+        ...admission().authorization,
+        decision_ref: ref("AUTHORITY_DECISION", "authority-1", "2"),
+      } }),
+      "2026-11-15T08:00:06Z",
+    );
+    expect(wrongAuthorizationVersion.status).toBe("REJECTED");
+
+    const wrongCapabilityVersion = validateExecutionAdmission(
+      context,
+      request(),
+      admission({ capability: {
+        ...admission().capability,
+        capability_ref: ref("CAPABILITY", "capability-1", "2"),
+      } }),
+      "2026-11-15T08:00:06Z",
+    );
+    expect(wrongCapabilityVersion.status).toBe("REJECTED");
+  });
+
+  it("hard-disables untrusted generated code when no trusted attestation verifier exists", async () => {
+    let unitOfWorkCalled = false;
+    const unitOfWork = {
+      execute: async () => {
+        unitOfWorkCalled = true;
+        throw new Error("Untrusted runtime must not be persisted");
+      },
+    } as unknown as EngineUnitOfWorkPort;
+    const reader: ExecutionAdmissionReaderPort = {
+      readCurrentAdmission: async () => ({
+        status: "OK",
+        correlation_id: context.correlation_id,
+        data: admission(),
+        errors: [],
+        warnings: [],
+      }),
+    };
+    const clock: ClockPort = { now: () => "2026-11-15T08:00:06Z" };
+    const untrustedProfile = profile({
+      trust_class: "UNTRUSTED_GENERATED_CODE",
+      profile_digest: "sha256-profile-1",
+      approved_by: context.actor_ref,
+      approval_ref: ref("APPROVAL", "approval-1"),
+      secret_injection_policy_ref: ref("SECRET_INJECTION_POLICY", "secret-policy-1"),
+    });
+
+    const result = await submitExecution(unitOfWork, reader, clock, {
+      context,
+      request: request({ runtime_profile: untrustedProfile }),
+      execution_event_ref: ref("DOMAIN_EVENT", "event-untrusted-1"),
+      created_at: "2026-11-15T08:00:06Z",
+    });
+    expect(result.status).toBe("REJECTED");
+    expect(result.errors[0]?.code).toBe("POLICY_DENIED");
+    expect(unitOfWorkCalled).toBe(false);
   });
 
   it("does not persist or enqueue an Execution when admission is denied", async () => {
