@@ -264,6 +264,7 @@ describe("INV-06 authorization application boundary", () => {
         ruleset_digest: "sha256:8888888888888888888888888888888888888888888888888888888888888888",
       },
       evaluator_version: "evaluator-v2",
+      approval_required: false,
     };
     vi.mocked(harness.sources.evaluatePolicy).mockResolvedValue(
       createOperationResult({
