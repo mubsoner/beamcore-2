@@ -899,7 +899,53 @@ async function transitionDelegationLifecycle(
   }
   if (!operator.data.authorized) return fail(context, "FORBIDDEN", "Caller is not authorized for this delegation lifecycle transition");
 
-  const transitioned = transitionDelegation(current.data, targetState, deps.clock.now());
+  const now = deps.clock.now();
+  if (targetState === "ACTIVE") {
+    const activationRequest: DelegationRequest = {
+      delegation_ref: current.data.delegation_ref,
+      grantor_ref: current.data.grantor_ref,
+      delegate_ref: current.data.delegate_ref,
+      purpose: current.data.purpose,
+      scope_ref: current.data.scope_ref,
+      allowed_actions: current.data.allowed_actions,
+      resource_constraints: current.data.resource_constraints,
+      limits: current.data.limits,
+      conditions: current.data.conditions,
+      not_before: current.data.not_before,
+      expires_at: current.data.expires_at,
+      allow_subdelegation: current.data.allow_subdelegation,
+      ...(current.data.parent_delegation_ref ? { parent_delegation_ref: current.data.parent_delegation_ref } : {}),
+      authorized_by_decision_ref: current.data.authorized_by_decision_ref,
+    };
+    const [grantorAuthority, citedDecision] = await Promise.all([
+      deps.sources.resolveDelegationGrantAuthority(context, activationRequest),
+      deps.sources.verifyDelegationDecision(context, activationRequest),
+    ]);
+    if (grantorAuthority.status !== "OK" || !grantorAuthority.data ||
+        citedDecision.status !== "OK" || !citedDecision.data) {
+      return fail(context, "DEPENDENCY_UNAVAILABLE", "Grantor authority and cited decision could not be revalidated before delegation activation");
+    }
+    if (!citedDecision.data.valid) {
+      return fail(context, "FORBIDDEN", "The decision that authorized this delegation is no longer current");
+    }
+    let ancestry: DelegationRecord[] = [];
+    let parent: DelegationRecord | undefined;
+    if (activationRequest.parent_delegation_ref) {
+      const lineage = await deps.sources.readDelegationLineage(context, activationRequest.parent_delegation_ref);
+      if (lineage.status !== "OK" || !lineage.data) {
+        return fail(context, "FORBIDDEN", "Parent delegation lineage is unavailable during activation");
+      }
+      ancestry = lineage.data;
+      parent = ancestry[0];
+    }
+    const issues = [
+      ...validateDelegationRequest(activationRequest, grantorAuthority.data, parent, now),
+      ...validateDelegationLineage(activationRequest, ancestry, now),
+    ];
+    if (issues.length) return fail(context, "FORBIDDEN", "Delegation authority or parent lineage is no longer valid");
+  }
+
+  const transitioned = transitionDelegation(current.data, targetState, now);
   if (transitioned.status !== "OK" || !transitioned.data) return propagate(context, transitioned);
   const eventType = targetState === "ACTIVE" ? "delegation.activated" :
     targetState === "SUSPENDED" ? "delegation.suspended" :
@@ -959,8 +1005,11 @@ async function transitionPolicyReleaseLifecycle(
       (operation.approval_ref && !sameScopeRef(operation.approval_ref.scope_ref, context.scope_ref))) {
     return fail(context, "VALIDATION_ERROR", "Policy release operation context is invalid or cross-scope");
   }
-  if (targetState === "RELEASED" && !operation.approval_ref) {
-    return fail(context, "APPROVAL_REQUIRED", "Policy release requires an explicit approval reference");
+  if ((targetState === "APPROVED" || targetState === "RELEASED") && !operation.approval_ref) {
+    return fail(context, "APPROVAL_REQUIRED", "Policy approval/release requires an explicit approval reference");
+  }
+  if (["IMPACT_REVIEWED", "APPROVED", "RELEASED"].includes(targetState) && !operation.impact_report_ref) {
+    return fail(context, "VALIDATION_ERROR", "Policy impact evidence is required before approval or release");
   }
   if ((targetState === "SUSPENDED" || targetState === "RETIRED") && !operation.reason_code?.trim()) {
     return fail(context, "VALIDATION_ERROR", "Policy suspension or retirement requires a reason code");
@@ -990,7 +1039,9 @@ async function transitionPolicyReleaseLifecycle(
   const transitioned = transitionPolicyRelease(current.data, targetState, deps.clock.now());
   if (transitioned.status !== "OK" || !transitioned.data) return propagate(context, transitioned);
   const eventType = targetState === "RELEASED" ? "policy.version_released" :
-    targetState === "SUSPENDED" ? "policy.version_suspended" : "policy.version_retired";
+    targetState === "SUSPENDED" ? "policy.version_suspended" :
+      targetState === "RETIRED" ? "policy.version_retired" :
+        "policy.review_stage_" + targetState.toLowerCase();
   return deps.repository.updatePolicyReleaseWithEvent(context, transitioned.data, version, eventType, {
     key: "policy." + targetState.toLowerCase() + ":" + idempotencyKey,
     request_fingerprint: await digestSha256(JSON.stringify({
@@ -1003,6 +1054,19 @@ async function transitionPolicyReleaseLifecycle(
       reason_code: operation.reason_code ?? null,
     })),
   }, operation);
+}
+
+/** Advance one controlled pre-release review stage; the domain state machine rejects skipped stages. */
+export function advancePolicyReleaseReviewStage(
+  deps: AuthorizationDependencies,
+  context: RequestContext,
+  policyRef: ObjectRef,
+  targetState: Extract<PolicyReleaseState,
+    "VALIDATED" | "STATIC_ANALYSIS_PASSED" | "SCENARIO_TESTED" |
+    "CONFLICT_TESTED" | "REGRESSION_TESTED" | "IMPACT_REVIEWED" | "APPROVED">,
+  operation: PolicyReleaseOperationContext,
+): Promise<OperationResult<PolicyRelease>> {
+  return transitionPolicyReleaseLifecycle(deps, context, policyRef, targetState, operation);
 }
 
 export function publishPolicyRelease(
