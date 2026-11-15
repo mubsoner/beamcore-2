@@ -160,7 +160,7 @@ function makeDependencies(currentFacts: AuthorityFacts = facts) {
     verifyApprovalRevoker: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { authorized: true } })),
     verifyApprovalLifecycleOperator: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { authorized: true } })),
     authenticatePrincipal: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: {
-      authentication_result_id: "authn-1", state: "AUTHENTICATED", principal_ref: actor,
+      authentication_result_id: "authn-1", state: "AUTHENTICATED" as const, principal_ref: actor,
       session_ref: ref("SESSION", "session-1"), authenticated_at: "2026-11-15T09:59:00Z",
       expires_at: "2026-11-15T10:10:00Z",
     } })),
