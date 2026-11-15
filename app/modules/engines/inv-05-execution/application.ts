@@ -5,6 +5,7 @@ import {
   isPrincipalRef,
   isRequestContext,
   isTimestamp,
+  isVersion,
   sameObjectRef,
   sameScopeRef,
   type ClockPort,
