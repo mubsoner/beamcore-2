@@ -50,6 +50,8 @@ export interface RuntimeInvocationDescriptor {
   runtime_profile_version: string;
   runtime_profile_digest?: string;
   runtime_assurance?: TrustedRuntimeAssurance;
+  invocation_digest: string;
+  input_digest: string;
   inputs: RuntimeInputDescriptor[];
   idempotency_key: string;
   deadline?: Timestamp;
@@ -328,6 +330,10 @@ export function validateRuntimeStartReceipt(
       !sameExactObjectRef(provided, authoritative)) ||
     invocation.capability_version !== execution.capability_version ||
     invocation.runtime_profile_version !== execution.runtime_profile_version ||
+    !isVersion(invocation.invocation_digest) ||
+    invocation.invocation_digest !== attempt.invocation_digest ||
+    !isVersion(invocation.input_digest) ||
+    invocation.input_digest !== attempt.input_digest ||
     invocation.runtime_profile_version !== profile.profile_version ||
     (profile.profile_digest !== undefined &&
       invocation.runtime_profile_digest !== profile.profile_digest) ||
