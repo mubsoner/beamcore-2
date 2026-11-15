@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import type { InboxEventEnvelope, RequestContext } from "../../shared";
-import { fingerprintInboxEvent } from "../domain";
 import { createInMemoryEventInbox } from "./in-memory-inbox";
 
 const scope = { scope_id: "tenant-a", scope_kind: "ORGANIZATION" as const };
@@ -44,12 +43,9 @@ async function accept(
   inbox: ReturnType<typeof createInMemoryEventInbox>,
   consumer_id: string,
   incoming: InboxEventEnvelope,
+  requestContext: RequestContext = context,
 ) {
-  const fingerprint = await fingerprintInboxEvent(context, consumer_id, incoming);
-  if (fingerprint.status !== "OK" || !fingerprint.data) {
-    throw new Error("Test event fingerprint could not be computed");
-  }
-  return inbox.accept(context, consumer_id, incoming, fingerprint.data);
+  return inbox.accept(requestContext, consumer_id, incoming);
 }
 
 describe("In-memory Inbox reference conformance", () => {
@@ -69,8 +65,10 @@ describe("In-memory Inbox reference conformance", () => {
   it("rejects event_id reuse with a different envelope fingerprint", async () => {
     const inbox = createInMemoryEventInbox();
     await accept(inbox, "inventory-projection-v1", event("event-1"));
-    const altered = event("event-1");
-    altered.payload = { quantity_delta: 99, sku: "SKU-1" };
+    const altered = {
+      ...event("event-1"),
+      payload: { quantity_delta: 99, sku: "SKU-1" },
+    };
     const replay = await accept(inbox, "inventory-projection-v1", altered);
 
     expect(replay.status).toBe("REJECTED");
@@ -125,19 +123,6 @@ describe("In-memory Inbox reference conformance", () => {
     expect(second.data?.disposition).toBe("ACCEPTED");
   });
 
-  it("rejects a forged fingerprint", async () => {
-    const inbox = createInMemoryEventInbox();
-    const result = await inbox.accept(
-      context,
-      "inventory-projection-v1",
-      event("event-1"),
-      "a".repeat(64),
-    );
-
-    expect(result.status).toBe("REJECTED");
-    expect(result.errors[0]?.code).toBe("INTEGRITY_OR_UNTRUSTED_INPUT");
-  });
-
   it("isolates event IDs between consumers", async () => {
     const inbox = createInMemoryEventInbox();
     const first = await accept(inbox, "inventory-projection-v1", event("event-1"));
@@ -168,19 +153,11 @@ describe("In-memory Inbox reference conformance", () => {
         scope_ref: otherScope,
       },
     };
-    const fingerprint = await fingerprintInboxEvent(
-      otherContext,
+    const second = await accept(
+      inbox,
       "inventory-projection-v1",
       otherEvent,
-    );
-    if (fingerprint.status !== "OK" || !fingerprint.data) {
-      throw new Error("Tenant B event fingerprint could not be computed");
-    }
-    const second = await inbox.accept(
       otherContext,
-      "inventory-projection-v1",
-      otherEvent,
-      fingerprint.data,
     );
 
     expect(first.data?.disposition).toBe("ACCEPTED");
