@@ -15,6 +15,7 @@ import {
   startExecutionAttempt,
   transitionExecution,
   validateExecutionRequest,
+  validateTrustedRuntimeAssurance,
   validateRuntimeProfile,
   type ExecutionRecord,
   type ExecutionRequest,
@@ -157,6 +158,64 @@ describe("INV-05 execution runtime domain", () => {
     }));
     expect(wrongCapability.status).toBe("REJECTED");
     expect(wrongCapability.errors[0]?.code).toBe("CAPABILITY_UNAVAILABLE");
+  });
+
+  it("requires trusted runtime attestation bound to the exact profile digest and hard controls", () => {
+    const untrustedProfile = profile({
+      trust_class: "UNTRUSTED_GENERATED_CODE",
+      profile_digest: "sha256-profile-1",
+      approved_by: context.actor_ref,
+      approval_ref: ref("APPROVAL", "approval-1"),
+      secret_injection_policy_ref: ref("SECRET_INJECTION_POLICY", "secret-policy-1"),
+    });
+    expect(validateRuntimeProfile(context, untrustedProfile).status).toBe("OK");
+
+    const assurance = {
+      attestation_ref: ref("RUNTIME_ASSURANCE_ATTESTATION", "attestation-1"),
+      runtime_identity_ref: ref("RUNTIME_IDENTITY", "runtime-identity-1"),
+      runtime_profile_ref: untrustedProfile.profile_ref,
+      runtime_profile_version: untrustedProfile.profile_version,
+      runtime_profile_digest: "sha256-profile-1",
+      enforcement_evidence_ref: ref("RUNTIME_ENFORCEMENT_EVIDENCE", "enforcement-1"),
+      enforcement_test_evidence_ref: ref("RUNTIME_ENFORCEMENT_TEST_EVIDENCE", "enforcement-tests-1"),
+      verifier_ref: ref("TRUSTED_RUNTIME_ATTESTATION_VERIFIER", "verifier-1"),
+      verification_status: "VERIFIED" as const,
+      enforced_controls: [
+        "CPU_LIMIT", "MEMORY_LIMIT", "WALL_TIME_LIMIT", "STORAGE_LIMIT",
+        "PROCESS_LIMIT", "OUTPUT_SIZE_LIMIT", "CONCURRENCY_LIMIT",
+        "NETWORK_EGRESS", "FILESYSTEM_ISOLATION", "SECRET_ISOLATION",
+        "PROCESS_TERMINATION", "CLEANUP",
+      ] as const,
+      verified_at: "2026-11-15T08:00:04Z",
+      valid_until: "2026-11-15T08:05:00Z",
+    };
+    expect(validateTrustedRuntimeAssurance(
+      context, untrustedProfile, assurance, "2026-11-15T08:00:05Z",
+    ).status).toBe("OK");
+
+    const wrongProfileDigest = validateTrustedRuntimeAssurance(
+      context,
+      untrustedProfile,
+      { ...assurance, runtime_profile_digest: "sha256-different-profile" },
+      "2026-11-15T08:00:05Z",
+    );
+    expect(wrongProfileDigest.status).toBe("REJECTED");
+
+    const expired = validateTrustedRuntimeAssurance(
+      context,
+      untrustedProfile,
+      { ...assurance, valid_until: "2026-11-15T08:00:04Z" },
+      "2026-11-15T08:00:05Z",
+    );
+    expect(expired.status).toBe("REJECTED");
+
+    const missingControl = validateTrustedRuntimeAssurance(
+      context,
+      untrustedProfile,
+      { ...assurance, enforced_controls: ["CPU_LIMIT"] },
+      "2026-11-15T08:00:05Z",
+    );
+    expect(missingControl.status).toBe("REJECTED");
   });
 
   it("creates a durable logical Execution without claiming that a process started", () => {
