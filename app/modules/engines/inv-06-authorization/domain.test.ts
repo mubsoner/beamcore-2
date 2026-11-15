@@ -59,7 +59,7 @@ const principal = (overrides: Partial<PrincipalContext> = {}): PrincipalContext 
 });
 const facts = (overrides: Partial<AuthorityFacts> = {}): AuthorityFacts => ({
   membership_state: "ACTIVE", entitlement_state: "ELIGIBLE",
-  permission_state: "GRANTED", delegation_state: "NOT_REQUIRED",
+  permission_state: "GRANTED", delegation_state: "NOT_REQUIRED", trust_assessment_state: "NOT_REQUIRED",
   external_authorization_state: "NOT_REQUIRED",
   verified_resource_scope_ref: scope,
   source_refs: [{
@@ -124,6 +124,10 @@ describe("INV-06 authorization domain", () => {
     expect(evaluate({ facts: { membership_state: "REVOKED" } }).data?.result).toBe("DENY");
     expect(evaluate({ facts: { permission_state: "UNKNOWN" } }).data?.result).toBe("INDETERMINATE");
     expect(evaluate({ facts: { valid_until: "2026-11-15T09:59:59Z" } }).data?.result).toBe("INDETERMINATE");
+  });
+  it("fails closed when a required scoped trust assessment is missing or invalid", () => {
+    expect(evaluate({ policy: { trust_required: true } }).data?.result).toBe("INDETERMINATE");
+    expect(evaluate({ policy: { trust_required: true }, facts: { trust_assessment_state: "INVALID" } }).data?.result).toBe("DENY");
   });
   it("does not turn UNKNOWN or suspended policy into ALLOW", () => {
     expect(evaluate({ policy: { effect: "UNKNOWN" } }).data?.result).toBe("INDETERMINATE");
@@ -217,6 +221,6 @@ describe("INV-06 authorization domain", () => {
     const decision = evaluate().data!;
     expect(isDecisionCurrentForRequest(decision, request(), "2026-11-15T10:01:00Z", "sha256:fingerprint")).toBe(true);
     expect(isDecisionCurrentForRequest(decision, request(), "2026-11-15T10:05:00Z", "sha256:fingerprint")).toBe(false);
-    expect(isDecisionCurrentForRequest(decision, request({ action: "artifact.delete" }), "2026-11-15T10:01:00Z", "sha256:fingerprint")).toBe(true);
+    expect(isDecisionCurrentForRequest(decision, request({ action: "artifact.delete" }), "2026-11-15T10:01:00Z", "sha256:fingerprint")).toBe(false);
   });
 });
