@@ -368,6 +368,8 @@ describe("INV-06 authorization domain", () => {
       grantor_allowed_actions: ["artifact.read"],
       grantor_scope_ref: scope,
       grantor_resource_constraints: [ref("ARTIFACT", "artifact-1")],
+      grantor_limits: [],
+      grantor_conditions: [],
     };
     expect(validateDelegationRequest(delegationRequest, grantor).length).toBeGreaterThan(0);
     expect(validateDelegationRequest({
