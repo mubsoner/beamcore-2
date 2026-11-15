@@ -160,6 +160,7 @@ export interface PolicyReleaseOperationContext {
   change_ref: ObjectRef;
   impact_report_ref?: ObjectRef;
   approval_ref?: ObjectRef;
+  reason_code?: string;
   expected_version?: Version;
   correlation_id: string;
   idempotency_key: string;
