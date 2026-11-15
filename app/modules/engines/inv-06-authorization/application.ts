@@ -1,6 +1,7 @@
 import {
   createOperationError,
   createOperationResult,
+  isObjectRef,
   isRequestContext,
   sameObjectRef,
   sameScopeRef,
@@ -473,21 +474,25 @@ export async function requestApproval(
   if (factIssues.length) return fail(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Current requester authority facts failed validation");
   const policy = await deps.sources.evaluatePolicy(context, request, principal.data, facts.data);
   if (policy.status !== "OK" || !policy.data) return fail(context, "DEPENDENCY_UNAVAILABLE", "Current policy could not be evaluated");
-  const policyIssues = validatePolicyEvaluation(policy.data, request);
+  const policyData = policy.data;
+  const principalData = principal.data;
+  const factsData = facts.data;
+  const policyIssues = validatePolicyEvaluation(policyData, request);
   if (policyIssues.length) return fail(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Policy evaluator output failed validation");
-  if (!policy.data.approval_required || !policy.data.approval_use_mode || !policy.data.approval_expires_at) {
+  if (!policyData.approval_required || !policyData.approval_use_mode || !policyData.approval_expires_at) {
     return fail(context, "POLICY_DENIED", "Current policy does not require or define this approval");
   }
+  const approvalExpiry = policyData.approval_expires_at;
   const now = deps.clock.now();
   const expiryBounds = [
-    principal.data.valid_until,
-    facts.data.valid_until,
-    policy.data.valid_until,
-    policy.data.policy_release.valid_until,
+    principalData.valid_until,
+    factsData.valid_until,
+    policyData.valid_until,
+    policyData.policy_release.valid_until,
     request.deadline,
   ].filter((value): value is Timestamp => value !== undefined);
-  if (Date.parse(policy.data.approval_expires_at) <= Date.parse(now) ||
-      expiryBounds.some(bound => Date.parse(policy.data.approval_expires_at!) > Date.parse(bound))) {
+  if (Date.parse(approvalExpiry) <= Date.parse(now) ||
+      expiryBounds.some(bound => Date.parse(approvalExpiry) > Date.parse(bound))) {
     return fail(context, "POLICY_DENIED", "Policy-derived approval expiry exceeds a current authority, policy or request validity bound");
   }
 
@@ -495,7 +500,7 @@ export async function requestApproval(
     request.work_ref, request.plan_revision_ref, request.graph_revision_ref,
     request.execution_ref, request.capability_ref,
   ].filter((ref): ref is ObjectRef => ref !== undefined);
-  const constraints = policy.data.independent_approver_required
+  const constraints = policyData.independent_approver_required
     ? ["INDEPENDENT_APPROVER"]
     : [];
   const created = createPendingApproval({
@@ -520,10 +525,10 @@ export async function requestApproval(
     environment_ref: request.environment_ref,
     ...(request.work_ref ? { work_ref: request.work_ref } : {}),
     context_version_refs: contextRefs,
-    policy_release_ref: policy.data.policy_release.policy_release_ref,
-    approval_use_mode: policy.data.approval_use_mode,
+    policy_release_ref: policyData.policy_release.policy_release_ref,
+    approval_use_mode: policyData.approval_use_mode,
     created_at: now,
-    expires_at: policy.data.approval_expires_at,
+    expires_at: approvalExpiry,
   });
   if (created.status !== "OK" || !created.data) return propagate(context, created);
 
