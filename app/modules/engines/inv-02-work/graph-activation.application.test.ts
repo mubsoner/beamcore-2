@@ -141,7 +141,7 @@ function makeState() {
   });
 
   const appendOnlyRepository = <T>(key: string): AppendOnlyRepository<T> => ({
-    append: async (_ctx, value) => {
+    append: async (_ctx, suppliedRef, value) => {
       const injected = maybeFail<T>(`append:${key}`);
       if (injected) return injected;
       const item = value as unknown as Record<string, unknown>;
@@ -151,6 +151,7 @@ function makeState() {
           : item.request_ref ?? item.receipt_ref ?? item.revision_ref
       ) as ObjectRef | undefined;
       if (!object_ref) throw new Error(`Append-only item for ${key} has no stable object reference`);
+      if (object_ref.object_kind !== suppliedRef.object_kind || object_ref.object_id !== suppliedRef.object_id || object_ref.scope_ref.scope_id !== suppliedRef.scope_ref.scope_id || object_ref.scope_ref.scope_kind !== suppliedRef.scope_ref.scope_kind) throw new Error(`Append-only item for ${key} does not match supplied identity`);
       const records = appendRecords(key);
       if (records.has(object_ref.object_id)) {
         return createOperationResult<T>({
