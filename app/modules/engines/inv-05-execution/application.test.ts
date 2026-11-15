@@ -8,6 +8,7 @@ import {
 } from "./application";
 import type { EngineUnitOfWorkPort } from "../shared";
 import type { ExecutionRequest, RuntimeProfile } from "./domain";
+import type { DispatchAttempt } from "../inv-04-orchestration/domain";
 
 const scope = { scope_id: "scope-1", scope_kind: "WORK" as const };
 const otherScope = { scope_id: "scope-2", scope_kind: "WORK" as const };
@@ -62,6 +63,27 @@ const request = (overrides: Partial<ExecutionRequest> = {}): ExecutionRequest =>
   deadline: "2026-11-15T08:01:00Z",
   ...overrides,
 });
+const dispatchAttempt = (overrides: Partial<DispatchAttempt> = {}): DispatchAttempt => ({
+  dispatch_ref: ref("DISPATCH_ATTEMPT", "dispatch-1"),
+  orchestration_ref: ref("ORCHESTRATION_RUN", "run-1"),
+  node_coordination_ref: ref("NODE_COORDINATION", "coordination-1"),
+  work_ref: ref("WORK", "work-1"),
+  graph_revision_ref: ref("WORK_GRAPH_REVISION", "graph-revision-1"),
+  graph_node_ref: ref("GRAPH_NODE", "node-1"),
+  target_capability_ref: ref("CAPABILITY", "capability-1", "1"),
+  target_capability_version: "1",
+  state: "CREATED",
+  attempt_number: 1,
+  idempotency_key: "execution-idem-1",
+  request_correlation_id: context.correlation_id,
+  authorization_decision_ref: ref("AUTHORITY_DECISION", "authority-1"),
+  resource_admission_ref: ref("RESOURCE_ADMISSION", "resource-admission-1"),
+  error_refs: [],
+  created_at: "2026-11-15T08:00:04Z",
+  updated_at: "2026-11-15T08:00:04Z",
+  ...overrides,
+});
+
 const admission = (overrides: Partial<ExecutionAdmissionSnapshot> = {}): ExecutionAdmissionSnapshot => ({
   checked_at: "2026-11-15T08:00:05Z",
   authorization: {
@@ -86,6 +108,34 @@ const admission = (overrides: Partial<ExecutionAdmissionSnapshot> = {}): Executi
     permitted: true,
     current: true,
   },
+  ...overrides,
+});
+
+const admissionReader = (
+  overrides: Partial<ExecutionAdmissionReaderPort> = {},
+  sourceProfile: RuntimeProfile = profile(),
+): ExecutionAdmissionReaderPort => ({
+  readRuntimeProfile: async () => ({
+    status: "OK",
+    correlation_id: context.correlation_id,
+    data: sourceProfile,
+    errors: [],
+    warnings: [],
+  }),
+  readDispatchAttempt: async () => ({
+    status: "OK",
+    correlation_id: context.correlation_id,
+    data: dispatchAttempt(),
+    errors: [],
+    warnings: [],
+  }),
+  readCurrentAdmission: async () => ({
+    status: "OK",
+    correlation_id: context.correlation_id,
+    data: admission(),
+    errors: [],
+    warnings: [],
+  }),
   ...overrides,
 });
 
@@ -203,6 +253,119 @@ describe("INV-05 execution application admission boundary", () => {
     expect(wrongCapabilityVersion.status).toBe("REJECTED");
   });
 
+  it("rejects a caller-supplied approved profile when the INV-05 repository says it is suspended", async () => {
+    let unitOfWorkCalled = false;
+    const unitOfWork = {
+      execute: async () => {
+        unitOfWorkCalled = true;
+        throw new Error("Suspended profile must not be persisted");
+      },
+    } as unknown as EngineUnitOfWorkPort;
+    const reader = admissionReader({}, profile({ profile_status: "SUSPENDED" }));
+    const result = await submitExecution(unitOfWork, reader, {
+      now: () => "2026-11-15T08:00:06Z",
+    }, {
+      context,
+      request: request({ runtime_profile: profile({ profile_status: "APPROVED" }) }),
+      execution_event_ref: ref("DOMAIN_EVENT", "event-forged-profile"),
+      created_at: "2026-11-15T08:00:06Z",
+    });
+    expect(result.status).toBe("REJECTED");
+    expect(result.errors[0]?.code).toBe("POLICY_DENIED");
+    expect(unitOfWorkCalled).toBe(false);
+  });
+
+  it("rejects a dispatch whose pinned Work, graph, node or capability differs from the request", async () => {
+    let admissionRead = false;
+    const reader = admissionReader({
+      readDispatchAttempt: async () => ({
+        status: "OK",
+        correlation_id: context.correlation_id,
+        data: dispatchAttempt({ graph_node_ref: ref("GRAPH_NODE", "different-node") }),
+        errors: [],
+        warnings: [],
+      }),
+      readCurrentAdmission: async () => {
+        admissionRead = true;
+        return {
+          status: "OK",
+          correlation_id: context.correlation_id,
+          data: admission(),
+          errors: [],
+          warnings: [],
+        };
+      },
+    });
+    const unitOfWork = { execute: async () => { throw new Error("Must not persist"); } } as unknown as EngineUnitOfWorkPort;
+    const result = await submitExecution(unitOfWork, reader, {
+      now: () => "2026-11-15T08:00:06Z",
+    }, {
+      context,
+      request: request(),
+      execution_event_ref: ref("DOMAIN_EVENT", "event-dispatch-mismatch"),
+      created_at: "2026-11-15T08:00:06Z",
+    });
+    expect(result.status).toBe("REJECTED");
+    expect(result.errors[0]?.code).toBe("INTEGRITY_OR_UNTRUSTED_INPUT");
+    expect(admissionRead).toBe(false);
+  });
+
+  it("rejects terminal, unknown, or already-consumed INV-04 dispatch attempts", async () => {
+    for (const override of [
+      { state: "FAILED" as const },
+      { state: "UNKNOWN" as const },
+      { execution_ref: ref("EXECUTION", "another-execution") },
+    ]) {
+      const reader = admissionReader({
+        readDispatchAttempt: async () => ({
+          status: "OK",
+          correlation_id: context.correlation_id,
+          data: dispatchAttempt(override),
+          errors: [],
+          warnings: [],
+        }),
+      });
+      const unitOfWork = { execute: async () => { throw new Error("Must not persist"); } } as unknown as EngineUnitOfWorkPort;
+      const result = await submitExecution(unitOfWork, reader, {
+        now: () => "2026-11-15T08:00:06Z",
+      }, {
+        context,
+        request: request(),
+        execution_event_ref: ref("DOMAIN_EVENT", "event-dispatch-terminal"),
+        created_at: "2026-11-15T08:00:06Z",
+      });
+      expect(result.status).toBe("REJECTED");
+    }
+  });
+
+  it("rejects dispatch when its authorization or resource-admission receipt is not the current one", async () => {
+    const reader = admissionReader({
+      readCurrentAdmission: async () => ({
+        status: "OK",
+        correlation_id: context.correlation_id,
+        data: admission({
+          resource: {
+            ...admission().resource,
+            admission_ref: ref("RESOURCE_ADMISSION", "resource-other"),
+          },
+        }),
+        errors: [],
+        warnings: [],
+      }),
+    });
+    const unitOfWork = { execute: async () => { throw new Error("Must not persist"); } } as unknown as EngineUnitOfWorkPort;
+    const result = await submitExecution(unitOfWork, reader, {
+      now: () => "2026-11-15T08:00:06Z",
+    }, {
+      context,
+      request: request(),
+      execution_event_ref: ref("DOMAIN_EVENT", "event-admission-mismatch"),
+      created_at: "2026-11-15T08:00:06Z",
+    });
+    expect(result.status).toBe("REJECTED");
+    expect(result.errors[0]?.code).toBe("INTEGRITY_OR_UNTRUSTED_INPUT");
+  });
+
   it("hard-disables untrusted generated code when no trusted attestation verifier exists", async () => {
     let unitOfWorkCalled = false;
     const unitOfWork = {
@@ -211,16 +374,6 @@ describe("INV-05 execution application admission boundary", () => {
         throw new Error("Untrusted runtime must not be persisted");
       },
     } as unknown as EngineUnitOfWorkPort;
-    const reader: ExecutionAdmissionReaderPort = {
-      readCurrentAdmission: async () => ({
-        status: "OK",
-        correlation_id: context.correlation_id,
-        data: admission(),
-        errors: [],
-        warnings: [],
-      }),
-    };
-    const clock: ClockPort = { now: () => "2026-11-15T08:00:06Z" };
     const untrustedProfile = profile({
       trust_class: "UNTRUSTED_GENERATED_CODE",
       profile_digest: "sha256-profile-1",
@@ -228,6 +381,8 @@ describe("INV-05 execution application admission boundary", () => {
       approval_ref: ref("APPROVAL", "approval-1"),
       secret_injection_policy_ref: ref("SECRET_INJECTION_POLICY", "secret-policy-1"),
     });
+    const reader = admissionReader({}, untrustedProfile);
+    const clock: ClockPort = { now: () => "2026-11-15T08:00:06Z" };
 
     const result = await submitExecution(unitOfWork, reader, clock, {
       context,
@@ -248,7 +403,7 @@ describe("INV-05 execution application admission boundary", () => {
         throw new Error("Persistence must not be reached");
       },
     } as unknown as EngineUnitOfWorkPort;
-    const reader: ExecutionAdmissionReaderPort = {
+    const reader = admissionReader({
       readCurrentAdmission: async () => ({
         status: "OK",
         correlation_id: context.correlation_id,
@@ -259,7 +414,7 @@ describe("INV-05 execution application admission boundary", () => {
         errors: [],
         warnings: [],
       }),
-    };
+    });
     const clock: ClockPort = { now: () => "2026-11-15T08:00:06Z" };
 
     const result = await submitExecution(unitOfWork, reader, clock, {
@@ -274,11 +429,11 @@ describe("INV-05 execution application admission boundary", () => {
 
   it("reports an unavailable admission source without assuming permission", async () => {
     const unitOfWork = { execute: async () => { throw new Error("Must not run"); } } as unknown as EngineUnitOfWorkPort;
-    const reader: ExecutionAdmissionReaderPort = {
+    const reader = admissionReader({
       readCurrentAdmission: async () => {
         throw new Error("authorization dependency unavailable");
       },
-    };
+    });
     const clock: ClockPort = { now: () => "2026-11-15T08:00:06Z" };
     const result = await submitExecution(unitOfWork, reader, clock, {
       context,
