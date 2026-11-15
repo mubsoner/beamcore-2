@@ -8,6 +8,7 @@ import {
   decideApprovalRequest,
   explainDenialSafe,
   getAuthorityDecision,
+  grantDelegation,
   publishPolicyRelease,
   requestApproval,
   revokeApproval,
@@ -368,6 +369,47 @@ describe("INV-06 authorization application boundary", () => {
       idempotency_key: "revocation-2",
     });
     expect(denied.status).toBe("REJECTED");
+  });
+
+  it("refuses a child delegation when its complete ancestor lineage cannot be verified", async () => {
+    const harness = makeDependencies();
+    const parentRef = ref("DELEGATION", "parent-delegation");
+    const request: DelegationRequest = {
+      delegation_ref: ref("DELEGATION", "child-delegation"),
+      grantor_ref: actor,
+      delegate_ref: { principal_id: "agent-child", principal_kind: "AGENT" },
+      purpose: "read one artifact under inherited constraints",
+      scope_ref: scope,
+      allowed_actions: ["artifact.read"],
+      resource_constraints: [ref("ARTIFACT", "artifact-1")],
+      limits: ["daily-5"],
+      conditions: [],
+      not_before: "2026-11-15T10:00:30Z",
+      expires_at: "2026-11-15T10:04:00Z",
+      allow_subdelegation: false,
+      parent_delegation_ref: parentRef,
+      authorized_by_decision_ref: ref("AUTHORIZATION_DECISION", "child-grant"),
+    };
+    vi.mocked(harness.sources.resolveDelegationGrantAuthority).mockResolvedValue(
+      createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: {
+        grantor_authenticated: true,
+        grantor_may_delegate: true,
+        grantor_may_subdelegate: true,
+        grantor_allowed_actions: ["artifact.read"],
+        grantor_scope_ref: scope,
+        grantor_resource_constraints: [ref("ARTIFACT", "artifact-1")],
+        grantor_limits: ["daily-5"],
+        grantor_conditions: [],
+        valid_until: "2026-11-15T10:10:00Z",
+      } }),
+    );
+    vi.mocked(harness.sources.verifyDelegationDecision).mockResolvedValue(
+      createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { valid: true } }),
+    );
+    const result = await grantDelegation(harness.deps, context, request);
+    expect(result.status).toBe("REJECTED");
+    expect(harness.sources.readDelegationLineage).toHaveBeenCalledWith(context, parentRef);
+    expect(harness.repository.createDelegationWithEvent).not.toHaveBeenCalled();
   });
 
   it("suspends a delegation only with current authority and expected version", async () => {
