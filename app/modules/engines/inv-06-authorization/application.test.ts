@@ -5,6 +5,7 @@ import {
   explainDenialSafe,
   getAuthorityDecision,
   publishPolicyRelease,
+  revokeApproval,
   revokeAuthority,
   recheckAuthorizationAtActionBoundary,
   suspendDelegation,
@@ -155,6 +156,7 @@ function makeDependencies(currentFacts: AuthorityFacts = facts) {
     verifyDelegationRevoker: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { authorized: false } })),
     verifyDelegationLifecycleOperator: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { authorized: true } })),
     verifyApprovalRevoker: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { authorized: true } })),
+    verifyApprovalLifecycleOperator: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { authorized: true } })),
     authenticatePrincipal: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: {
       authentication_result_id: "authn-1", state: "AUTHENTICATED", principal_ref: actor,
       session_ref: ref("SESSION", "session-1"), authenticated_at: "2026-11-15T09:59:00Z",
