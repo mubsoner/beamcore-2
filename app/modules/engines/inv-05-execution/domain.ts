@@ -1148,7 +1148,6 @@ export function captureExecutionOutput(
       !sameScopeRef(input.output_ref.scope_ref, context.scope_ref) ||
       !isVersion(input.output_digest) ||
       !OUTPUT_COMPLETENESS.includes(input.output_completeness) ||
-      input.output_completeness === "NONE" ||
       !isTimestamp(input.captured_at)) {
     return rejected(context, "VALIDATION_ERROR", "Output reference, digest, completeness or capture timestamp is invalid");
   }
