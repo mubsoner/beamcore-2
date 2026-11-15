@@ -348,7 +348,7 @@ describe("INV-06 authorization application boundary", () => {
     expect(published.status).toBe("OK");
     expect(published.data?.state).toBe("RELEASED");
     expect(harness.repository.updatePolicyReleaseWithEvent).toHaveBeenCalledWith(
-      context, expect.objectContaining({ state: "RELEASED" }), "1", "policy.version_released", expect.any(Object),
+      context, expect.objectContaining({ state: "RELEASED" }), "1", "policy.version_released", expect.any(Object), operation,
     );
     const missingImpact = await publishPolicyRelease(harness.deps, context, policyRef, {
       ...operation, impact_report_ref: undefined,
