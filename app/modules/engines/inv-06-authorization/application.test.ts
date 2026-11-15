@@ -5,6 +5,7 @@ import {
   explainDenialSafe,
   getAuthorityDecision,
   publishPolicyRelease,
+  requestApproval,
   revokeApproval,
   expireApproval,
   revokeAuthority,
@@ -356,6 +357,36 @@ describe("INV-06 authorization application boundary", () => {
       ...operation, impact_report_ref: undefined,
     });
     expect(missingImpact.status).toBe("REJECTED");
+  });
+
+  it("creates an approval with the canonical binding of the exact reviewed request", async () => {
+    const harness = makeDependencies();
+    const request = authorizationRequest();
+    const result = await requestApproval(harness.deps, context, request);
+    expect(result.status).toBe("OK");
+    expect(result.data?.request_binding_fingerprint).toBe(buildCanonicalRequestFingerprint(request));
+    expect(harness.repository.createApprovalWithEvent).toHaveBeenCalledWith(
+      context,
+      expect.objectContaining({
+        request_binding_fingerprint: buildCanonicalRequestFingerprint(request),
+        action: request.action,
+        resource_ref: request.resource_ref,
+        environment_ref: request.environment_ref,
+      }),
+      expect.objectContaining({ request_fingerprint: buildCanonicalRequestFingerprint(request) }),
+    );
+  });
+
+  it("does not create an approval when current policy does not require one", async () => {
+    const harness = makeDependencies();
+    vi.mocked(harness.sources.evaluatePolicy).mockResolvedValue(
+      createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: {
+        ...policy, approval_required: false,
+      } }),
+    );
+    const result = await requestApproval(harness.deps, context, authorizationRequest());
+    expect(result.status).toBe("REJECTED");
+    expect(harness.repository.createApprovalWithEvent).not.toHaveBeenCalled();
   });
 
   it("revokes an approval only after lifecycle authority is verified", async () => {
