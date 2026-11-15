@@ -71,6 +71,7 @@ export interface AuthorizationSourcePort {
   verifyDelegationRevoker(context: RequestContext, delegation: DelegationRecord): Promise<OperationResult<{ authorized: boolean }>>;
   verifyDelegationLifecycleOperator(context: RequestContext, delegation: DelegationRecord, targetState: DelegationRecord["state"]): Promise<OperationResult<{ authorized: boolean }>>;
   verifyApprovalRevoker(context: RequestContext, approval: ApprovalRecord): Promise<OperationResult<{ authorized: boolean }>>;
+  verifyApprovalLifecycleOperator(context: RequestContext, approval: ApprovalRecord, targetState: ApprovalRecord["state"]): Promise<OperationResult<{ authorized: boolean }>>;
   authenticatePrincipal(context: RequestContext, request: AuthenticationRequest): Promise<OperationResult<AuthenticationResult>>;
   /** Must check current source authority, including membership, scope and revoker permission. */
   verifyAuthorityRevoker(context: RequestContext, request: AuthorityRevocationRequest): Promise<OperationResult<{ authorized: boolean; source_version?: Version }>>;
@@ -153,6 +154,7 @@ export interface AuthorizationRepositoryPort {
     expectedVersion: Version,
     eventType: string,
     idempotency: { key: string; request_fingerprint: string },
+    operation: PolicyReleaseOperationContext,
   ): Promise<OperationResult<PolicyRelease>>;
 }
 
@@ -545,6 +547,69 @@ export async function decideApprovalRequest(
   });
 }
 
+/** Approval revocation uses a current authority check, optimistic version and atomic event append. */
+async function transitionApprovalLifecycle(
+  deps: AuthorizationDependencies,
+  context: RequestContext,
+  approvalRef: ObjectRef,
+  expectedVersion: Version,
+  targetState: "EXPIRED" | "REVOKED",
+): Promise<OperationResult<ApprovalRecord>> {
+  if (!context.idempotency_key || !isRequestContext(context) ||
+      !sameScopeRef(approvalRef.scope_ref, context.scope_ref)) {
+    return fail(context, "VALIDATION_ERROR", "Approval lifecycle request is invalid or cross-scope");
+  }
+  const current = await deps.sources.readApproval(context, approvalRef);
+  if (current.status !== "OK" || !current.data) {
+    return fail(context, "NOT_FOUND_OR_NOT_VISIBLE", "Approval was not found or is not visible");
+  }
+  if (!sameObjectRef(current.data.approval_ref, approvalRef) ||
+      !sameScopeRef(current.data.scope_ref, context.scope_ref)) {
+    return fail(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Approval source returned a different or out-of-scope record");
+  }
+  const version = current.object_version ?? current.data.approval_ref.object_version;
+  if (!version || version !== expectedVersion) return fail(context, "VERSION_CONFLICT", "Approval version changed before lifecycle transition");
+  const operator = await deps.sources.verifyApprovalLifecycleOperator(context, current.data, targetState);
+  if (operator.status !== "OK" || !operator.data) {
+    return fail(context, "DEPENDENCY_UNAVAILABLE", "Current authority for approval lifecycle transition could not be verified");
+  }
+  if (!operator.data.authorized) return fail(context, "FORBIDDEN", "Caller is not authorized for this approval lifecycle transition");
+  const transitioned = transitionApproval(current.data, targetState, deps.clock.now());
+  if (transitioned.status !== "OK" || !transitioned.data) return propagate(context, transitioned);
+  return deps.repository.updateApprovalLifecycleWithEvent(
+    context,
+    transitioned.data,
+    expectedVersion,
+    targetState === "EXPIRED" ? "approval.expired" : "approval.revoked",
+    {
+      key: "approval." + targetState.toLowerCase() + ":" + context.idempotency_key,
+      request_fingerprint: await digestSha256(JSON.stringify({
+        approval_ref: approvalRef,
+        expected_version: expectedVersion,
+        target_state: targetState,
+      })),
+    },
+  );
+}
+
+export function revokeApproval(
+  deps: AuthorizationDependencies,
+  context: RequestContext,
+  approvalRef: ObjectRef,
+  expectedVersion: Version,
+): Promise<OperationResult<ApprovalRecord>> {
+  return transitionApprovalLifecycle(deps, context, approvalRef, expectedVersion, "REVOKED");
+}
+
+export function expireApproval(
+  deps: AuthorizationDependencies,
+  context: RequestContext,
+  approvalRef: ObjectRef,
+  expectedVersion: Version,
+): Promise<OperationResult<ApprovalRecord>> {
+  return transitionApprovalLifecycle(deps, context, approvalRef, expectedVersion, "EXPIRED");
+}
+
 /** Grantor authority and the cited allow decision are resolved from trusted sources, never caller booleans. */
 export async function grantDelegation(
   deps: AuthorizationDependencies,
@@ -854,7 +919,7 @@ async function transitionPolicyReleaseLifecycle(
       approval_ref: operation.approval_ref ?? null,
       reason_code: operation.reason_code ?? null,
     })),
-  });
+  }, operation);
 }
 
 export function publishPolicyRelease(
