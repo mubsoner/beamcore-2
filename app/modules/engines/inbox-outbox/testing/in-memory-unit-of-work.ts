@@ -1,6 +1,7 @@
 import {
   createOperationError,
   createOperationResult,
+  isObjectRef,
   type AppendOnlyRepository,
   type DomainEventEnvelope,
   type EngineTransaction,
@@ -206,14 +207,29 @@ export function createInMemoryEngineUnitOfWork(): EngineUnitOfWorkPort & {
             },
           }),
           appendOnly: <V>(name: string): AppendOnlyRepository<V> => ({
-            append: async (ctx, value) => {
+            append: async (ctx, ref, value) => {
+              if (!isObjectRef(ref) || !isRefInContext(ctx, ref)) {
+                return result<V>(ctx, "REJECTED", undefined, [
+                  createOperationError("NOT_FOUND_OR_NOT_VISIBLE", "Record was not found"),
+                ]);
+              }
               const values = staged.appendOnly.get(name) ?? new Map();
-              const key = JSON.stringify([scopeKey(ctx), values.size]);
+              const key = JSON.stringify([scopeKey(ctx), refKey(ref)]);
+              if (values.has(key)) {
+                return result<V>(ctx, "REJECTED", undefined, [
+                  createOperationError("VERSION_CONFLICT", "Append-only record identity already exists"),
+                ]);
+              }
               values.set(key, structuredClone(value));
               staged.appendOnly.set(name, values);
               return result(ctx, "OK", structuredClone(value));
             },
             get: async (ctx, ref) => {
+              if (!isObjectRef(ref) || !isRefInContext(ctx, ref)) {
+                return result<V>(ctx, "REJECTED", undefined, [
+                  createOperationError("NOT_FOUND_OR_NOT_VISIBLE", "Record was not found"),
+                ]);
+              }
               const value = staged.appendOnly.get(name)?.get(
                 JSON.stringify([scopeKey(ctx), refKey(ref)]),
               );
