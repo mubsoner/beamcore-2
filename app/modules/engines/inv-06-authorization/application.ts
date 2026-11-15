@@ -14,6 +14,7 @@ import {
   type Version,
 } from "../shared";
 import {
+  buildApprovalBindingFingerprint,
   buildAuthorityFingerprintMaterial,
   buildCanonicalRequestFingerprint,
   createPendingApproval,
