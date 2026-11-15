@@ -19,6 +19,7 @@ import {
   type AuthorizationRequest,
   type DelegationRecord,
   type DelegationRequest,
+  type DelegationGrantAuthority,
   type PolicyEvaluation,
   type PolicyEvaluationAudit,
   type PrincipalContext,
@@ -35,6 +36,10 @@ export interface AuthorizationSourcePort {
   evaluatePolicy(context: RequestContext, request: AuthorizationRequest, principal: PrincipalContext, facts: AuthorityFacts): Promise<OperationResult<PolicyEvaluation>>;
   readApproval(context: RequestContext, ref: ObjectRef): Promise<OperationResult<ApprovalRecord>>;
   readDelegation(context: RequestContext, ref: ObjectRef): Promise<OperationResult<DelegationRecord>>;
+  /** Resolve current grantor authority from authoritative identity, membership, policy and delegation sources. */
+  resolveDelegationGrantAuthority(context: RequestContext, request: DelegationRequest): Promise<OperationResult<DelegationGrantAuthority>>;
+  /** Confirm the cited decision is current, ALLOW, exact-request-bound and issued to this grantor. */
+  verifyDelegationDecision(context: RequestContext, request: DelegationRequest): Promise<OperationResult<{ valid: boolean }>>;
   verifyApprover(context: RequestContext, approval: ApprovalRecord, approver: PrincipalRef): Promise<OperationResult<{ authorized: boolean; independent_required: boolean }>>;
 }
 
@@ -219,11 +224,23 @@ export async function grantDelegation(
   deps: AuthorizationDependencies,
   context: RequestContext,
   request: DelegationRequest,
-  authority: Parameters<typeof import("./domain").validateDelegationRequest>[1],
-  parent?: DelegationRecord,
 ): Promise<OperationResult<DelegationRecord>> {
+  const [authorityResult, decisionResult] = await Promise.all([
+    deps.sources.resolveDelegationGrantAuthority(context, request),
+    deps.sources.verifyDelegationDecision(context, request),
+  ]);
+  if (authorityResult.status !== "OK" || !authorityResult.data || decisionResult.status !== "OK" || !decisionResult.data) {
+    return fail(context, "DEPENDENCY_UNAVAILABLE", "Current grantor authority and authorization decision could not be verified");
+  }
+  if (!decisionResult.data.valid) return fail(context, "FORBIDDEN", "The cited authorization decision is not current or does not authorize this delegation");
+  let parent: DelegationRecord | undefined;
+  if (request.parent_delegation_ref) {
+    const parentResult = await deps.sources.readDelegation(context, request.parent_delegation_ref);
+    if (parentResult.status !== "OK" || !parentResult.data) return fail(context, "FORBIDDEN", "Parent delegation is unavailable or not visible");
+    parent = parentResult.data;
+  }
   const { validateDelegationRequest } = await import("./domain");
-  const issues = validateDelegationRequest(request, authority, parent);
+  const issues = validateDelegationRequest(request, authorityResult.data, parent);
   if (issues.length) return fail(context, "FORBIDDEN", "Delegation exceeds current grantor authority or scope");
   const now = deps.clock.now();
   const state = Date.parse(request.not_before) > Date.parse(now) ? "SCHEDULED" : "ACTIVE";
