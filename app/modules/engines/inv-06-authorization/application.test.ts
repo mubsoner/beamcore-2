@@ -34,6 +34,7 @@ import type {
   DelegationRecord,
   DelegationRequest,
   PolicyEvaluation,
+  PolicyEvaluationAudit,
   PolicyRelease,
   PrincipalContext,
 } from "./domain";
@@ -177,7 +178,7 @@ const approverAuthority: ApprovalAuthoritySnapshot = {
 };
 
 function makeDependencies(currentFacts: AuthorityFacts = facts) {
-  const commitCalls: Array<{ decision: AuthorizationDecision; command: DecisionCommitCommand }> = [];
+  const commitCalls: Array<{ decision: AuthorizationDecision; audit: PolicyEvaluationAudit; command: DecisionCommitCommand }> = [];
   const sources: AuthorizationSourcePort = {
     resolvePrincipal: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: principal })),
     readAuthorityFacts: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: currentFacts })),
@@ -205,8 +206,8 @@ function makeDependencies(currentFacts: AuthorityFacts = facts) {
     checkEnforcementConditions: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { satisfied: true, unresolved_condition_ids: [] } })),
   };
   const repository: AuthorizationRepositoryPort = {
-    commitDecision: vi.fn(async (_ctx, decision, _audit, command) => {
-      commitCalls.push({ decision, command });
+    commitDecision: vi.fn(async (_ctx, decision, audit, command) => {
+      commitCalls.push({ decision, audit, command });
       return createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: decision });
     }),
     createApprovalWithEvent: vi.fn(async (_ctx, value) => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: value })),
@@ -237,6 +238,12 @@ describe("INV-06 authorization application boundary", () => {
     expect(result.data?.result).toBe("ALLOW");
     expect(harness.commitCalls).toHaveLength(1);
     expect(harness.commitCalls[0].decision.audit_ref.object_kind).toBe("AUTHORIZATION_AUDIT");
+    expect(harness.commitCalls[0].audit.correlation_id).toBe(context.correlation_id);
+    expect(harness.commitCalls[0].audit.decision_ref).toEqual(harness.commitCalls[0].decision.decision_ref);
+    expect(harness.commitCalls[0].audit.source_version_refs).toContainEqual(
+      expect.objectContaining({ object_kind: "MEMBERSHIP", object_id: "membership-admin-1" }),
+    );
+    expect(JSON.stringify(harness.commitCalls[0].audit)).not.toMatch(/bearer|password|private[_ -]?key/i);
     expect(harness.commitCalls[0].command.approval_claim).toEqual({
       approval_ref: approval.approval_ref,
       authorization_request_ref: ref("AUTHORIZATION_REQUEST", request.authorization_request_id),
