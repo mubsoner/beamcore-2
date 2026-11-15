@@ -227,6 +227,7 @@ export interface ApprovalRecord {
   revoked_at?: Timestamp;
   consumed_at?: Timestamp;
   consumed_by_request_ref?: ObjectRef;
+  consumed_idempotency_key?: string;
 }
 
 export interface DelegationRecord {
@@ -880,11 +881,23 @@ export function buildAuthorityFingerprintMaterial(input: {
       context_version_refs: input.approval.context_version_refs,
       policy_release_ref: input.approval.policy_release_ref ?? null,
       use_mode: input.approval.approval_use_mode,
-      state: input.approval.state,
+      state: input.approval.state === "CONSUMED" &&
+        input.request.idempotency_key &&
+        input.approval.consumed_idempotency_key === input.request.idempotency_key &&
+        input.approval.consumed_by_request_ref?.object_id === input.request.authorization_request_id
+          ? "APPROVED" : input.approval.state,
       expires_at: input.approval.expires_at ?? null,
       revoked_at: input.approval.revoked_at ?? null,
-      consumed_at: input.approval.consumed_at ?? null,
-      consumed_by_request_ref: input.approval.consumed_by_request_ref ?? null,
+      consumed_at: input.approval.state === "CONSUMED" &&
+        input.request.idempotency_key &&
+        input.approval.consumed_idempotency_key === input.request.idempotency_key &&
+        input.approval.consumed_by_request_ref?.object_id === input.request.authorization_request_id
+          ? null : input.approval.consumed_at ?? null,
+      consumed_by_request_ref: input.approval.state === "CONSUMED" &&
+        input.request.idempotency_key &&
+        input.approval.consumed_idempotency_key === input.request.idempotency_key &&
+        input.approval.consumed_by_request_ref?.object_id === input.request.authorization_request_id
+          ? null : input.approval.consumed_by_request_ref ?? null,
     } : null,
   }));
 }
@@ -899,8 +912,9 @@ function isApprovalForRequest(
   policyReleaseRef: ObjectRef,
   now: Timestamp,
   useMode?: ApprovalUseMode,
+  idempotencyKey?: string,
 ): boolean {
-  return validateApprovalUse(approval, request, now, policyReleaseRef).length === 0 &&
+  return validateApprovalUse(approval, request, now, policyReleaseRef, idempotencyKey).length === 0 &&
     (useMode === undefined || approval.approval_use_mode === useMode);
 }
 
@@ -918,6 +932,7 @@ export function evaluateAuthorizationDecision(input: {
   evaluated_at: Timestamp;
   authority_fingerprint: string;
   approval_authority_verified?: boolean;
+  idempotency_key?: string;
 }): OperationResult<AuthorizationDecision> {
   const correlation_id = input.context.correlation_id;
   const requestIssues = validateAuthorizationRequest(input.context, input.request);
@@ -1024,7 +1039,7 @@ export function evaluateAuthorizationDecision(input: {
       if (!input.approval || input.approval.state === "PENDING") {
         result = "REQUIRE_APPROVAL"; reasons.push("SCOPED_APPROVAL_REQUIRED");
       } else if (!isApprovalForRequest(input.approval, request,
-          policy.policy_release.policy_release_ref, input.evaluated_at, policy.approval_use_mode)) {
+          policy.policy_release.policy_release_ref, input.evaluated_at, policy.approval_use_mode, input.idempotency_key)) {
         result = "DENY"; reasons.push("APPROVAL_INVALID_OR_MISMATCHED");
       } else if (input.approval_authority_verified !== true) {
         result = "DENY"; reasons.push("APPROVER_AUTHORITY_NOT_CURRENT");
@@ -1306,19 +1321,30 @@ export function claimOneTimeApprovalRecord(input: {
     return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
       errors: [createOperationError("VALIDATION_ERROR", "One-time approval claim input is invalid")] });
   }
-  if (approval.approval_use_mode !== "ONE_TIME" || approval.state !== "APPROVED") {
+  if (approval.approval_use_mode !== "ONE_TIME" ||
+      !isExactObjectRef(approval.request_ref, authorization_request_ref)) {
     return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
-      errors: [createOperationError("APPROVAL_REQUIRED", "Approval is not an available one-time approval")] });
+      errors: [createOperationError("APPROVAL_REQUIRED", "Approval is not bound to this one-time authorization request")] });
   }
-  if (!sameObjectRef(approval.request_ref, authorization_request_ref)) {
+  if (approval.revoked_at !== undefined || !approval.expires_at ||
+      Date.parse(approval.expires_at) <= Date.parse(now) ||
+      (approval.valid_from && Date.parse(approval.valid_from) > Date.parse(now))) {
     return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
-      errors: [createOperationError("APPROVAL_REQUIRED", "Approval is bound to a different authorization request")] });
+      errors: [createOperationError("APPROVAL_REQUIRED", "Approval is expired, revoked or not yet valid")] });
   }
-  if (!approval.expires_at || Date.parse(approval.expires_at) <= Date.parse(now) ||
-      (approval.valid_from && Date.parse(approval.valid_from) > Date.parse(now)) ||
-      approval.revoked_at !== undefined || approval.consumed_at !== undefined) {
+  if (approval.state === "CONSUMED") {
+    if (approval.consumed_at && isTimestamp(approval.consumed_at) &&
+        approval.consumed_by_request_ref &&
+        isExactObjectRef(approval.consumed_by_request_ref, authorization_request_ref) &&
+        approval.consumed_idempotency_key === idempotency_key) {
+      return createOperationResult({ status: "OK", correlation_id: "authorization", data: approval });
+    }
     return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
-      errors: [createOperationError("APPROVAL_REQUIRED", "Approval is expired, revoked or already consumed")] });
+      errors: [createOperationError("APPROVAL_REQUIRED", "One-time approval was consumed by another request or idempotency operation")] });
+  }
+  if (approval.state !== "APPROVED") {
+    return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
+      errors: [createOperationError("APPROVAL_REQUIRED", "Approval is not approved")] });
   }
   return createOperationResult({ status: "OK", correlation_id: "authorization",
     data: {
@@ -1326,6 +1352,7 @@ export function claimOneTimeApprovalRecord(input: {
       state: "CONSUMED",
       consumed_at: now,
       consumed_by_request_ref: authorization_request_ref,
+      consumed_idempotency_key: idempotency_key,
     } });
 }
 
@@ -1334,6 +1361,7 @@ export function validateApprovalUse(
   request: AuthorizationRequest,
   now: Timestamp,
   policyReleaseRef: ObjectRef,
+  idempotencyKey?: string,
 ): string[] {
   const issues: string[] = [];
   if (!approval || typeof approval !== "object" ||
@@ -1347,7 +1375,20 @@ export function validateApprovalUse(
       !approval.context_version_refs.every(isObjectRef)) {
     return ["approval record is malformed"];
   }
-  if (approval.state !== "APPROVED") issues.push("approval is not approved");
+  const consumedBySameOperation = approval.state === "CONSUMED" &&
+    approval.approval_use_mode === "ONE_TIME" &&
+    !!idempotencyKey &&
+    approval.consumed_idempotency_key === idempotencyKey &&
+    !!approval.consumed_by_request_ref &&
+    isExactObjectRef(approval.consumed_by_request_ref, {
+      object_kind: "AUTHORIZATION_REQUEST",
+      object_id: request.authorization_request_id,
+      object_version: approval.request_ref.object_version,
+      scope_ref: request.scope_ref,
+    });
+  if (approval.state !== "APPROVED" && !consumedBySameOperation) {
+    issues.push("approval is not approved for this request or idempotency operation");
+  }
   if (!approval.approver_ref || !isPrincipalRef(approval.approver_ref) ||
       !approval.decided_at || !isTimestamp(approval.decided_at)) {
     issues.push("approval decision provenance is missing or invalid");
@@ -1397,7 +1438,9 @@ export function validateApprovalUse(
     issues.push("approval is expired or has no enforceable expiry");
   }
   if (approval.approval_use_mode === "ONE_TIME" &&
-    (approval.consumed_at !== undefined || approval.consumed_by_request_ref !== undefined)) {
+    !consumedBySameOperation &&
+    (approval.consumed_at !== undefined || approval.consumed_by_request_ref !== undefined ||
+     approval.consumed_idempotency_key !== undefined)) {
     issues.push("one-time approval has already been consumed");
   }
   return issues;
