@@ -102,6 +102,7 @@ function evaluate(overrides: {
   facts?: Partial<AuthorityFacts>;
   policy?: Partial<PolicyEvaluation>;
   approval?: ApprovalRecord;
+  evaluatedAt?: string;
 } = {}) {
   const req = request(overrides.req);
   const principalCtx = principal(overrides.principal);
@@ -113,7 +114,7 @@ function evaluate(overrides: {
     decision_id: "decision-1",
     request_ref: ref("AUTHORIZATION_REQUEST", req.authorization_request_id),
     audit_ref: ref("AUTHORIZATION_AUDIT", "audit-1"),
-    evaluated_at: "2026-11-15T10:00:00Z",
+    evaluated_at: overrides.evaluatedAt ?? "2026-11-15T10:00:00Z",
     authority_fingerprint: "sha256:fingerprint",
   });
 }
@@ -122,6 +123,15 @@ describe("INV-06 authorization domain", () => {
   it("allows only when authenticated, in-scope, current authority and released policy agree", () => {
     expect(evaluate().data?.result).toBe("ALLOW");
   });
+  it("denies a request after its declared deadline even when all authority facts remain valid", () => {
+    const result = evaluate({
+      req: { deadline: "2026-11-15T10:01:00Z" },
+      evaluatedAt: "2026-11-15T10:02:00Z",
+    });
+    expect(result.data?.result).toBe("DENY");
+    expect(result.data?.reason_codes).toContain("REQUEST_DEADLINE_EXPIRED");
+  });
+
   it("blocks a stale resource version instead of authorizing the old version", () => {
     expect(evaluate({ facts: { current_resource_version: "2" } }).data?.result).toBe("INDETERMINATE");
     expect(evaluate({ facts: { current_resource_version: "2" } }).data?.reason_codes).toContain("RESOURCE_VERSION_STALE");
