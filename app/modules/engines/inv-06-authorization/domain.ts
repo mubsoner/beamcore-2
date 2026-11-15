@@ -604,6 +604,8 @@ export function buildCanonicalRequestFingerprint(request: AuthorizationRequest):
     service_identity: request.service_identity_ref ?? null,
     action: request.action,
     resource: request.resource_ref,
+    requested_at: request.requested_at,
+    deadline: request.deadline ?? null,
     scope: request.scope_ref,
     environment: request.environment_ref,
     work: request.work_ref ?? null,
@@ -661,6 +663,7 @@ export function buildAuthorityFingerprintMaterial(input: {
       current_resource_version: input.facts.current_resource_version ?? null,
       observed_at: input.facts.observed_at,
       valid_until: input.facts.valid_until ?? null,
+      verified_delegation_ref: input.facts.verified_delegation_ref ?? null,
       sources: sources(input.facts.source_refs),
     },
     policy: {
@@ -679,6 +682,7 @@ export function buildAuthorityFingerprintMaterial(input: {
       conditions: input.policy.conditions,
       obligations: input.policy.obligations,
       valid_until: input.policy.valid_until ?? null,
+      approval_expires_at: input.policy.approval_expires_at ?? null,
     },
     approval: input.approval ? {
       approval_ref: input.approval.approval_ref,
