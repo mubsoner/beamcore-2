@@ -664,8 +664,8 @@ export function validateApprovalAuthoritySnapshot(
         !!source &&
         typeof source.source_kind === "string" && !!source.source_kind.trim() &&
         isObjectRef(source.object_ref) && isScopeWithin(source.object_ref.scope_ref, scope) &&
-        isTimestamp(source.observed_at) && Date.parse(source.observed_at) <= Date.parse(now) &&
-        (source.source_version === undefined || isVersion(source.source_version)))) {
+        isVersion(source.source_version) &&
+        isTimestamp(source.observed_at) && Date.parse(source.observed_at) <= Date.parse(now))) {
     issues.push("approver authority must include current, scoped source-version provenance");
   }
   if (!isTimestamp(snapshot.observed_at) || Date.parse(snapshot.observed_at) > Date.parse(now)) {
@@ -1484,8 +1484,8 @@ export function validateApprovalUse(
        !approval.approver_authority_source_refs.every(source =>
          !!source && typeof source.source_kind === "string" && !!source.source_kind.trim() &&
          isObjectRef(source.object_ref) && isScopeWithin(source.object_ref.scope_ref, request.scope_ref) &&
-         isTimestamp(source.observed_at) &&
-         (source.source_version === undefined || isVersion(source.source_version))) ||
+         isVersion(source.source_version) &&
+         isTimestamp(source.observed_at)) ||
        !isTimestamp(approval.approver_authority_observed_at) ||
        !isTimestamp(approval.approver_authority_valid_until) ||
        Date.parse(approval.approver_authority_observed_at) > Date.parse(now) ||
