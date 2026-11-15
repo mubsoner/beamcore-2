@@ -145,4 +145,28 @@ describe("INV-01 submitIntent application use case", () => {
     expect(result.status).toBe("REJECTED");
     expect(repo.create).not.toHaveBeenCalled();
   });
+
+  it("rejects a whitespace-only idempotency key before persistence", async () => {
+    const { unitOfWork, repo } = makeUnitOfWork();
+    const result = await submitIntent(unitOfWork, {
+      ...command,
+      context: { ...context, idempotency_key: "   " },
+    });
+    expect(result.status).toBe("REJECTED");
+    expect(repo.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects an out-of-scope event reference before persistence", async () => {
+    const { unitOfWork, repo } = makeUnitOfWork();
+    const result = await submitIntent(unitOfWork, {
+      ...command,
+      event_ref: {
+        ...ref("DOMAIN_EVENT", "event-foreign"),
+        scope_ref: { scope_id: "scope-2", scope_kind: "WORK" },
+      },
+    });
+    expect(result.status).toBe("REJECTED");
+    expect(result.errors[0]?.code).toBe("VALIDATION_ERROR");
+    expect(repo.create).not.toHaveBeenCalled();
+  });
 });

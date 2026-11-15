@@ -69,14 +69,17 @@ export async function submitIntent(
 ): Promise<OperationResult<NormalizedIntent>> {
   const context = command.context;
   const correlationId = context.correlation_id;
-  if (!context.idempotency_key) {
+  if (!context.idempotency_key?.trim()) {
     return rejected("VALIDATION_ERROR", "Intent submission requires an idempotency key", correlationId);
   }
   if (!/^[a-f0-9]{64}$/i.test(command.request_fingerprint)) {
     return rejected("VALIDATION_ERROR", "request_fingerprint must be a SHA-256 hex digest", correlationId);
   }
-  if (!isObjectRef(command.event_ref) || command.event_ref.object_kind !== "DOMAIN_EVENT") {
-    return rejected("VALIDATION_ERROR", "Intent submission requires a DOMAIN_EVENT reference", correlationId);
+  if (!isObjectRef(command.event_ref) ||
+      command.event_ref.object_kind !== "DOMAIN_EVENT" ||
+      command.event_ref.scope_ref.scope_id !== context.scope_ref.scope_id ||
+      command.event_ref.scope_ref.scope_kind !== context.scope_ref.scope_kind) {
+    return rejected("VALIDATION_ERROR", "Intent submission requires an in-scope DOMAIN_EVENT reference", correlationId);
   }
 
   const normalized = normalizeIntent(command);
