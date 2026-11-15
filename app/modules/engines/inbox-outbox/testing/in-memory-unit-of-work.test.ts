@@ -261,4 +261,66 @@ describe("In-memory Unit of Work reference conformance", () => {
     expect(unit.snapshot().inbox_records).toBe(1);
   });
 
+
+  it("stores append-only records by explicit identity and reads them back", async () => {
+    const unit = createInMemoryEngineUnitOfWork();
+    const revisionRef: ObjectRef = {
+      object_kind: "WORK_REVISION",
+      object_id: "work-1:r2",
+      object_version: "2",
+      scope_ref: scope,
+    };
+    const appended = await unit.execute(context, async (tx) =>
+      tx.appendOnly<{ revision_ref: ObjectRef; revision_number: number }>("work-revisions")
+        .append(context, revisionRef, { revision_ref: revisionRef, revision_number: 2 }),
+    );
+    expect(appended.status).toBe("OK");
+
+    const read = await unit.execute(context, (tx) =>
+      tx.appendOnly<{ revision_ref: ObjectRef; revision_number: number }>("work-revisions")
+        .get(context, revisionRef),
+    );
+    expect(read.status).toBe("OK");
+    expect(read.data?.revision_number).toBe(2);
+    expect(unit.snapshot().append_only_records).toBe(1);
+  });
+
+  it("rejects duplicate append-only identities without replacing the original", async () => {
+    const unit = createInMemoryEngineUnitOfWork();
+    const repository = () => unit.execute(context, (tx) =>
+      tx.appendOnly<{ revision_ref: ObjectRef; note: string }>("work-revisions")
+        .append(context, ref, { revision_ref: ref, note: "original" }),
+    );
+    expect((await repository()).status).toBe("OK");
+    const duplicate = await repository();
+    expect(duplicate.status).toBe("REJECTED");
+    expect(duplicate.errors[0]?.code).toBe("VERSION_CONFLICT");
+
+    const read = await unit.execute(context, (tx) =>
+      tx.appendOnly<{ revision_ref: ObjectRef; note: string }>("work-revisions")
+        .get(context, ref),
+    );
+    expect(read.data?.note).toBe("original");
+    expect(unit.snapshot().append_only_records).toBe(1);
+  });
+
+  it("rejects append-only writes and reads outside the request scope", async () => {
+    const unit = createInMemoryEngineUnitOfWork();
+    const otherScopeRef: ObjectRef = {
+      ...ref,
+      scope_ref: { scope_id: "tenant-b", scope_kind: "ORGANIZATION" },
+    };
+    const write = await unit.execute(context, (tx) =>
+      tx.appendOnly<{ note: string }>("private-records")
+        .append(context, otherScopeRef, { note: "must not persist" }),
+    );
+    expect(write.status).toBe("REJECTED");
+
+    const read = await unit.execute(context, (tx) =>
+      tx.appendOnly<{ note: string }>("private-records").get(context, otherScopeRef),
+    );
+    expect(read.status).toBe("REJECTED");
+    expect(unit.snapshot().append_only_records).toBe(0);
+  });
+
 });
