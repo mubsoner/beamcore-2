@@ -28,6 +28,7 @@ import {
   validateAuthenticationResult,
   validateAuthorizationRequest,
   validateAuthorityFacts,
+  validateDelegationLineage,
   validateDelegationRequest,
   validatePolicyEvaluation,
   validatePrincipalContext,
@@ -62,6 +63,8 @@ export interface AuthorizationSourcePort {
   evaluatePolicy(context: RequestContext, request: AuthorizationRequest, principal: PrincipalContext, facts: AuthorityFacts): Promise<OperationResult<PolicyEvaluation>>;
   readApproval(context: RequestContext, ref: ObjectRef): Promise<OperationResult<ApprovalRecord>>;
   readDelegation(context: RequestContext, ref: ObjectRef): Promise<OperationResult<DelegationRecord>>;
+  /** Return current ancestry ordered immediate parent first and root last; cycles/missing links must fail. */
+  readDelegationLineage(context: RequestContext, parentRef: ObjectRef): Promise<OperationResult<DelegationRecord[]>>;
   /** Verify the approver's current permission and independence against live membership and policy sources. */
   verifyApprover(context: RequestContext, approval: ApprovalRecord, approver: PrincipalRef): Promise<OperationResult<{ authorized: boolean; independent_required: boolean }>>;
   /** Resolve grantor powers from authoritative identity, membership, policy and delegation sources. */
@@ -679,18 +682,23 @@ export async function grantDelegation(
     return fail(context, "FORBIDDEN", "The cited authorization decision is not current or does not authorize this delegation");
   }
 
+  const now = deps.clock.now();
+  let ancestry: DelegationRecord[] = [];
   let parent: DelegationRecord | undefined;
   if (request.parent_delegation_ref) {
-    const parentResult = await deps.sources.readDelegation(context, request.parent_delegation_ref);
-    if (parentResult.status !== "OK" || !parentResult.data) {
-      return fail(context, "FORBIDDEN", "Parent delegation is unavailable or not visible");
+    const lineageResult = await deps.sources.readDelegationLineage(context, request.parent_delegation_ref);
+    if (lineageResult.status !== "OK" || !lineageResult.data) {
+      return fail(context, "FORBIDDEN", "Complete parent delegation lineage is unavailable or not visible");
     }
-    parent = parentResult.data;
+    ancestry = lineageResult.data;
+    parent = ancestry[0];
   }
 
-  const now = deps.clock.now();
-  const issues = validateDelegationRequest(request, authorityResult.data, parent, now);
-  if (issues.length) return fail(context, "FORBIDDEN", "Delegation exceeds current grantor authority or scope");
+  const issues = [
+    ...validateDelegationRequest(request, authorityResult.data, parent, now),
+    ...validateDelegationLineage(request, ancestry, now),
+  ];
+  if (issues.length) return fail(context, "FORBIDDEN", "Delegation exceeds current grantor authority, parent lineage or scope");
 
   const state = Date.parse(request.not_before) > Date.parse(now) ? "SCHEDULED" : "ACTIVE";
   const record: DelegationRecord = {
