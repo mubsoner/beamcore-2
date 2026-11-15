@@ -475,7 +475,7 @@ function requiredRuntimeLimits(profile: RuntimeProfile): RuntimeLimitField[] {
 export function validateRuntimeProfile(
   context: RequestContext,
   profile: RuntimeProfile,
-  requiredLimits: readonly RuntimeLimitField[] = requiredRuntimeLimits(profile),
+  requiredLimits?: readonly RuntimeLimitField[],
 ): OperationResult<RuntimeProfile> {
   if (!isRequestContext(context)) {
     return rejected(context, "VALIDATION_ERROR", "A valid request context is required");
@@ -487,6 +487,7 @@ export function validateRuntimeProfile(
     !RUNTIME_PROFILE_STATUSES.includes(profile.profile_status) ||
     !RUNTIME_TRUST_CLASSES.includes(profile.trust_class) ||
     !isTimestamp(profile.created_at) ||
+    typeof profile.isolation_requirement !== "string" ||
     !profile.isolation_requirement.trim()
   ) {
     return rejected(context, "VALIDATION_ERROR", "Runtime profile identity or required metadata is invalid");
@@ -506,6 +507,7 @@ export function validateRuntimeProfile(
     return rejected(context, "VALIDATION_ERROR", "Runtime profile requires scoped network and filesystem policies");
   }
 
+  const limitsRequired = requiredLimits ?? requiredRuntimeLimits(profile);
   const limitChecks: Record<RuntimeLimitField, boolean> = {
     cpu_limit: isPositiveQuantity(profile.cpu_limit),
     memory_limit: isPositiveQuantity(profile.memory_limit),
@@ -515,7 +517,7 @@ export function validateRuntimeProfile(
     output_size_limit: isPositiveQuantity(profile.output_size_limit),
     concurrency_limit: isPositiveInteger(profile.concurrency_limit),
   };
-  for (const field of requiredLimits) {
+  for (const field of limitsRequired) {
     if (!limitChecks[field]) {
       return rejected(
         context,
@@ -554,11 +556,7 @@ export function validateRuntimeProfile(
   ) {
     return rejected(context, "VALIDATION_ERROR", "Resumability policy reference is invalid or out of scope");
   }
-  if (
-    profile.approved_by !== undefined &&
-    (!isPrincipalRef(profile.approved_by) || !samePrincipal(profile.approved_by, context.actor_ref) &&
-      profile.approved_by.principal_id.trim().length === 0)
-  ) {
+  if (profile.approved_by !== undefined && !isPrincipalRef(profile.approved_by)) {
     return rejected(context, "VALIDATION_ERROR", "Runtime profile approver reference is invalid");
   }
   if (
@@ -578,6 +576,9 @@ export function validateExecutionRequest(
   context: RequestContext,
   request: ExecutionRequest,
 ): OperationResult<ExecutionRequest> {
+  if (!request || typeof request !== "object") {
+    return rejected(context, "VALIDATION_ERROR", "An execution request is required");
+  }
   if (!isRequestContext(context)) {
     return rejected(context, "VALIDATION_ERROR", "A valid request context is required");
   }
@@ -634,12 +635,7 @@ export function validateExecutionRequest(
       issue?.safe_message ?? "Runtime profile validation failed",
     );
   }
-  if (
-    !sameObjectRef(request.runtime_profile.profile_ref, request.execution_ref.scope_ref.scope_kind === "SYSTEM"
-      ? request.runtime_profile.profile_ref
-      : request.runtime_profile.profile_ref) ||
-    !request.runtime_profile.allowed_capability_refs.some((ref) => sameObjectRef(ref, request.capability_ref))
-  ) {
+  if (!request.runtime_profile.allowed_capability_refs.some((ref) => sameObjectRef(ref, request.capability_ref))) {
     return rejected(context, "CAPABILITY_UNAVAILABLE", "Runtime profile does not allow the exact capability reference");
   }
   return succeeded(context, request);
@@ -859,8 +855,11 @@ export function transitionExecution(
   const termination = input.termination_knowledge ?? execution.termination_knowledge;
   const hasStarted = execution.started_at !== undefined;
 
-  if (input.to_state === "RUNNING" &&
-      (!hasStarted || execution.attempt_refs.length === 0)) {
+  if ((input.to_state === "STARTING" || input.to_state === "RUNNING") &&
+      execution.attempt_refs.length === 0) {
+    return rejected(context, "VALIDATION_ERROR", "STARTING or RUNNING requires an immutable attempt reference");
+  }
+  if (input.to_state === "RUNNING" && !hasStarted) {
     return rejected(context, "VALIDATION_ERROR", "RUNNING requires an observed process start and an immutable attempt reference");
   }
   if (["SUCCEEDED", "FAILED", "TIMED_OUT"].includes(input.to_state)) {
@@ -889,9 +888,10 @@ export function transitionExecution(
       termination !== "REQUESTED" && termination !== "CONFIRMED_STILL_RUNNING") {
     return rejected(context, "VALIDATION_ERROR", "CANCELLING requires a recorded runtime cancellation request");
   }
-  if (input.to_state === "UNKNOWN" && hasStarted && input.effect_knowledge === undefined &&
-      execution.effect_knowledge === "NOT_STARTED") {
-    return rejected(context, "OUTCOME_UNKNOWN_OR_RECONCILIATION_REQUIRED", "Unknown runtime state must also express unknown side-effect knowledge");
+  if (input.to_state === "UNKNOWN" && hasStarted &&
+      input.effect_knowledge !== "UNKNOWN" &&
+      input.effect_knowledge !== "RECONCILIATION_REQUIRED") {
+    return rejected(context, "OUTCOME_UNKNOWN_OR_RECONCILIATION_REQUIRED", "Unknown runtime state requires explicit unknown or reconciliation-required side-effect knowledge");
   }
   if (execution.state === "UNKNOWN" && input.to_state !== "UNKNOWN") {
     if (!input.resolution_evidence_refs?.length ||
