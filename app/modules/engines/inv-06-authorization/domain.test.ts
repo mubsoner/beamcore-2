@@ -264,6 +264,69 @@ describe("INV-06 authorization domain", () => {
     });
     expect(membershipChanged).not.toBe(a);
   });
+  it("changes the authority fingerprint when approver authority source versions change", () => {
+    const requestWithApproval = request({
+      approval_ref: ref("APPROVAL", "approver-fingerprint"),
+      idempotency_key: "action-approval-fingerprint",
+    });
+    const created = createPendingApproval({
+      approval_ref: requestWithApproval.approval_ref!,
+      approval_id: "approver-fingerprint",
+      request_ref: ref("AUTHORIZATION_REQUEST", requestWithApproval.authorization_request_id),
+      request_binding_fingerprint: buildApprovalBindingFingerprint(requestWithApproval, "ONE_TIME"),
+      requested_by_ref: context.actor_ref,
+      required_approver_constraints: ["INDEPENDENT_APPROVER"],
+      action: requestWithApproval.action,
+      resource_ref: requestWithApproval.resource_ref,
+      scope_ref: requestWithApproval.scope_ref,
+      environment_ref: requestWithApproval.environment_ref,
+      context_version_refs: [],
+      policy_release_ref: { ...ref("POLICY_RELEASE", "policy-1"), object_version: "7" },
+      approval_use_mode: "ONE_TIME",
+      created_at: "2026-11-15T09:50:00Z",
+      expires_at: "2026-11-15T10:10:00Z",
+    });
+    const approved: ApprovalRecord = {
+      ...created.data!,
+      state: "APPROVED",
+      approver_ref: { principal_id: "admin-1", principal_kind: "USER" },
+      decided_at: "2026-11-15T09:55:00Z",
+      approver_authority_source_refs: [{
+        source_kind: "approver-membership",
+        object_ref: ref("MEMBERSHIP", "admin-membership"),
+        source_version: "4",
+        observed_at: "2026-11-15T09:59:30Z",
+      }],
+      approver_authority_observed_at: "2026-11-15T09:59:30Z",
+      approver_authority_valid_until: "2026-11-15T10:05:00Z",
+    };
+    const snapshot: ApprovalAuthoritySnapshot = {
+      authorized: true,
+      independent_required: true,
+      satisfied_constraints: ["INDEPENDENT_APPROVER"],
+      authority_source_refs: approved.approver_authority_source_refs!,
+      observed_at: "2026-11-15T09:59:30Z",
+      valid_until: "2026-11-15T10:05:00Z",
+    };
+    const first = buildAuthorityFingerprintMaterial({
+      request: requestWithApproval, principal: principal(), facts: facts(), policy: policy(),
+      approval: approved, approval_authority: snapshot, idempotency_key: "action-approval-fingerprint",
+    });
+    const authorityChanged = buildAuthorityFingerprintMaterial({
+      request: requestWithApproval, principal: principal(), facts: facts(), policy: policy(),
+      approval: approved,
+      approval_authority: {
+        ...snapshot,
+        authority_source_refs: [{
+          ...snapshot.authority_source_refs[0],
+          source_version: "5",
+        }],
+      },
+      idempotency_key: "action-approval-fingerprint",
+    });
+    expect(authorityChanged).not.toBe(first);
+  });
+
   it("rejects principal membership, role, session and provenance references outside the authenticated scope", () => {
     const otherScope: ScopeRef = { scope_id: "tenant-elsewhere", scope_kind: "ORGANIZATION" };
     expect(validatePrincipalContext(context, principal({
