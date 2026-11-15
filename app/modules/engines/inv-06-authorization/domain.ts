@@ -509,7 +509,7 @@ export function validateAuthorizationRequest(
     !request.risk_context.scope_blast_radius_refs.every(ref => isObjectRef(ref) && isScopeWithin(ref.scope_ref, request.scope_ref)) ||
     (request.risk_context.risk_assessment_ref !== undefined &&
       (!isObjectRef(request.risk_context.risk_assessment_ref) ||
-       !isScopeWithin(request.risk_context.risk_assessment_ref.scope_ref, request.scope_ref))) {
+       !isScopeWithin(request.risk_context.risk_assessment_ref.scope_ref, request.scope_ref)))) {
     issues.push("risk_context is invalid");
   } else {
     if (request.risk_context.assessment_state === "ASSESSED" &&
