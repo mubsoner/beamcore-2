@@ -2,7 +2,6 @@ import {
   createOperationError,
   createOperationResult,
   type ClockPort,
-  type EngineUnitOfWorkPort,
   type ObjectRef,
   type OperationResult,
   type PrincipalRef,
