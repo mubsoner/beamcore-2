@@ -77,7 +77,7 @@ function makeHarness() {
       const value = routes.get(objectRef.object_id);
       return value
         ? createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: value, object_version: "1" })
-        : createOperationResult<RouteProposal>({ status: "REJECTED", correlation_id: context.correlation_id }),
+        : createOperationResult<RouteProposal>({ status: "REJECTED", correlation_id: context.correlation_id });
     ),
     create: vi.fn(async () => createOperationResult<RouteProposal>({ status: "REJECTED", correlation_id: context.correlation_id })),
     update: vi.fn(async () => createOperationResult<RouteProposal>({ status: "REJECTED", correlation_id: context.correlation_id })),
@@ -94,7 +94,7 @@ function makeHarness() {
         const value = receipts.get(objectRef.object_id);
         return value
           ? createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: value as T })
-          : createOperationResult<T>({ status: "REJECTED", correlation_id: context.correlation_id, errors: [{ code: "NOT_FOUND_OR_NOT_VISIBLE", safe_message: "Not found", retryable: false }] }),
+          : createOperationResult<T>({ status: "REJECTED", correlation_id: context.correlation_id, errors: [{ code: "NOT_FOUND_OR_NOT_VISIBLE", safe_message: "Not found", retryable: false }] });
       }),
     }),
     idempotency: {
