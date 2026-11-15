@@ -38,23 +38,20 @@ export interface AuthorizationSourcePort {
 }
 
 export interface AuthorizationRepositoryPort {
-  createDecision(context: RequestContext, decision: AuthorizationDecision): Promise<OperationResult<AuthorizationDecision>>;
-  createAudit(context: RequestContext, audit: PolicyEvaluationAudit): Promise<OperationResult<PolicyEvaluationAudit>>;
-  createApproval(context: RequestContext, approval: ApprovalRecord): Promise<OperationResult<ApprovalRecord>>;
-  updateApproval(context: RequestContext, approval: ApprovalRecord, expectedVersion: string): Promise<OperationResult<ApprovalRecord>>;
+  /** Atomically persist immutable decision + audit + local Outbox event in one UoW. */
+  commitDecision(context: RequestContext, decision: AuthorizationDecision, audit: PolicyEvaluationAudit): Promise<OperationResult<AuthorizationDecision>>;
+  /** Each mutation and its Outbox event must commit atomically. */
+  createApprovalWithEvent(context: RequestContext, approval: ApprovalRecord): Promise<OperationResult<ApprovalRecord>>;
+  updateApprovalWithEvent(context: RequestContext, approval: ApprovalRecord, expectedVersion: string): Promise<OperationResult<ApprovalRecord>>;
+  /** Must be a single compare-and-set claim for this exact request. */
   claimOneTimeApproval(context: RequestContext, approvalRef: ObjectRef, requestRef: ObjectRef, expectedVersion: string): Promise<OperationResult<ApprovalRecord>>;
-  createDelegation(context: RequestContext, delegation: DelegationRecord): Promise<OperationResult<DelegationRecord>>;
-  updateDelegation(context: RequestContext, delegation: DelegationRecord, expectedVersion: string): Promise<OperationResult<DelegationRecord>>;
-}
-
-export interface AuthorizationEventPort {
-  publish(context: RequestContext, eventType: string, objectRef: ObjectRef, payload: Record<string, unknown>): Promise<OperationResult<{ event_id: string }>>;
+  createDelegationWithEvent(context: RequestContext, delegation: DelegationRecord): Promise<OperationResult<DelegationRecord>>;
+  updateDelegationWithEvent(context: RequestContext, delegation: DelegationRecord, expectedVersion: string): Promise<OperationResult<DelegationRecord>>;
 }
 
 export interface AuthorizationDependencies {
   sources: AuthorizationSourcePort;
   repository: AuthorizationRepositoryPort;
-  events: AuthorizationEventPort;
   ids: AuthorizationIdPort;
   clock: ClockPort;
 }
@@ -143,23 +140,8 @@ export async function authorizeAction(
     correlation_id: context.correlation_id,
     ...(request.causation_id ? { causation_id: request.causation_id } : {}),
   };
-  const saved = await deps.repository.createDecision(context, evaluated.data);
+  const saved = await deps.repository.commitDecision(context, evaluated.data, audit);
   if (saved.status !== "OK" || !saved.data) return propagate(context, saved);
-  const audited = await deps.repository.createAudit(context, audit);
-  if (audited.status !== "OK") {
-    return fail(context, "INTERNAL_ERROR", "Authorization audit could not be durably recorded");
-  }
-  const event = await deps.events.publish(context, "authorization.evaluated", decisionRef, {
-    result: saved.data.result,
-    request_ref: requestRef,
-    authority_fingerprint: fingerprint,
-    policy_release_ref: policyResult.data.policy_release.policy_release_ref,
-  });
-  if (event.status !== "OK") {
-    return createOperationResult({ status: "PARTIAL", correlation_id: context.correlation_id,
-      data: { decision: saved.data, explanation: createSafeDecisionExplanation(saved.data) },
-      warnings: ["Decision and audit were saved, but the authority event could not be published"] });
-  }
   return createOperationResult({ status: "OK", correlation_id: context.correlation_id,
     data: { decision: saved.data, explanation: createSafeDecisionExplanation(saved.data) } });
 }
@@ -193,13 +175,7 @@ export async function requestApproval(
   if (created.status !== "OK" || !created.data) return propagate(context, created);
   const saved = await deps.repository.createApproval(context, created.data);
   if (saved.status !== "OK" || !saved.data) return propagate(context, saved);
-  const event = await deps.events.publish(context, "approval.required", saved.data.approval_ref, {
-    request_ref: saved.data.request_ref, action: saved.data.action,
-  });
-  return event.status === "OK" ? saved : createOperationResult({
-    status: "PARTIAL", correlation_id: context.correlation_id, data: saved.data,
-    warnings: ["Approval request saved, but notification event publication failed"],
-  });
+  return saved;
 }
 
 export async function decideApprovalRequest(
@@ -220,15 +196,7 @@ export async function decideApprovalRequest(
     independent_approval_required: approver.data.independent_required, now: deps.clock.now(),
   });
   if (transitioned.status !== "OK" || !transitioned.data) return propagate(context, transitioned);
-  const saved = await deps.repository.updateApproval(context, transitioned.data, expectedVersion);
-  if (saved.status !== "OK" || !saved.data) return propagate(context, saved);
-  const event = await deps.events.publish(context, "approval.decided", approvalRef, {
-    state: saved.data.state, approver_ref: input.approver_ref,
-  });
-  return event.status === "OK" ? saved : createOperationResult({
-    status: "PARTIAL", correlation_id: context.correlation_id, data: saved.data,
-    warnings: ["Approval decision saved, but authority event publication failed"],
-  });
+  return deps.repository.updateApprovalWithEvent(context, transitioned.data, expectedVersion);
 }
 
 export async function claimApprovalForAction(
@@ -273,16 +241,7 @@ export async function grantDelegation(
     state,
     created_at: now,
   };
-  const saved = await deps.repository.createDelegation(context, record);
-  if (saved.status !== "OK" || !saved.data) return propagate(context, saved);
-  const event = await deps.events.publish(context, "delegation.created", saved.data.delegation_ref, {
-    grantor_ref: saved.data.grantor_ref, delegate_ref: saved.data.delegate_ref,
-    scope_ref: saved.data.scope_ref, expires_at: saved.data.expires_at,
-  });
-  return event.status === "OK" ? saved : createOperationResult({
-    status: "PARTIAL", correlation_id: context.correlation_id, data: saved.data,
-    warnings: ["Delegation saved, but authority event publication failed"],
-  });
+  return deps.repository.createDelegationWithEvent(context, record);
 }
 
 export async function revokeDelegation(
@@ -294,15 +253,7 @@ export async function revokeDelegation(
   const { transitionDelegation } = await import("./domain");
   const transitioned = transitionDelegation(delegation, "REVOKED", deps.clock.now());
   if (transitioned.status !== "OK" || !transitioned.data) return propagate(context, transitioned);
-  const saved = await deps.repository.updateDelegation(context, transitioned.data, expectedVersion);
-  if (saved.status !== "OK" || !saved.data) return propagate(context, saved);
-  const event = await deps.events.publish(context, "delegation.revoked", saved.data.delegation_ref, {
-    grantor_ref: saved.data.grantor_ref, delegate_ref: saved.data.delegate_ref,
-  });
-  return event.status === "OK" ? saved : createOperationResult({
-    status: "PARTIAL", correlation_id: context.correlation_id, data: saved.data,
-    warnings: ["Delegation revoked, but authority event publication failed"],
-  });
+  return deps.repository.updateDelegationWithEvent(context, transitioned.data, expectedVersion);
 }
 
 async function digestSha256(value: string): Promise<string> {
