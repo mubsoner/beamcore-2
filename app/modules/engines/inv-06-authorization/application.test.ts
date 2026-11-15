@@ -151,6 +151,14 @@ const approval: ApprovalRecord = {
   created_at: "2026-11-15T09:50:00Z",
   decided_at: "2026-11-15T09:55:00Z",
   expires_at: "2026-11-15T10:04:00Z",
+  approver_authority_source_refs: [{
+    source_kind: "approver-membership",
+    object_ref: ref("MEMBERSHIP", "membership-admin-1"),
+    source_version: "4",
+    observed_at: "2026-11-15T09:59:30Z",
+  }],
+  approver_authority_observed_at: "2026-11-15T09:59:30Z",
+  approver_authority_valid_until: "2026-11-15T10:05:00Z",
 };
 
 const approverAuthority: ApprovalAuthoritySnapshot = {
@@ -304,6 +312,30 @@ describe("INV-06 authorization application boundary", () => {
     const request = authorizationRequest({ approval_ref: approval.approval_ref });
     const result = await recheckAuthorizationAtActionBoundary(harness.deps, context, request);
     expect(result.status).toBe("REJECTED");
+    expect(harness.repository.commitDecision).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when approver verification lacks source-version provenance", async () => {
+    const harness = makeDependencies();
+    vi.mocked(harness.sources.verifyApprover).mockResolvedValue(
+      createOperationResult({
+        status: "OK",
+        correlation_id: context.correlation_id,
+        data: {
+          authorized: true,
+          independent_required: true,
+          satisfied_constraints: ["INDEPENDENT_APPROVER"],
+          authority_source_refs: [],
+          observed_at: "2026-11-15T09:59:30Z",
+          valid_until: "2026-11-15T10:05:00Z",
+        },
+      }),
+    );
+    const result = await recheckAuthorizationAtActionBoundary(
+      harness.deps, context, authorizationRequest({ approval_ref: approval.approval_ref }),
+    );
+    expect(result.status).toBe("REJECTED");
+    expect(result.errors[0]?.code).toBe("INTEGRITY_OR_UNTRUSTED_INPUT");
     expect(harness.repository.commitDecision).not.toHaveBeenCalled();
   });
 
