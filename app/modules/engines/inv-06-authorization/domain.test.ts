@@ -562,6 +562,13 @@ describe("INV-06 authorization domain", () => {
     expect(validateApprovalAuthoritySnapshot({
       ...snapshot, valid_until: "2026-11-15T09:59:59Z",
     }, scope, "2026-11-15T10:00:00Z").length).toBeGreaterThan(0);
+    expect(validateApprovalAuthoritySnapshot({
+      ...snapshot,
+      authority_source_refs: [{
+        ...snapshot.authority_source_refs[0],
+        observed_at: "2026-11-15T10:01:00Z",
+      }],
+    }, scope, "2026-11-15T10:00:00Z").length).toBeGreaterThan(0);
   });
 
   it("rejects approvals with a different action, target, environment, tenant or expiry", () => {
