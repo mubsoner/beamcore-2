@@ -136,7 +136,7 @@ function makeUnitOfWork() {
   });
 
   const appendRepository = <T>(key: string): AppendOnlyRepository<T> => ({
-    append: async (_ctx, value) => {
+    append: async (_ctx, _objectRef, value) => {
       appendOnlyFor(key).push(value);
       return createOperationResult({
         status: "OK",
