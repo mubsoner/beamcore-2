@@ -461,7 +461,9 @@ export function validateAuthorizationRequest(
     issues.push("expected_resource_version does not match resource_ref version");
   }
   if (!Array.isArray(request.policy_context_refs) ||
-    !request.policy_context_refs.every(isObjectRef)) issues.push("policy_context_refs are invalid");
+    !request.policy_context_refs.every(ref => isObjectRef(ref) && isScopeWithin(ref.scope_ref, request.scope_ref))) {
+    issues.push("policy_context_refs are invalid or outside the request scope");
+  }
   if (!request.correlation_id?.trim() || request.correlation_id !== context.correlation_id) {
     issues.push("correlation_id must match the request context");
   }
@@ -488,10 +490,13 @@ export function validateAuthorizationRequest(
     !["NOT_ASSESSED", "ASSESSED", "INDETERMINATE"].includes(request.risk_context.assessment_state) ||
     !Array.isArray(request.risk_context.impact_dimensions) ||
     !Array.isArray(request.risk_context.sensitivity_refs) ||
-    !request.risk_context.sensitivity_refs.every(isObjectRef) ||
+    !request.risk_context.sensitivity_refs.every(ref => isObjectRef(ref) && isScopeWithin(ref.scope_ref, request.scope_ref)) ||
     !Array.isArray(request.risk_context.uncertainty_flags) ||
     !Array.isArray(request.risk_context.scope_blast_radius_refs) ||
-    !request.risk_context.scope_blast_radius_refs.every(isObjectRef)) {
+    !request.risk_context.scope_blast_radius_refs.every(ref => isObjectRef(ref) && isScopeWithin(ref.scope_ref, request.scope_ref)) ||
+    (request.risk_context.risk_assessment_ref !== undefined &&
+      (!isObjectRef(request.risk_context.risk_assessment_ref) ||
+       !isScopeWithin(request.risk_context.risk_assessment_ref.scope_ref, request.scope_ref))) {
     issues.push("risk_context is invalid");
   } else {
     if (request.risk_context.assessment_state === "ASSESSED" &&
@@ -537,6 +542,7 @@ export function validateAuthenticationResult(
   if (result.state === "AUTHENTICATED") {
     if (!isPrincipalRef(result.principal_ref) ||
         !isObjectRef(result.session_ref) ||
+        !isScopeWithin(result.session_ref.scope_ref, request.requested_scope_ref) ||
         !isTimestamp(result.authenticated_at) ||
         !isTimestamp(result.expires_at) ||
         Date.parse(result.expires_at) <= Date.parse(result.authenticated_at)) {
@@ -546,12 +552,15 @@ export function validateAuthenticationResult(
   if (result.state !== "AUTHENTICATED" && result.principal_ref !== undefined) {
     issues.push("non-authenticated result cannot assert an authenticated principal");
   }
-  if (result.assurance_context_ref !== undefined && !isObjectRef(result.assurance_context_ref)) {
-    issues.push("authentication assurance reference is invalid");
+  if (result.assurance_context_ref !== undefined &&
+      (!isObjectRef(result.assurance_context_ref) ||
+       !isScopeWithin(result.assurance_context_ref.scope_ref, request.requested_scope_ref))) {
+    issues.push("authentication assurance reference is invalid or outside the requested scope");
   }
   if (result.authority_source_ref !== undefined &&
       (!result.authority_source_ref.source_kind?.trim() ||
        !isObjectRef(result.authority_source_ref.object_ref) ||
+       !isScopeWithin(result.authority_source_ref.object_ref.scope_ref, request.requested_scope_ref) ||
        !isTimestamp(result.authority_source_ref.observed_at))) {
     issues.push("authentication source provenance is invalid");
   }
@@ -587,18 +596,26 @@ export function validatePrincipalContext(
     principal.delegation_refs,
     principal.trust_assessment_refs,
   ]) {
-    if (!Array.isArray(group) || !group.every(isObjectRef)) issues.push("principal authority references are invalid");
+    if (!Array.isArray(group) ||
+        !group.every(ref => isObjectRef(ref) && isScopeWithin(ref.scope_ref, context.scope_ref))) {
+      issues.push("principal authority references are invalid or outside the authenticated scope");
+    }
   }
   if (!Array.isArray(principal.authority_source_refs) ||
     !principal.authority_source_refs.every(source =>
       !!source && typeof source.source_kind === "string" && !!source.source_kind.trim() &&
-      isObjectRef(source.object_ref) && isTimestamp(source.observed_at) &&
+      isObjectRef(source.object_ref) && isScopeWithin(source.object_ref.scope_ref, context.scope_ref) &&
+      isTimestamp(source.observed_at) &&
       (source.source_version === undefined || isVersion(source.source_version)))) {
     issues.push("principal authority source references are invalid");
   }
-  if (principal.session_ref && !isObjectRef(principal.session_ref)) issues.push("session_ref is invalid");
-  if (principal.assurance_context_ref && !isObjectRef(principal.assurance_context_ref)) {
-    issues.push("assurance_context_ref is invalid");
+  if (principal.session_ref && (!isObjectRef(principal.session_ref) ||
+      !isScopeWithin(principal.session_ref.scope_ref, context.scope_ref))) {
+    issues.push("session_ref is invalid or outside the authenticated scope");
+  }
+  if (principal.assurance_context_ref && (!isObjectRef(principal.assurance_context_ref) ||
+      !isScopeWithin(principal.assurance_context_ref.scope_ref, context.scope_ref))) {
+    issues.push("assurance_context_ref is invalid or outside the authenticated scope");
   }
   return issues;
 }
@@ -1193,7 +1210,8 @@ export function decideApproval(input: {
     !isVersion(input.expected_current_version) ||
     !decision.idempotency_key?.trim() ||
     !isPrincipalRef(decision.approver_ref) || !isTimestamp(decision.decided_at) ||
-    !isTimestamp(input.now) || Date.parse(decision.decided_at) > Date.parse(input.now)) {
+    !isTimestamp(input.now) || Date.parse(decision.decided_at) > Date.parse(input.now) ||
+      Date.parse(decision.decided_at) < Date.parse(approval.created_at)) {
     return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
       errors: [createOperationError("VERSION_CONFLICT", "Approval identity, version or timestamp is invalid")] });
   }
