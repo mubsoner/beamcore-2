@@ -123,8 +123,7 @@ export function isDomainEventEnvelope(value: unknown): value is DomainEventEnvel
     (ENGINE_IDS as readonly string[]).includes(value.producer_engine) &&
     isObjectRef(value.object_ref) &&
     isScopeRef(value.scope_ref) &&
-    value.object_ref.scope_ref.scope_id === value.scope_ref.scope_id &&
-    value.object_ref.scope_ref.scope_kind === value.scope_ref.scope_kind &&
+    sameScopeRef(value.object_ref.scope_ref, value.scope_ref) &&
     isNonEmptyString(value.correlation_id) &&
     (value.causation_id === undefined || isNonEmptyString(value.causation_id)) &&
     (value.actor_ref === undefined || isPrincipalRef(value.actor_ref)) &&
@@ -589,8 +588,20 @@ export function validateMutationContext(
   return issues;
 }
 
+function sameScopePath(a: ScopeRef, b: ScopeRef, depth: number): boolean {
+  if (depth > 32) return false;
+  if (a.scope_id !== b.scope_id || a.scope_kind !== b.scope_kind) return false;
+
+  const aParent = a.parent_scope_ref;
+  const bParent = b.parent_scope_ref;
+  if (aParent === undefined || bParent === undefined) {
+    return aParent === undefined && bParent === undefined;
+  }
+  return sameScopePath(aParent, bParent, depth + 1);
+}
+
 export function sameScopeRef(a: ScopeRef, b: ScopeRef): boolean {
-  return a.scope_id === b.scope_id && a.scope_kind === b.scope_kind;
+  return sameScopePath(a, b, 0);
 }
 
 export function sameObjectRef(a: ObjectRef, b: ObjectRef): boolean {
