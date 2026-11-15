@@ -93,6 +93,11 @@ export interface AuthorizationSourcePort {
   /** Must check current source authority, including membership, scope and revoker permission. */
   verifyAuthorityRevoker(context: RequestContext, request: AuthorityRevocationRequest): Promise<OperationResult<{ authorized: boolean; source_version?: Version }>>;
   readPolicyRelease(context: RequestContext, ref: ObjectRef): Promise<OperationResult<PolicyRelease>>;
+  /**
+   * Verify current operator authority and every required gate for targetState:
+   * static/security analysis, scenario/conflict/regression evidence, impact report,
+   * approval bound to this release/change, and suspension/retirement reason.
+   */
   verifyPolicyReleaseOperator(context: RequestContext, release: PolicyRelease, targetState: PolicyReleaseState, operation: PolicyReleaseOperationContext): Promise<OperationResult<{ authorized: boolean }>>;
   /** Evaluate every must_hold_at_enforcement condition against live current sources. */
   checkEnforcementConditions(
@@ -1039,9 +1044,10 @@ async function transitionPolicyReleaseLifecycle(
   const transitioned = transitionPolicyRelease(current.data, targetState, deps.clock.now());
   if (transitioned.status !== "OK" || !transitioned.data) return propagate(context, transitioned);
   const eventType = targetState === "RELEASED" ? "policy.version_released" :
-    targetState === "SUSPENDED" ? "policy.version_suspended" :
-      targetState === "RETIRED" ? "policy.version_retired" :
-        "policy.review_stage_" + targetState.toLowerCase();
+    targetState === "MONITORING" ? "policy.version_monitoring" :
+      targetState === "SUSPENDED" ? "policy.version_suspended" :
+        targetState === "RETIRED" ? "policy.version_retired" :
+          "policy.review_stage_" + targetState.toLowerCase();
   return deps.repository.updatePolicyReleaseWithEvent(context, transitioned.data, version, eventType, {
     key: "policy." + targetState.toLowerCase() + ":" + idempotencyKey,
     request_fingerprint: await digestSha256(JSON.stringify({
@@ -1076,6 +1082,16 @@ export function publishPolicyRelease(
   operation: PolicyReleaseOperationContext,
 ): Promise<OperationResult<PolicyRelease>> {
   return transitionPolicyReleaseLifecycle(deps, context, policyRef, "RELEASED", operation);
+}
+
+/** Enter the monitoring phase only after a release has been published. */
+export function beginPolicyReleaseMonitoring(
+  deps: AuthorizationDependencies,
+  context: RequestContext,
+  policyRef: ObjectRef,
+  operation: PolicyReleaseOperationContext,
+): Promise<OperationResult<PolicyRelease>> {
+  return transitionPolicyReleaseLifecycle(deps, context, policyRef, "MONITORING", operation);
 }
 
 export function suspendPolicyRelease(
