@@ -77,6 +77,12 @@ export interface AuthorizationSourcePort {
   verifyAuthorityRevoker(context: RequestContext, request: AuthorityRevocationRequest): Promise<OperationResult<{ authorized: boolean; source_version?: Version }>>;
   readPolicyRelease(context: RequestContext, ref: ObjectRef): Promise<OperationResult<PolicyRelease>>;
   verifyPolicyReleaseOperator(context: RequestContext, release: PolicyRelease, targetState: PolicyReleaseState, operation: PolicyReleaseOperationContext): Promise<OperationResult<{ authorized: boolean }>>;
+  /** Evaluate every must_hold_at_enforcement condition against live current sources. */
+  checkEnforcementConditions(
+    context: RequestContext,
+    request: AuthorizationRequest,
+    conditions: import("./domain").DecisionCondition[],
+  ): Promise<OperationResult<{ satisfied: boolean; unresolved_condition_ids: string[] }>>;
 }
 
 export interface ApprovalClaimCommand {
@@ -137,6 +143,7 @@ export interface AuthorizationRepositoryPort {
   createRevocationWithEvent(
     context: RequestContext,
     revocation: RevocationRecord,
+    eventType: "authority.revoked" | "session.revoked",
     idempotency: { key: string; request_fingerprint: string },
   ): Promise<OperationResult<RevocationRecord>>;
   /** Compare-and-set approval lifecycle, idempotency and corresponding Outbox event atomically. */
@@ -311,30 +318,63 @@ async function authorizeActionCore(
     authority_fingerprint: fingerprint,
   });
   if (evaluated.status !== "OK" || !evaluated.data) return propagate(context, evaluated);
+  let decision = evaluated.data;
+
+  if (enforceActionBoundary) {
+    const requiredConditions = decision.conditions.filter(condition => condition.must_hold_at_enforcement);
+    if (requiredConditions.length) {
+      const check = await deps.sources.checkEnforcementConditions(context, request, requiredConditions);
+      if (check.status !== "OK" || !check.data) {
+        return fail(context, "DEPENDENCY_UNAVAILABLE", "Required action-time conditions could not be verified");
+      }
+      if (!check.data.satisfied || check.data.unresolved_condition_ids.length > 0) {
+        decision = {
+          ...decision,
+          result: "DEFER",
+          reason_codes: [...new Set([...decision.reason_codes, "ENFORCEMENT_CONDITIONS_UNSATISFIED"])],
+          valid_until: evaluatedAt,
+        };
+      }
+    }
+  }
 
   const audit: PolicyEvaluationAudit = {
     audit_ref: auditRef,
     request_ref: requestRef,
     decision_ref: decisionRef,
     actor_ref: request.actor_ref,
+    ...(request.service_identity_ref ? { service_identity_ref: request.service_identity_ref } : {}),
+    action: request.action,
     target_ref: request.resource_ref,
+    ...(request.expected_resource_version ?? request.resource_ref.object_version
+      ? { resource_version: request.expected_resource_version ?? request.resource_ref.object_version }
+      : {}),
+    environment_ref: request.environment_ref,
     scope_ref: request.scope_ref,
+    ...(request.work_ref ? { work_ref: request.work_ref } : {}),
+    ...(request.plan_revision_ref ? { plan_revision_ref: request.plan_revision_ref } : {}),
+    ...(request.graph_revision_ref ? { graph_revision_ref: request.graph_revision_ref } : {}),
+    ...(request.execution_ref ? { execution_ref: request.execution_ref } : {}),
+    ...(request.capability_ref ? { capability_ref: request.capability_ref } : {}),
+    ...(request.delegation_ref ? { delegation_ref: request.delegation_ref } : {}),
+    approval_refs: request.approval_ref ? [request.approval_ref] : [],
+    ...(request.risk_context.risk_assessment_ref ? { risk_assessment_ref: request.risk_context.risk_assessment_ref } : {}),
     policy_release_ref: policyResult.data.policy_release.policy_release_ref,
     authority_fingerprint: fingerprint,
-    reason_codes: evaluated.data.reason_codes,
+    reason_codes: decision.reason_codes,
     source_version_refs: [
       ...principalResult.data.authority_source_refs.map(source => source.object_ref),
       ...factsResult.data.source_refs.map(source => source.object_ref),
     ],
-    evaluated_at: evaluated.data.evaluated_at,
+    evaluated_at: decision.evaluated_at,
     correlation_id: context.correlation_id,
     ...(request.causation_id ? { causation_id: request.causation_id } : {}),
   };
 
   let approvalClaim: ApprovalClaimCommand | undefined;
   if (enforceActionBoundary &&
-      evaluated.data.result === "ALLOW" &&
-      evaluated.data.approval_use_mode === "ONE_TIME") {
+      decision.result === "ALLOW" &&
+      decision.approval_use_mode === "ONE_TIME") {
     if (!approval || !request.approval_ref ||
         approval.approval_use_mode !== "ONE_TIME" ||
         !approval.approval_ref.object_version) {
@@ -349,7 +389,7 @@ async function authorizeActionCore(
     };
   }
 
-  const saved = await deps.repository.commitDecision(context, evaluated.data, audit, {
+  const saved = await deps.repository.commitDecision(context, decision, audit, {
     idempotency_key: idempotencyKey,
     request_fingerprint: buildCanonicalRequestFingerprint(request),
     ...(approvalClaim ? { approval_claim: approvalClaim } : {}),
@@ -774,7 +814,11 @@ export async function revokeAuthority(
     affected_scope_refs: [request.scope_ref],
     correlation_id: context.correlation_id,
   };
-  return deps.repository.createRevocationWithEvent(context, record, {
+  return deps.repository.createRevocationWithEvent(
+    context,
+    record,
+    request.subject_ref.object_kind === "SESSION" ? "session.revoked" : "authority.revoked",
+    {
     key: "authority.revoke:" + idempotencyKey,
     request_fingerprint: await digestSha256(JSON.stringify({
       subject_ref: request.subject_ref,
@@ -783,7 +827,8 @@ export async function revokeAuthority(
       expected_version: request.expected_version ?? null,
       effective_at: effectiveAt,
     })),
-  });
+    },
+  );
 }
 
 async function transitionDelegationLifecycle(
