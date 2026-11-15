@@ -179,6 +179,7 @@ describe("INV-06 authorization domain", () => {
     expect(validateApprovalUse(approval, currentRequest, "2026-11-15T10:00:00Z", policyRef).length).toBeGreaterThan(0);
     expect(validateApprovalUse({
       ...approval, action: currentRequest.action, policy_release_ref: policyRef,
+      request_ref: ref("AUTHORIZATION_REQUEST", "different-request"),
     }, currentRequest, "2026-11-15T10:00:00Z", policyRef)).toContain("approval request identity does not match");
     expect(validateApprovalUse({
       ...approval, action: currentRequest.action, policy_release_ref: policyRef,
