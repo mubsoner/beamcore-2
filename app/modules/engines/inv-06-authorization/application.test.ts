@@ -156,7 +156,7 @@ function makeDependencies(currentFacts: AuthorityFacts = facts) {
     readApproval: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: approval })),
     readDelegation: vi.fn(async () => createOperationResult<DelegationRecord>({ status: "REJECTED", correlation_id: context.correlation_id })),
     readDelegationLineage: vi.fn(async () => createOperationResult<DelegationRecord[]>({ status: "REJECTED", correlation_id: context.correlation_id })),
-    verifyApprover: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { authorized: true, independent_required: true } })),
+    verifyApprover: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { authorized: true, independent_required: true, satisfied_constraints: ["INDEPENDENT_APPROVER"] } })),
     resolveDelegationGrantAuthority: vi.fn(async () => createOperationResult<DelegationGrantAuthority>({ status: "REJECTED", correlation_id: context.correlation_id })),
     verifyDelegationDecision: vi.fn(async (_ctx: RequestContext, _request: DelegationRequest) => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { valid: false } })),
     verifyDelegationRevoker: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { authorized: false } })),
@@ -278,7 +278,7 @@ describe("INV-06 authorization application boundary", () => {
   it("fails closed on approval without independent approver proof when policy requires it", async () => {
     const harness = makeDependencies();
     vi.mocked(harness.sources.verifyApprover).mockResolvedValue(
-      createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { authorized: true, independent_required: false } }),
+      createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { authorized: true, independent_required: false, satisfied_constraints: [] } }),
     );
     const request = authorizationRequest({ approval_ref: approval.approval_ref });
     const result = await recheckAuthorizationAtActionBoundary(harness.deps, context, request);
