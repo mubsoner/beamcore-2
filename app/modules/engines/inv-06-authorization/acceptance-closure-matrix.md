@@ -11,7 +11,7 @@
 - **INTEGRATION BLOCKER** — completion needs an actual provider, persistent repository, or another engine's enforcement/source adapter; a port or fake test adapter is not proof.
 - **GAP** — required logical behavior or test is still missing/incomplete.
 
-**Current engine test inventory:** 22 domain tests + 14 application tests = 36 focused INV-06 tests. The last fully-green Shared Foundation CI at commit `4e288b6a0c031add101d992d1bce4786ba90933f` ran 268/268 repository tests. The current branch head is newer; its CI must be checked separately before treating these latest changes as green.
+**Current engine test inventory:** 25 domain tests + 24 application tests = 49 focused INV-06 tests. Latest branch head inspected: `34b88da286bde41ac499ae0997b093d6386e87a8`; CI for that head at matrix authoring time: `in_progress`. Passing unit tests are not substitutes for the provider/integration blockers below.
 
 ## Acceptance status
 
@@ -40,34 +40,34 @@
 | T21 | Policy release immutable; changes create a new version and invalidation/recheck | LOGIC ONLY — ordered release lifecycle and guarded publish/suspend ports | Bind immutable policy store, approval/impact evidence and invalidation event consumer |
 | T22 | Required missing/stale/indeterminate risk blocks action | LOGIC ONLY — risk freshness and required-assessment checks exist | Add dedicated missing/stale risk tests and risk source adapter |
 | T23 | Approval-required returns scoped approval requirement without execution | TEST EXISTS — approval-required decision case | Verify no protected side effect through INV-05/07 |
-| T24 | Unauthorized approver cannot decide approval | LOGIC ONLY — current approver verification gates decision | Add explicit authorized=false test and live INV-18 integration |
+| T24 | Unauthorized approver cannot decide an approval | TEST EXISTS — application tests re-resolve current approver authority and deny revoked/stale approvers | Verify against live INV-18 membership and policy adapter |
 | T25 | Self-approval rejected when independent approval is required | TEST EXISTS — independent approver guard | Add cross-kind PrincipalRef test if policy permits varied principal types |
 | T26 | Approval for one action cannot authorize another | TEST EXISTS — exact action checked in approval validation | Assert action-mismatch reason directly |
-| T27 | Approval for one resource cannot authorize another | LOGIC ONLY — exact ObjectRef/version binding exists | Add focused resource-mismatch test |
-| T28 | Approval cannot cross tenant/environment | LOGIC ONLY — scope/environment exact-match guards exist | Add dedicated tenant and environment negative tests |
-| T29 | Material Work/resource/context version change forces re-evaluation/new approval | LOGIC ONLY — canonical request fingerprint and context version binding exist | Add Work/Plan/Graph version change test |
-| T30 | Expired approval is rejected | LOGIC ONLY — expiry and lifecycle guards exist | Add direct expired-use authorization test |
-| T31 | Revoked approval rejected despite cached prior allow | LOGIC ONLY — revoked_at/state are checked and action boundary rereads approval | Add cached-decision + revocation integration test |
-| T32 | One-time approval cannot be used concurrently twice | INTEGRATION BLOCKER | Real repository must atomically compare-and-set approval and commit decision/audit/outbox in one DB transaction |
-| T33 | Replayed one-time approval rejected with audit reason | TEST EXISTS — pure consume/replay and exact-request claim tests | Prove idempotency and durable audit in persistent adapter |
-| T34 | Reusable approval only when current policy explicitly permits it | LOGIC ONLY — use mode must match explicit policy value | Add reusable approval success/denial tests |
-| T35 | Grantor cannot delegate permissions it does not hold | TEST EXISTS — attempted action escalation is rejected | Verify against live membership/permission adapter |
-| T36 | Delegation scope cannot exceed grantor or parent | TEST EXISTS — scope/action/resource/parent constraints are validated | Add nested parent/ancestor integration fixture |
-| T37 | Subdelegation denied by default | TEST EXISTS — subdelegation needs explicit authority | Add root-level no-parent subdelegation negative test |
-| T38 | Allowed subdelegation preserves lineage, scope and parent expiry | TEST EXISTS — complete ancestry, bounds and cycle logic | Add positive multi-level subdelegation test with real lineage source |
-| T39 | Circular/self-delegation and privilege escalation rejected | TEST EXISTS — self actor and delegation cycle guards exist | Add full cyclic multi-parent graph integration test |
-| T40 | Expired/suspended/revoked delegation cannot be used | TEST EXISTS — expired reactivation and terminal revocation are checked | Verify actual INV-18/authority source returns current invalid state |
-| T41 | Delegation revocation invalidates later action and emits audit/event | LOGIC ONLY — revoke use case and atomic event repository port exist | Add action-after-revocation integration test with INV-05/07 |
+| T27 | Approval for one resource cannot authorize another resource | TEST EXISTS — exact resource reference and canonical approval binding are checked | Verify against current persistent resource/version source |
+| T28 | Approval cannot cross tenant/environment | TEST EXISTS — exact scope and environment are checked | Add persistent multi-tenant approval repository test |
+| T29 | Material Work/resource/context version change after approval forces re-evaluation/new approval | TEST EXISTS — canonical binding includes resource, Work/Plan/Graph/execution/capability versions and risk | Verify with live context-version sources and action boundary |
+| T30 | Expired approval is rejected | TEST EXISTS — approval expiry and expiry lifecycle transitions are tested | Verify scheduler/persistence expiry and action-boundary reads |
+| T31 | Revoked approval is rejected even if an earlier allow decision is cached | LOGIC ONLY — action boundary reloads approval and checks current state | Add cached-decision plus durable approval revocation integration test |
+| T32 | A one-time approval cannot be consumed by two concurrent authorization requests | INTEGRATION BLOCKER — claim command carries exact current row version and request; database compare-and-set is required | Prove concurrent CAS and transaction rollback on selected persistent repository |
+| T33 | Replayed one-time approval is rejected with an auditable safe reason | TEST EXISTS — pure claim/replay and stale row-version cases are covered | Prove durable idempotent replay and audit/outbox in database adapter |
+| T34 | Reusable approval works only where the current policy explicitly permits reusable use within scope | TEST EXISTS — reusable binding allows equivalent requests but rejects changed resource/action/scope/context | Add integration test against live policy and approval store |
+| T35 | Delegation cannot grant a permission the grantor does not currently possess | TEST EXISTS — current grantor action set and inherited limits/conditions constrain the child | Verify source adapter against live INV-18 and policy facts |
+| T36 | Delegation scope cannot exceed grantor authority or the parent delegation | TEST EXISTS — direct parent and full ancestor chain constrain scope/actions/resources/limits/conditions/time | Add live multi-level lineage-source conformance test |
+| T37 | Subdelegation defaults to denied | TEST EXISTS — explicit grantor and ancestor subdelegation authority is required | Verify persisted policy bindings and revocation propagation |
+| T38 | Subdelegation, when explicitly allowed, preserves lineage, scope limits and parent expiry | TEST EXISTS — multi-level ancestry is checked root-to-parent; widening, broken chain and cycles are rejected | Verify full ancestry retrieval and event ordering in durable source adapter |
+| T39 | Circular/self-delegation and attempted privilege escalation are rejected | TEST EXISTS — self-delegation, self-reference/cycle and ancestor widening checks are covered | Add property-based cyclic graph tests and live ancestry integration |
+| T40 | Expired/suspended/revoked delegation cannot be used | TEST EXISTS — expired activation is denied; reactivation rechecks grantor authority and cited decision | Verify current INV-18/delegation source and event-consumer freshness |
+| T41 | Delegation revocation invalidates later actions and produces an auditable event | LOGIC ONLY — revocation and suspension use CAS plus atomic Outbox repository contracts | Prove revoke-to-action denial through INV-05/07 with durable event delivery |
 | T42 | Role/scope/expiry/risk/context changes trigger action-time re-evaluation | LOGIC ONLY — boundary re-resolves principal/facts/policy and rechecks conditions | Add source-version change matrix test |
-| T43 | Long-running Work rechecks before next consequential action | INTEGRATION BLOCKER | Integrate recheck hook into INV-04 and enforcement points in INV-05/07 |
-| T44 | Service identity cannot replace acting user without permitted delegation | TEST EXISTS — distinct service identity requires verified delegation | Verify against service identity and delegation providers |
+| T43 | A long-running Work is rechecked before its next consequential action after a policy/membership/delegation change | INTEGRATION BLOCKER | Integrate recheck hook into INV-04 and enforcement points in INV-05/07 |
+| T44 | A caller cannot substitute its own service identity for an acting user without an explicit permitted delegation | TEST EXISTS — service identity must resolve independently and be bound to a verified delegation | Verify with real application/service identity provider and delegation source |
 | T45 | External authorization failure/uncertainty blocks action | LOGIC ONLY — denied/unknown external authority states fail closed | Add dedicated test and external authority adapter |
 | T46 | Capability fallback cannot broaden permissions or reuse unrelated approval | INTEGRATION BLOCKER | INV-07 capability fallback and approval binding integration test |
-| T47 | Wrong expected version conflicts without partial mutation | LOGIC ONLY — expected version validation and CAS ports exist | Add stale CAS application test against repository adapter |
-| T48 | Same idempotency key + same canonical payload returns same logical result | INTEGRATION BLOCKER | Implement/verify persistent idempotency replay in repository adapter |
-| T49 | Same idempotency key + different payload returns conflict | LOGIC ONLY — key consistency and canonical fingerprint inputs exist | Add application replay/conflict test with persistent idempotency store |
+| T47 | Authorization request with wrong expected version returns a conflict and performs no partial mutation | TEST EXISTS — current approval row version is passed separately from stable ObjectRef version; stale CAS is rejected | Prove database compare-and-set and rollback under race/fault injection |
+| T48 | Repeated request with the same idempotency key and same canonical payload returns the same logical operation result | INTEGRATION BLOCKER | Verify persistent idempotency replay with the selected repository/transaction adapter |
+| T49 | Reusing an idempotency key with different canonical payload returns an idempotency conflict | LOGIC ONLY — canonical request fingerprint and idempotency contracts exist | Add durable application replay/conflict tests against persistent repository |
 | T50 | Duplicate/delayed/reordered authority events cannot restore older state | INTEGRATION BLOCKER | Connect INV-18 authority event versions to Inbox ordering/consumer state |
-| T51 | Approval consumption atomic and version-checked | INTEGRATION BLOCKER | Repository/database must prove concurrent CAS and rollback with fault-injection tests |
+| T51 | Approval consumption is atomic and version-checked under concurrent use | INTEGRATION BLOCKER — application sends claim and decision/audit/outbox in a single repository command | Prove concurrent database CAS, rollback and replay behavior |
 | T52 | Decision fingerprint changes on material authority source version | TEST EXISTS — source-version change alters authority fingerprint | Add full INV-18/IdP/policy source contract fixture |
 | T53 | Decision expiry prevents reuse without event invalidation | TEST EXISTS — decision currentness checks validity deadline | Verify on actual enforcement adapter |
 | T54 | Safe denial does not reveal secret/private policy/hidden data | TEST EXISTS — private reason whitelist and no caller-supplied refs | Add audience-specific integration/redaction tests |
@@ -75,7 +75,7 @@
 | T56 | Revocation does not claim to undo completed external effect; downstream reconcile signalled | INTEGRATION BLOCKER | INV-04/05 reconciliation path and external-effect uncertainty proof |
 | T57 | Decision history/list/search access filtered by object and tenant scope | LOGIC ONLY — filtered single-decision read port exists | List/history API and persistent repository filtering are not implemented |
 | T58 | Malformed/unsupported request rejected before evaluation | TEST EXISTS — request validation rejects actor/scope/reference errors | Add malformed payload fuzz/property tests |
-| T59 | Stale approver authority at decision time blocks approval | LOGIC ONLY — verifyApprover is called immediately before decision | Add stale-membership/approver source-version test |
+| T59 | Stale approver authority at decision time blocks approval even if authority existed when the request was created | TEST EXISTS — decision application re-resolves approver and all approval-required constraints immediately before mutation | Verify against live membership revocation and policy source versions |
 | T60 | Restart/recovery never resurrects expired/revoked/suspended state | INTEGRATION BLOCKER | Requires durable persistence, recovery tests and event-consumer restart tests |
 
 ## Provider and cross-engine blockers
