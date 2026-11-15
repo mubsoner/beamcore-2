@@ -212,6 +212,7 @@ export interface AuthorityFacts {
   trust_assessment_state: "VALID" | "INVALID" | "NOT_REQUIRED" | "UNKNOWN";
   external_authorization_state: ExternalAuthorizationState;
   verified_resource_scope_ref: ScopeRef;
+  verified_delegation_ref?: ObjectRef;
   source_refs: AuthoritySourceRef[];
   observed_at: Timestamp;
   valid_until?: Timestamp;
@@ -540,7 +541,7 @@ export function validatePolicyEvaluation(
   const release = policy.policy_release;
   if (!release || !isObjectRef(release.policy_release_ref) ||
       release.policy_release_ref.object_kind !== "POLICY_RELEASE" ||
-      !sameScopeRef(release.policy_release_ref.scope_ref, request.scope_ref) ||
+      !isScopeWithin(release.policy_release_ref.scope_ref, request.scope_ref) ||
       !release.policy_release_id?.trim() || !release.policy_family_id?.trim() ||
       !isVersion(release.version) ||
       (release.policy_release_ref.object_version !== undefined &&
@@ -549,9 +550,9 @@ export function validatePolicyEvaluation(
     issues.push("policy release identity, version or digest is invalid");
   }
   if (!policy.evaluator_version?.trim() ||
-      !Array.isArray(policy.reason_codes) ||
+      !Array.isArray(policy.reason_codes) || !policy.reason_codes.every(code => typeof code === "string" && !!code.trim()) ||
       !Array.isArray(policy.conditions) ||
-      !Array.isArray(policy.obligations) ||
+      !Array.isArray(policy.obligations) || !policy.obligations.every(item => typeof item === "string" && !!item.trim()) ||
       !policy.conditions.every(condition =>
         !!condition && !!condition.condition_id?.trim() &&
         !!condition.condition_kind?.trim() &&
@@ -580,28 +581,6 @@ export function validatePolicyEvaluation(
     issues.push("policy constrained environment is outside the request scope");
   }
   return issues;
-}
-
-export function buildCanonicalRequestFingerprint(request: AuthorizationRequest): string {
-  return JSON.stringify({
-    actor: [request.actor_ref.principal_kind, request.actor_ref.principal_id],
-    service: request.service_identity_ref ? [request.service_identity_ref.principal_kind, request.service_identity_ref.principal_id] : null,
-    action: request.action,
-    resource: request.resource_ref,
-    scope: request.scope_ref,
-    environment: request.environment_ref,
-    work: request.work_ref ?? null,
-    plan: request.plan_revision_ref ?? null,
-    graph: request.graph_revision_ref ?? null,
-    execution: request.execution_ref ?? null,
-    capability: request.capability_ref ?? null,
-    delegation: request.delegation_ref ?? null,
-    approval: request.approval_ref ?? null,
-    risk: request.risk_context,
-    arguments_digest: request.action_arguments_digest ?? null,
-    expected_resource_version: request.expected_resource_version ?? null,
-    policy_context_refs: request.policy_context_refs,
-  });
 }
 
 function canonicalize(value: unknown): unknown {
@@ -944,8 +923,8 @@ export function createPendingApproval(input: {
     !Array.isArray(input.required_approver_constraints) ||
     !Array.isArray(input.context_version_refs) || !input.context_version_refs.every(isObjectRef) ||
     !isTimestamp(input.created_at) ||
-    (input.expires_at !== undefined &&
-      (!isTimestamp(input.expires_at) || Date.parse(input.expires_at) <= Date.parse(input.created_at)))) {
+    !isTimestamp(input.expires_at) ||
+    Date.parse(input.expires_at) <= Date.parse(input.created_at)) {
     return createOperationResult({
       status: "REJECTED", correlation_id: "authorization",
       errors: [createOperationError("VALIDATION_ERROR", "Approval request is invalid or cross-scope")],
@@ -969,7 +948,7 @@ export function createPendingApproval(input: {
       approval_use_mode: input.approval_use_mode,
       state: "PENDING",
       created_at: input.created_at,
-      ...(input.expires_at ? { expires_at: input.expires_at } : {}),
+      expires_at: input.expires_at,
     },
   });
 }
@@ -984,7 +963,7 @@ export function decideApproval(input: {
 }): OperationResult<ApprovalRecord> {
   const { approval, decision } = input;
   if (!isObjectRef(decision.approval_ref) ||
-    !sameObjectRef(decision.approval_ref, approval.approval_ref) ||
+    !isExactObjectRef(decision.approval_ref, approval.approval_ref) ||
     !sameScopeRef(decision.approval_ref.scope_ref, approval.scope_ref) ||
     decision.expected_version !== input.expected_current_version ||
     !isPrincipalRef(decision.approver_ref) || !isTimestamp(decision.decided_at) ||
@@ -998,7 +977,7 @@ export function decideApproval(input: {
   }
   if (!input.approver_is_authorized ||
     (input.independent_approval_required &&
-      decision.approver_ref.principal_id === approval.requested_by_ref.principal_id)) {
+      samePrincipal(decision.approver_ref, approval.requested_by_ref))) {
     return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
       errors: [createOperationError("FORBIDDEN", "Approver does not hold the required independent approval authority")] });
   }
@@ -1025,6 +1004,14 @@ export function validateApprovalUse(
 ): string[] {
   const issues: string[] = [];
   if (approval.state !== "APPROVED") issues.push("approval is not approved");
+  if (!approval.approver_ref || !isPrincipalRef(approval.approver_ref) ||
+      !approval.decided_at || !isTimestamp(approval.decided_at)) {
+    issues.push("approval decision provenance is missing or invalid");
+  }
+  if (approval.revoked_at !== undefined) issues.push("approval has been revoked");
+  if (!request.approval_ref || !isExactObjectRef(approval.approval_ref, request.approval_ref)) {
+    issues.push("approval reference does not match the request");
+  }
   if (approval.request_ref.object_kind !== "AUTHORIZATION_REQUEST" ||
     approval.request_ref.object_id !== request.authorization_request_id ||
     !sameScopeRef(approval.request_ref.scope_ref, request.scope_ref)) {
