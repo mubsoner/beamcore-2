@@ -17,7 +17,7 @@ import {
   type AuthorizationSourcePort,
   type DecisionCommitCommand,
 } from "./application";
-import { buildCanonicalRequestFingerprint } from "./domain";
+import { buildApprovalBindingFingerprint, buildCanonicalRequestFingerprint } from "./domain";
 import type {
   ApprovalRecord,
   AuthorizationDecision,
@@ -130,7 +130,7 @@ const approval: ApprovalRecord = {
   approval_id: "approval-1",
   approval_ref: ref("APPROVAL", "approval-1"),
   request_ref: ref("AUTHORIZATION_REQUEST", "authorization-request-1"),
-  request_binding_fingerprint: buildCanonicalRequestFingerprint(authorizationRequest()),
+  request_binding_fingerprint: buildApprovalBindingFingerprint(authorizationRequest(), "ONE_TIME"),
   requested_by_ref: actor,
   approver_ref: { principal_id: "admin-1", principal_kind: "USER" },
   required_approver_constraints: ["INDEPENDENT_APPROVER"],
@@ -381,11 +381,11 @@ describe("INV-06 authorization application boundary", () => {
     const request = authorizationRequest();
     const result = await requestApproval(harness.deps, context, request);
     expect(result.status).toBe("OK");
-    expect(result.data?.request_binding_fingerprint).toBe(buildCanonicalRequestFingerprint(request));
+    expect(result.data?.request_binding_fingerprint).toBe(buildApprovalBindingFingerprint(request, "ONE_TIME"));
     expect(harness.repository.createApprovalWithEvent).toHaveBeenCalledWith(
       context,
       expect.objectContaining({
-        request_binding_fingerprint: buildCanonicalRequestFingerprint(request),
+        request_binding_fingerprint: buildApprovalBindingFingerprint(request, "ONE_TIME"),
         action: request.action,
         resource_ref: request.resource_ref,
         environment_ref: request.environment_ref,
