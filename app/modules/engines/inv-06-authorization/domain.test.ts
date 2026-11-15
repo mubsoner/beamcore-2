@@ -364,7 +364,7 @@ describe("INV-06 authorization domain", () => {
   });
   it("filters private policy reason codes from user-facing explanations", () => {
     const decision = evaluate({ policy: { reason_codes: ["PRIVATE_RULE_SECRET", "POLICY_MATCHED"] } }).data!;
-    const explanation = createSafeDecisionExplanation(decision, []);
+    const explanation = createSafeDecisionExplanation(decision);
     expect(explanation.visible_reason_codes).not.toContain("PRIVATE_RULE_SECRET");
     expect(explanation.user_visible_refs).toEqual([]);
   });
