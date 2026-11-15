@@ -284,12 +284,13 @@ async function authorizeActionCore(
         if (approverResult.status !== "OK" || !approverResult.data) {
           return fail(context, "DEPENDENCY_UNAVAILABLE", "Current approver authority could not be verified");
         }
+        const approverData = approverResult.data;
         const constraintsSatisfied = approval.required_approver_constraints.every(constraint =>
-          approverResult.data.satisfied_constraints.includes(constraint));
+          approverData.satisfied_constraints.includes(constraint));
         approvalAuthorityVerified =
-          approverResult.data.authorized &&
+          approverData.authorized &&
           constraintsSatisfied &&
-          (!policyResult.data.independent_approver_required || approverResult.data.independent_required) &&
+          (!policyResult.data.independent_approver_required || approverData.independent_required) &&
           (!policyResult.data.independent_approver_required ||
             !samePrincipal(approval.approver_ref, approval.requested_by_ref));
       }
