@@ -198,7 +198,7 @@ export interface VersionedRepository<T> {
 }
 
 export interface AppendOnlyRepository<T> {
-  append(context: RequestContext, value: T): Promise<OperationResult<T>>;
+  append(context: RequestContext, ref: ObjectRef, value: T): Promise<OperationResult<T>>;
   get(context: RequestContext, ref: ObjectRef): Promise<OperationResult<T>>;
 }
 
