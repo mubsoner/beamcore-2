@@ -751,7 +751,9 @@ export function createPendingApproval(input: {
   created_at: Timestamp;
   expires_at?: Timestamp;
 }): OperationResult<ApprovalRecord> {
-  if (!isObjectRef(input.approval_ref) || input.approval_ref.object_kind !== "APPROVAL" ||
+  if (!input.approval_id?.trim() ||
+    !["ONE_TIME", "REUSABLE_WITHIN_SCOPE"].includes(input.approval_use_mode) ||
+    !isObjectRef(input.approval_ref) || input.approval_ref.object_kind !== "APPROVAL" ||
     !sameScopeRef(input.approval_ref.scope_ref, input.scope_ref) ||
     !isObjectRef(input.request_ref) || input.request_ref.object_kind !== "AUTHORIZATION_REQUEST" ||
     !sameScopeRef(input.request_ref.scope_ref, input.scope_ref) ||
@@ -842,6 +844,14 @@ export function validateApprovalUse(
 ): string[] {
   const issues: string[] = [];
   if (approval.state !== "APPROVED") issues.push("approval is not approved");
+  if (approval.request_ref.object_kind !== "AUTHORIZATION_REQUEST" ||
+    approval.request_ref.object_id !== request.authorization_request_id ||
+    !sameScopeRef(approval.request_ref.scope_ref, request.scope_ref)) {
+    issues.push("approval request identity does not match");
+  }
+  if (!samePrincipal(approval.requested_by_ref, request.actor_ref)) {
+    issues.push("approval requester does not match the requesting actor");
+  }
   if (approval.action !== request.action) issues.push("approval action does not match");
   if (!isExactObjectRef(approval.resource_ref, request.resource_ref)) issues.push("approval resource does not match");
   if (!sameScopeRef(approval.scope_ref, request.scope_ref)) issues.push("approval scope does not match");
@@ -849,9 +859,16 @@ export function validateApprovalUse(
   if (approval.work_ref && (!request.work_ref || !isExactObjectRef(approval.work_ref, request.work_ref))) {
     issues.push("approval Work context does not match");
   }
-  if (approval.policy_release_ref && !isExactObjectRef(approval.policy_release_ref, policyReleaseRef)) {
+  if (!approval.policy_release_ref || !isExactObjectRef(approval.policy_release_ref, policyReleaseRef)) {
     issues.push("approval policy release does not match");
   }
+  const expectedContextRefs = [
+    request.work_ref, request.plan_revision_ref, request.graph_revision_ref,
+    request.execution_ref, request.capability_ref,
+  ].filter((ref): ref is ObjectRef => ref !== undefined);
+  const sameContextRefs = expectedContextRefs.length === approval.context_version_refs.length &&
+    expectedContextRefs.every(expected => approval.context_version_refs.some(actual => isExactObjectRef(actual, expected)));
+  if (!sameContextRefs) issues.push("approval context versions do not match the current request");
   if (approval.valid_from && Date.parse(approval.valid_from) > Date.parse(now)) issues.push("approval is not yet valid");
   if (!approval.expires_at || !isTimestamp(approval.expires_at) || Date.parse(approval.expires_at) <= Date.parse(now)) {
     issues.push("approval is expired or has no enforceable expiry");
