@@ -245,6 +245,16 @@ async function authorizeActionCore(
   if (principalResult.status !== "OK" || !principalResult.data) {
     return fail(context, "UNAUTHENTICATED", "The authenticated principal could not be verified");
   }
+  const principalIssues = validatePrincipalContext(context, principalResult.data, deps.clock.now());
+  if (principalIssues.length) {
+    return fail(context, "UNAUTHENTICATED", "Current principal, session or authority provenance failed validation");
+  }
+  const requestedService = request.service_identity_ref;
+  const resolvedService = principalResult.data.service_identity_ref;
+  if ((requestedService === undefined) !== (resolvedService === undefined) ||
+      (requestedService && resolvedService && !samePrincipal(requestedService, resolvedService))) {
+    return fail(context, "FORBIDDEN", "Requested service identity does not match the independently resolved service identity");
+  }
 
   const factsResult = await deps.sources.readAuthorityFacts(context, request);
   if (factsResult.status !== "OK" || !factsResult.data) {
