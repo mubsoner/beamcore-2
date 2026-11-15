@@ -247,6 +247,7 @@ export interface AuthorizationDecision {
   evaluator_version?: string;
   authority_fingerprint: string;
   request_fingerprint: string;
+  approval_use_mode?: ApprovalUseMode;
   applicable_scope_ref: ScopeRef;
   constrained_action?: string;
   constrained_resource_ref?: ObjectRef;
@@ -276,6 +277,16 @@ export interface PolicyEvaluationAudit {
   evaluated_at: Timestamp;
   correlation_id: string;
   causation_id?: string;
+}
+
+export interface ApprovalUseResult {
+  approval_ref: ObjectRef;
+  authorization_request_ref: ObjectRef;
+  use_mode: ApprovalUseMode;
+  claim_status: "CLAIMED" | "ALREADY_CLAIMED" | "REJECTED" | "UNKNOWN";
+  claimed_at?: Timestamp;
+  consumed_at?: Timestamp;
+  version?: Version;
 }
 
 export interface ApprovalDecisionInput {
@@ -367,6 +378,11 @@ export function validateAuthorizationRequest(
   if (request.expected_resource_version !== undefined && !isVersion(request.expected_resource_version)) {
     issues.push("expected_resource_version is invalid");
   }
+  if (request.expected_resource_version !== undefined &&
+    request.resource_ref.object_version !== undefined &&
+    request.expected_resource_version !== request.resource_ref.object_version) {
+    issues.push("expected_resource_version does not match resource_ref version");
+  }
   if (!Array.isArray(request.policy_context_refs) ||
     !request.policy_context_refs.every(isObjectRef)) issues.push("policy_context_refs are invalid");
   if (!request.correlation_id?.trim() || request.correlation_id !== context.correlation_id) {
@@ -431,9 +447,8 @@ export function validatePrincipalContext(
   if (!isTimestamp(principal.resolved_at) || Date.parse(principal.resolved_at) > Date.parse(now)) {
     issues.push("principal resolution timestamp is invalid");
   }
-  if (principal.valid_until !== undefined &&
-    (!isTimestamp(principal.valid_until) || Date.parse(principal.valid_until) <= Date.parse(now))) {
-    issues.push("principal context is expired");
+  if (principal.valid_until !== undefined && !isTimestamp(principal.valid_until)) {
+    issues.push("principal context validity timestamp is invalid");
   }
   for (const group of [
     principal.organization_membership_refs,
@@ -453,6 +468,116 @@ export function validatePrincipalContext(
   if (principal.session_ref && !isObjectRef(principal.session_ref)) issues.push("session_ref is invalid");
   if (principal.assurance_context_ref && !isObjectRef(principal.assurance_context_ref)) {
     issues.push("assurance_context_ref is invalid");
+  }
+  return issues;
+}
+
+function isScopeWithin(ancestor: ScopeRef, descendant: ScopeRef): boolean {
+  let current: ScopeRef | undefined = descendant;
+  while (current) {
+    if (sameScopeRef(ancestor, current)) return true;
+    current = current.parent_scope_ref;
+  }
+  return false;
+}
+
+export function validateAuthorityFacts(
+  facts: AuthorityFacts,
+  request: AuthorizationRequest,
+  now: Timestamp,
+): string[] {
+  const issues: string[] = [];
+  if (!facts || typeof facts !== "object") return ["authority facts are required"];
+  if (!isScopeRef(facts.verified_resource_scope_ref) ||
+      !sameScopeRef(facts.verified_resource_scope_ref, request.resource_ref.scope_ref) ||
+      !sameScopeRef(facts.verified_resource_scope_ref, request.scope_ref)) {
+    issues.push("authoritative resource scope does not match request scope");
+  }
+  if (!isTimestamp(facts.observed_at) || Date.parse(facts.observed_at) > Date.parse(now)) {
+    issues.push("authority observation timestamp is invalid");
+  }
+  if (facts.valid_until !== undefined && !isTimestamp(facts.valid_until)) {
+    issues.push("authority validity timestamp is invalid");
+  }
+  if (!Array.isArray(facts.source_refs) || facts.source_refs.length === 0 ||
+      !facts.source_refs.every(source =>
+        !!source && typeof source.source_kind === "string" && !!source.source_kind.trim() &&
+        isObjectRef(source.object_ref) && isScopeWithin(source.object_ref.scope_ref, request.scope_ref) &&
+        isTimestamp(source.observed_at) &&
+        (source.source_version === undefined || isVersion(source.source_version)))) {
+    issues.push("authority source lineage is invalid or outside the request scope");
+  }
+  const allowedMembership: readonly string[] = ["ACTIVE", "SUSPENDED", "REVOKED", "UNKNOWN"];
+  const allowedEntitlement: readonly string[] = ["ELIGIBLE", "INELIGIBLE", "NOT_REQUIRED", "UNKNOWN"];
+  const allowedPermission: readonly string[] = ["GRANTED", "NOT_GRANTED", "UNKNOWN"];
+  const allowedDelegation: readonly string[] = ["VALID", "INVALID", "NOT_REQUIRED", "UNKNOWN"];
+  const allowedTrust: readonly string[] = ["VALID", "INVALID", "NOT_REQUIRED", "UNKNOWN"];
+  const allowedExternal: readonly string[] = ["AUTHORIZED", "DENIED", "NOT_REQUIRED", "UNKNOWN"];
+  if (!allowedMembership.includes(facts.membership_state) ||
+      !allowedEntitlement.includes(facts.entitlement_state) ||
+      !allowedPermission.includes(facts.permission_state) ||
+      !allowedDelegation.includes(facts.delegation_state) ||
+      !allowedTrust.includes(facts.trust_assessment_state) ||
+      !allowedExternal.includes(facts.external_authorization_state)) {
+    issues.push("authority fact state contains an unsupported value");
+  }
+  const expectedResourceVersion =
+    request.expected_resource_version ?? request.resource_ref.object_version;
+  if (expectedResourceVersion !== undefined &&
+      (!facts.current_resource_version || !isVersion(facts.current_resource_version))) {
+    issues.push("current resource version is required to validate a version-bound request");
+  }
+  return issues;
+}
+
+export function validatePolicyEvaluation(
+  policy: PolicyEvaluation,
+  request: AuthorizationRequest,
+): string[] {
+  const issues: string[] = [];
+  if (!policy || typeof policy !== "object") return ["policy evaluation is required"];
+  if (!(POLICY_EFFECTS as readonly string[]).includes(policy.effect)) issues.push("policy effect is invalid");
+  const release = policy.policy_release;
+  if (!release || !isObjectRef(release.policy_release_ref) ||
+      release.policy_release_ref.object_kind !== "POLICY_RELEASE" ||
+      !sameScopeRef(release.policy_release_ref.scope_ref, request.scope_ref) ||
+      !release.policy_release_id?.trim() || !release.policy_family_id?.trim() ||
+      !isVersion(release.version) ||
+      (release.policy_release_ref.object_version !== undefined &&
+        release.policy_release_ref.object_version !== release.version) ||
+      !release.ruleset_digest?.trim() || !release.evaluator_contract_version?.trim()) {
+    issues.push("policy release identity, version or digest is invalid");
+  }
+  if (!policy.evaluator_version?.trim() ||
+      !Array.isArray(policy.reason_codes) ||
+      !Array.isArray(policy.conditions) ||
+      !Array.isArray(policy.obligations) ||
+      !policy.conditions.every(condition =>
+        !!condition && !!condition.condition_id?.trim() &&
+        !!condition.condition_kind?.trim() &&
+        typeof condition.must_hold_at_enforcement === "boolean" &&
+        (condition.parameters_ref === undefined ||
+          (isObjectRef(condition.parameters_ref) &&
+            isScopeWithin(condition.parameters_ref.scope_ref, request.scope_ref))))) {
+    issues.push("policy evaluator output is malformed");
+  }
+  if (policy.valid_until !== undefined && !isTimestamp(policy.valid_until)) {
+    issues.push("policy evaluation validity timestamp is invalid");
+  }
+  if (policy.approval_required &&
+      policy.approval_use_mode !== "ONE_TIME" &&
+      policy.approval_use_mode !== "REUSABLE_WITHIN_SCOPE") {
+    issues.push("approval-required policy must explicitly declare an approval use mode");
+  }
+  if (policy.constrained_resource_ref &&
+      (!isObjectRef(policy.constrained_resource_ref) ||
+        !sameScopeRef(policy.constrained_resource_ref.scope_ref, request.scope_ref))) {
+    issues.push("policy constrained resource is outside the request scope");
+  }
+  if (policy.constrained_environment_ref &&
+      (!isObjectRef(policy.constrained_environment_ref) ||
+        !sameScopeRef(policy.constrained_environment_ref.scope_ref, request.scope_ref))) {
+    issues.push("policy constrained environment is outside the request scope");
   }
   return issues;
 }
@@ -479,61 +604,116 @@ export function buildCanonicalRequestFingerprint(request: AuthorizationRequest):
   });
 }
 
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return Object.fromEntries(Object.keys(record).sort().map(key => [key, canonicalize(record[key])]));
+  }
+  return value;
+}
+
+export function buildCanonicalRequestFingerprint(request: AuthorizationRequest): string {
+  return JSON.stringify(canonicalize({
+    actor: request.actor_ref,
+    service_identity: request.service_identity_ref ?? null,
+    action: request.action,
+    resource: request.resource_ref,
+    scope: request.scope_ref,
+    environment: request.environment_ref,
+    work: request.work_ref ?? null,
+    plan_revision: request.plan_revision_ref ?? null,
+    graph_revision: request.graph_revision_ref ?? null,
+    execution: request.execution_ref ?? null,
+    capability: request.capability_ref ?? null,
+    delegation: request.delegation_ref ?? null,
+    approval: request.approval_ref ?? null,
+    risk: request.risk_context,
+    arguments_digest: request.action_arguments_digest ?? null,
+    expected_resource_version: request.expected_resource_version ?? null,
+    policy_context_refs: [...request.policy_context_refs].sort((a, b) =>
+      JSON.stringify(canonicalize(a)).localeCompare(JSON.stringify(canonicalize(b)))),
+  }));
+}
+
 export function buildAuthorityFingerprintMaterial(input: {
   request: AuthorizationRequest;
   principal: PrincipalContext;
   facts: AuthorityFacts;
   policy: PolicyEvaluation;
+  approval?: ApprovalRecord;
 }): string {
-  const refs = input.facts.source_refs
-    .map(source => [
-      source.source_kind,
-      source.object_ref.object_kind,
-      source.object_ref.object_id,
-      source.source_version ?? "",
-      source.observed_at,
-    ])
-    .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-  const refsFromPrincipal = input.principal.authority_source_refs
-    .map(source => [
-      source.source_kind,
-      source.object_ref.object_kind,
-      source.object_ref.object_id,
-      source.source_version ?? "",
-      source.observed_at,
-    ])
-    .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-  return JSON.stringify({
-    actor: [input.request.actor_ref.principal_kind, input.request.actor_ref.principal_id],
-    action: input.request.action,
-    resource: [input.request.resource_ref.object_kind, input.request.resource_ref.object_id,
-      input.request.expected_resource_version ?? input.request.resource_ref.object_version ?? ""],
-    scope: input.request.scope_ref,
-    environment: [input.request.environment_ref.object_kind, input.request.environment_ref.object_id,
-      input.request.environment_ref.object_version ?? ""],
-    context: {
-      work: input.request.work_ref,
-      plan: input.request.plan_revision_ref,
-      graph: input.request.graph_revision_ref,
-      execution: input.request.execution_ref,
-      capability: input.request.capability_ref,
+  const sources = (items: AuthoritySourceRef[]) => items.map(source => ({
+    source_kind: source.source_kind,
+    object_ref: source.object_ref,
+    source_version: source.source_version ?? null,
+    observed_at: source.observed_at,
+  })).sort((a, b) =>
+    JSON.stringify(canonicalize(a)).localeCompare(JSON.stringify(canonicalize(b))));
+  return JSON.stringify(canonicalize({
+    request: buildCanonicalRequestFingerprint(input.request),
+    principal: {
+      principal_ref: input.principal.principal_ref,
+      authentication_state: input.principal.authentication_state,
+      session_ref: input.principal.session_ref ?? null,
+      assurance_context_ref: input.principal.assurance_context_ref ?? null,
+      organization_membership_refs: input.principal.organization_membership_refs,
+      role_binding_refs: input.principal.role_binding_refs,
+      delegation_refs: input.principal.delegation_refs,
+      trust_assessment_refs: input.principal.trust_assessment_refs,
+      authority_sources: sources(input.principal.authority_source_refs),
+      resolved_at: input.principal.resolved_at,
+      valid_until: input.principal.valid_until ?? null,
     },
-    membership: input.facts.membership_state,
-    trust: input.facts.trust_assessment_state,
-    entitlement: input.facts.entitlement_state,
-    permission: input.facts.permission_state,
-    delegation: input.facts.delegation_state,
-    external: input.facts.external_authorization_state,
-    membership_sources: refsFromPrincipal,
-    authority_sources: refs,
-    policy: [
-      input.policy.policy_release.policy_release_ref.object_id,
-      input.policy.policy_release.version,
-      input.policy.policy_release.ruleset_digest,
-      input.policy.evaluator_version,
-    ],
-    risk: input.request.risk_context,
-  });
+    authority: {
+      membership_state: input.facts.membership_state,
+      entitlement_state: input.facts.entitlement_state,
+      permission_state: input.facts.permission_state,
+      delegation_state: input.facts.delegation_state,
+      trust_assessment_state: input.facts.trust_assessment_state,
+      external_authorization_state: input.facts.external_authorization_state,
+      verified_resource_scope_ref: input.facts.verified_resource_scope_ref,
+      current_resource_version: input.facts.current_resource_version ?? null,
+      observed_at: input.facts.observed_at,
+      valid_until: input.facts.valid_until ?? null,
+      sources: sources(input.facts.source_refs),
+    },
+    policy: {
+      release_ref: input.policy.policy_release.policy_release_ref,
+      version: input.policy.policy_release.version,
+      state: input.policy.policy_release.state,
+      ruleset_digest: input.policy.policy_release.ruleset_digest,
+      evaluator_contract_version: input.policy.policy_release.evaluator_contract_version,
+      evaluator_version: input.policy.evaluator_version,
+      effect: input.policy.effect,
+      approval_required: input.policy.approval_required,
+      approval_use_mode: input.policy.approval_use_mode ?? null,
+      independent_approver_required: input.policy.independent_approver_required,
+      risk_assessment_required: input.policy.risk_assessment_required,
+      trust_required: input.policy.trust_required,
+      conditions: input.policy.conditions,
+      obligations: input.policy.obligations,
+      valid_until: input.policy.valid_until ?? null,
+    },
+    approval: input.approval ? {
+      approval_ref: input.approval.approval_ref,
+      request_ref: input.approval.request_ref,
+      requested_by_ref: input.approval.requested_by_ref,
+      approver_ref: input.approval.approver_ref ?? null,
+      action: input.approval.action,
+      resource_ref: input.approval.resource_ref,
+      scope_ref: input.approval.scope_ref,
+      environment_ref: input.approval.environment_ref,
+      context_version_refs: input.approval.context_version_refs,
+      policy_release_ref: input.approval.policy_release_ref ?? null,
+      use_mode: input.approval.approval_use_mode,
+      state: input.approval.state,
+      expires_at: input.approval.expires_at ?? null,
+      revoked_at: input.approval.revoked_at ?? null,
+      consumed_at: input.approval.consumed_at ?? null,
+      consumed_by_request_ref: input.approval.consumed_by_request_ref ?? null,
+    } : null,
+  }));
 }
 
 function isExactObjectRef(a: ObjectRef, b: ObjectRef): boolean {
