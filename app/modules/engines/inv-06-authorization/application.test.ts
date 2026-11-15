@@ -798,7 +798,20 @@ describe("INV-06 authorization application boundary", () => {
     );
     expect(result.status, JSON.stringify(result.errors)).toBe("OK");
     expect(result.data?.state).toBe("APPROVED");
+    expect(result.data?.approver_authority_source_refs).toEqual(approverAuthority.authority_source_refs);
+    expect(result.data?.approver_authority_observed_at).toBe(approverAuthority.observed_at);
+    expect(result.data?.approver_authority_valid_until).toBe(approverAuthority.valid_until);
     expect(harness.repository.updateApprovalWithEvent).toHaveBeenCalledTimes(1);
+    expect(harness.repository.updateApprovalWithEvent).toHaveBeenCalledWith(
+      approverContext,
+      expect.objectContaining({
+        approver_authority_source_refs: approverAuthority.authority_source_refs,
+        approver_authority_observed_at: approverAuthority.observed_at,
+        approver_authority_valid_until: approverAuthority.valid_until,
+      }),
+      "2",
+      expect.objectContaining({ request_fingerprint: expect.any(String) }),
+    );
   });
 
   it("revokes an approval only after lifecycle authority is verified", async () => {
