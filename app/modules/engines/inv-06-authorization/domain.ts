@@ -958,6 +958,8 @@ export function evaluateAuthorizationDecision(input: {
        !facts.verified_delegation_ref ||
        !isExactObjectRef(facts.verified_delegation_ref, request.delegation_ref))) {
     result = "DENY"; reasons.push("DELEGATION_REFERENCE_NOT_VERIFIED");
+  } else if (request.deadline && Date.parse(request.deadline) <= Date.parse(input.evaluated_at)) {
+    result = "DENY"; reasons.push("REQUEST_DEADLINE_EXPIRED");
   } else if (principal.authentication_state === "UNAUTHENTICATED" ||
       principal.authentication_state === "REVOKED") {
     result = "DENY"; reasons.push("AUTHENTICATION_NOT_VALID");
@@ -1098,7 +1100,7 @@ export function isDecisionCurrentForRequest(
 }
 
 const SAFE_PUBLIC_REASON_CODES = new Set([
-  "AUTHENTICATION_NOT_VALID", "REAUTHENTICATION_REQUIRED", "AUTHENTICATION_STATE_UNKNOWN",
+  "REQUEST_DEADLINE_EXPIRED", "AUTHENTICATION_NOT_VALID", "REAUTHENTICATION_REQUIRED", "AUTHENTICATION_STATE_UNKNOWN",
   "SCOPE_MISMATCH", "AUTHORITY_CONSTRAINT_NOT_SATISFIED", "AUTHORITY_FACTS_UNAVAILABLE",
   "PRINCIPAL_CONTEXT_EXPIRED", "AUTHORITY_FACTS_EXPIRED", "RISK_CONTEXT_NOT_CURRENT",
   "CURRENT_POLICY_UNAVAILABLE", "RISK_ASSESSMENT_REQUIRED", "SCOPED_TRUST_ASSESSMENT_REQUIRED",
