@@ -304,6 +304,29 @@ function scopeMatches(ref: ObjectRef, context: RequestContext): boolean {
     ref.scope_ref.scope_kind === context.scope_ref.scope_kind;
 }
 
+function sameScope(a: ObjectRef, b: ObjectRef): boolean {
+  return a.scope_ref.scope_id === b.scope_ref.scope_id &&
+    a.scope_ref.scope_kind === b.scope_ref.scope_kind;
+}
+
+function refInScope(ref: unknown, scope: RequestContext["scope_ref"]): ref is ObjectRef {
+  return isObjectRef(ref) &&
+    ref.scope_ref.scope_id === scope.scope_id &&
+    ref.scope_ref.scope_kind === scope.scope_kind;
+}
+
+function sourceInScope(ref: unknown, scope: RequestContext["scope_ref"]): ref is SourceRef {
+  return isSourceRef(ref) && refInScope(ref.object_ref, scope);
+}
+
+function allRefsInScope(values: readonly ObjectRef[], scope: RequestContext["scope_ref"]): boolean {
+  return values.every((value) => refInScope(value, scope));
+}
+
+function allSourcesInScope(values: readonly SourceRef[], scope: RequestContext["scope_ref"]): boolean {
+  return values.every((value) => sourceInScope(value, scope));
+}
+
 export function normalizeIntent(input: NormalizeIntentInput): DomainResult<NormalizedIntent> {
   const { context, request, intent_ref } = input;
   if (!isRequestContext(context)) return fail("VALIDATION_ERROR", "Canonical request context is invalid", "context");
@@ -317,15 +340,26 @@ export function normalizeIntent(input: NormalizeIntentInput): DomainResult<Norma
     return fail("VALIDATION_ERROR", "Raw input, goal summary and desired effect are required");
   }
   if (!isRevisionNumber(input.revision_number)) return fail("VALIDATION_ERROR", "revision_number must be a positive integer");
-  if (!allSourceRefs(request.input_source_refs) || !allObjectRefs(request.requested_context_refs) ||
-      !allSourceRefs(input.contextual_facts.map((fact) => fact.source_ref)) ||
-      !allSourceRefs(input.assumptions.flatMap((assumption) => assumption.basis_refs)) ||
-      !allSourceRefs(input.explicit_requirements.flatMap((requirement) => requirement.source_ref ? [requirement.source_ref] : []))) {
-    return fail("INTEGRITY_OR_UNTRUSTED_INPUT", "Intent contains an invalid or untrusted reference shape");
+  if (!allSourcesInScope(request.input_source_refs, context.scope_ref) ||
+      !allRefsInScope(request.requested_context_refs, context.scope_ref) ||
+      !allSourcesInScope(input.contextual_facts.map((fact) => fact.source_ref), context.scope_ref) ||
+      !allSourcesInScope(input.assumptions.flatMap((assumption) => assumption.basis_refs), context.scope_ref) ||
+      !allSourcesInScope(input.explicit_requirements.flatMap((requirement) => requirement.source_ref ? [requirement.source_ref] : []), context.scope_ref) ||
+      !allRefsInScope(input.explicit_requirements.flatMap((requirement) => requirement.acceptance_criterion_refs), context.scope_ref) ||
+      !allRefsInScope(input.unknowns.flatMap((unknown) => unknown.affected_requirement_refs), context.scope_ref) ||
+      request.explicit_constraints.some((constraint) =>
+        (constraint.source_ref !== undefined && !sourceInScope(constraint.source_ref, context.scope_ref)) ||
+        (isObjectRef(constraint.value) && !refInScope(constraint.value, context.scope_ref))
+      )) {
+    return fail("INTEGRITY_OR_UNTRUSTED_INPUT", "Intent contains invalid, out-of-scope or untrusted references");
   }
-  if (request.prior_intent_ref && !isObjectRef(request.prior_intent_ref)) return fail("VALIDATION_ERROR", "prior_intent_ref is invalid");
-  if (request.related_work_ref && (!isObjectRef(request.related_work_ref) || request.related_work_ref.object_kind !== "WORK")) {
-    return fail("VALIDATION_ERROR", "related_work_ref must reference a WORK object");
+  if (request.prior_intent_ref &&
+      (!refInScope(request.prior_intent_ref, context.scope_ref) || request.prior_intent_ref.object_kind !== "INTENT")) {
+    return fail("VALIDATION_ERROR", "prior_intent_ref must identify an INTENT in the authenticated scope");
+  }
+  if (request.related_work_ref &&
+      (!refInScope(request.related_work_ref, context.scope_ref) || request.related_work_ref.object_kind !== "WORK")) {
+    return fail("VALIDATION_ERROR", "related_work_ref must identify a WORK object in the authenticated scope");
   }
 
   const hasRequiredClarification =
@@ -359,17 +393,26 @@ export function reviseIntent(
   current: NormalizedIntent,
   next: Omit<NormalizeIntentInput, "context" | "request"> & { context: RequestContext; request: IntentRequest },
 ): DomainResult<NormalizedIntent> {
+  if (!isObjectRef(current.intent_ref) ||
+      current.intent_ref.object_kind !== "INTENT" ||
+      !scopeMatches(current.intent_ref, next.context)) {
+    return fail("VALIDATION_ERROR", "Current Intent must belong to the authenticated scope");
+  }
   if (next.revision_number !== current.revision_number + 1) {
     return fail("VERSION_CONFLICT", "A new intent revision must increment the current revision by exactly one");
   }
   if (next.request.prior_intent_ref &&
-      (next.request.prior_intent_ref.object_id !== current.intent_ref.object_id ||
-       next.request.prior_intent_ref.object_kind !== current.intent_ref.object_kind)) {
-    return fail("VALIDATION_ERROR", "prior_intent_ref must identify the intent being revised");
+      (!sameScope(next.request.prior_intent_ref, current.intent_ref) ||
+       next.request.prior_intent_ref.object_id !== current.intent_ref.object_id ||
+       next.request.prior_intent_ref.object_kind !== current.intent_ref.object_kind ||
+       next.request.prior_intent_ref.object_version !== current.intent_ref.object_version)) {
+    return fail("VALIDATION_ERROR", "prior_intent_ref must identify the exact Intent revision being revised");
   }
-  if (next.intent_ref.object_id === current.intent_ref.object_id &&
-      next.intent_ref.object_version === current.intent_ref.object_version) {
-    return fail("VALIDATION_ERROR", "A revised intent must have a new object version");
+  if (!refInScope(next.intent_ref, next.context.scope_ref) ||
+      next.intent_ref.object_kind !== "INTENT" ||
+      (next.intent_ref.object_id === current.intent_ref.object_id &&
+       next.intent_ref.object_version === current.intent_ref.object_version)) {
+    return fail("VALIDATION_ERROR", "A revised Intent must have a new in-scope INTENT object version");
   }
   return normalizeIntent({
     ...next,
@@ -388,22 +431,30 @@ export function createOutcomeProposal(input: {
   created_at: Timestamp;
   supersedes_proposal_ref?: ObjectRef;
 }): DomainResult<OutcomeProposal> {
-  if (!isObjectRef(input.proposal_ref) || input.proposal_ref.object_kind !== "OUTCOME_PROPOSAL") {
-    return fail("VALIDATION_ERROR", "proposal_ref must identify an OUTCOME_PROPOSAL");
+  if (!isObjectRef(input.intent.intent_ref) || input.intent.intent_ref.object_kind !== "INTENT" ||
+      !isObjectRef(input.proposal_ref) || input.proposal_ref.object_kind !== "OUTCOME_PROPOSAL" ||
+      !sameScope(input.proposal_ref, input.intent.intent_ref)) {
+    return fail("VALIDATION_ERROR", "proposal_ref and Intent must be valid and belong to the same scope");
   }
-  if (!isObjectRef(input.intent.intent_ref) || !input.desired_effect.trim() || !isRevisionNumber(input.proposal_revision)) {
-    return fail("VALIDATION_ERROR", "A valid intent, desired effect and positive proposal revision are required");
+  if (!input.desired_effect.trim() || !isRevisionNumber(input.proposal_revision)) {
+    return fail("VALIDATION_ERROR", "A desired effect and positive proposal revision are required");
   }
-  if (!isTimestamp(input.created_at) || !allObjectRefs(input.assumption_refs) || !allObjectRefs(input.unresolved_criterion_refs)) {
-    return fail("VALIDATION_ERROR", "Proposal timestamp or references are invalid");
+  if (!isTimestamp(input.created_at) ||
+      !allRefsInScope(input.assumption_refs, input.intent.intent_ref.scope_ref) ||
+      !allRefsInScope(input.unresolved_criterion_refs, input.intent.intent_ref.scope_ref) ||
+      (input.supersedes_proposal_ref !== undefined &&
+       (!refInScope(input.supersedes_proposal_ref, input.intent.intent_ref.scope_ref) ||
+        input.supersedes_proposal_ref.object_kind !== "OUTCOME_PROPOSAL"))) {
+    return fail("VALIDATION_ERROR", "Proposal timestamp or references are invalid or outside the Intent scope");
   }
   if (input.acceptance_criteria.some((criterion) =>
     !criterion.criterion_id.trim() ||
     !criterion.description.trim() ||
     !criterion.evaluation_method.trim() ||
-    !criterion.expected_result.trim()
+    !criterion.expected_result.trim() ||
+    (criterion.source_ref !== undefined && !sourceInScope(criterion.source_ref, input.intent.intent_ref.scope_ref))
   )) {
-    return fail("VALIDATION_ERROR", "Acceptance criteria must have descriptions, methods and expected results");
+    return fail("VALIDATION_ERROR", "Acceptance criteria must be complete and any source reference must match the Intent scope");
   }
   const state: OutcomeProposalState =
     input.intent.lifecycle_state === "READY_FOR_DECISION" &&
@@ -429,17 +480,32 @@ export function applyOutcomeAcceptanceReceipt(
   proposal: OutcomeProposal,
   receipt: OutcomeAcceptanceReceipt,
 ): DomainResult<OutcomeProposal> {
-  if (!isObjectRef(receipt.receipt_ref) || receipt.receipt_ref.object_kind !== "OUTCOME_ACCEPTANCE_RECEIPT" ||
-      !isObjectRef(receipt.proposal_ref) || receipt.proposal_ref.object_id !== proposal.proposal_ref.object_id ||
-      receipt.proposal_ref.scope_ref.scope_id !== proposal.proposal_ref.scope_ref.scope_id) {
-    return fail("VALIDATION_ERROR", "Acceptance receipt does not belong to this proposal");
+  const proposalScope = proposal.proposal_ref.scope_ref;
+  if (!isObjectRef(receipt.receipt_ref) ||
+      receipt.receipt_ref.object_kind !== "OUTCOME_ACCEPTANCE_RECEIPT" ||
+      !refInScope(receipt.receipt_ref, proposalScope) ||
+      !isObjectRef(receipt.proposal_ref) ||
+      !sameScope(receipt.proposal_ref, proposal.proposal_ref) ||
+      receipt.proposal_ref.object_kind !== "OUTCOME_PROPOSAL" ||
+      receipt.proposal_ref.object_id !== proposal.proposal_ref.object_id ||
+      receipt.proposal_ref.object_version !== proposal.proposal_ref.object_version ||
+      !isObjectRef(receipt.work_ref) ||
+      receipt.work_ref.object_kind !== "WORK" ||
+      !refInScope(receipt.work_ref, proposalScope) ||
+      !["ACCEPTED", "REJECTED", "UNKNOWN"].includes(receipt.acceptance_state)) {
+    return fail("VALIDATION_ERROR", "Acceptance receipt must be valid and bind this exact proposal and Work within one scope");
   }
   if (receipt.received_at && !isTimestamp(receipt.received_at)) return fail("VALIDATION_ERROR", "Receipt timestamp is invalid");
   if (receipt.acceptance_state === "ACCEPTED" &&
-      (!receipt.accepted_target_ref || !isObjectRef(receipt.accepted_target_ref) ||
+      (!receipt.acceptance_basis ||
+       !receipt.accepted_target_ref ||
+       !refInScope(receipt.accepted_target_ref, proposalScope) ||
        receipt.accepted_target_ref.object_kind !== "WORK_DESIRED_OUTCOME_REVISION" ||
        !isRevisionNumber(receipt.accepted_target_revision))) {
-    return fail("VALIDATION_ERROR", "An accepted receipt must reference the authoritative Work target revision");
+    return fail("VALIDATION_ERROR", "An accepted receipt must include its acceptance basis and authoritative in-scope Work target revision");
+  }
+  if (receipt.acceptance_state !== "ACCEPTED" && receipt.accepted_target_ref) {
+    return fail("VALIDATION_ERROR", "A rejected or unknown receipt must not claim an accepted Work target");
   }
   const state: OutcomeProposalState =
     receipt.acceptance_state === "ACCEPTED" ? "ACCEPTED_BY_WORK" :
@@ -481,9 +547,12 @@ export function createRouteProposal(input: {
 }): DomainResult<RouteProposal> {
   const allowed = canSelectRoute(input.disposition, input.intent);
   if (!allowed.ok) return allowed;
-  if (!isObjectRef(input.route_ref) || input.route_ref.object_kind !== "ROUTE_PROPOSAL" ||
-      !isTimestamp(input.created_at) || !allObjectRefs(input.input_refs)) {
-    return fail("VALIDATION_ERROR", "Route proposal reference, input refs or timestamp are invalid");
+  if (!isObjectRef(input.intent.intent_ref) || input.intent.intent_ref.object_kind !== "INTENT" ||
+      !refInScope(input.route_ref, input.intent.intent_ref.scope_ref) ||
+      input.route_ref.object_kind !== "ROUTE_PROPOSAL" ||
+      !isTimestamp(input.created_at) ||
+      !allRefsInScope(input.input_refs, input.intent.intent_ref.scope_ref)) {
+    return fail("VALIDATION_ERROR", "Route proposal, input references and Intent must be valid and share one scope");
   }
   const targetByDisposition: Partial<Record<DecisionDisposition, readonly string[]>> = {
     RESEARCH: ["INV-13"],
@@ -503,6 +572,9 @@ export function createRouteProposal(input: {
   }
   if (input.target_engine_id && (!input.target_operation?.trim() || input.input_refs.length === 0)) {
     return fail("VALIDATION_ERROR", "A handoff route requires an operation and typed input references");
+  }
+  if (!input.target_engine_id && input.target_operation !== undefined) {
+    return fail("VALIDATION_ERROR", "A route without a recipient engine must not declare a recipient operation");
   }
   return ok({
     route_ref: input.route_ref,
@@ -534,22 +606,43 @@ export function createDecisionRecord(input: {
 }): DomainResult<DecisionRecord> {
   const allowed = canSelectRoute(input.disposition, input.intent);
   if (!allowed.ok) return allowed;
+  const intentRef = input.intent.intent_ref;
+  const lineageRefs = [
+    ...(input.policy_decision_refs ?? []),
+    ...(input.authority_decision_refs ?? []),
+    ...(input.capability_refs ?? []),
+    ...(input.assumption_refs ?? []),
+    ...(input.constraint_refs ?? []),
+  ];
   if (!isRequestContext(input.context) ||
-      input.context.scope_ref.scope_id !== input.intent.intent_ref.scope_ref.scope_id ||
-      input.context.scope_ref.scope_kind !== input.intent.intent_ref.scope_ref.scope_kind ||
-      !isObjectRef(input.decision_ref) || input.decision_ref.object_kind !== "DECISION_RECORD" ||
+      !isObjectRef(intentRef) || intentRef.object_kind !== "INTENT" ||
+      !scopeMatches(intentRef, input.context) ||
+      !refInScope(input.decision_ref, input.context.scope_ref) ||
+      input.decision_ref.object_kind !== "DECISION_RECORD" ||
       !isTimestamp(input.created_at) || !input.rationale_summary.trim() ||
-      !allObjectRefs(input.assumption_refs ?? []) || !allObjectRefs(input.constraint_refs ?? [])) {
-    return fail("VALIDATION_ERROR", "Decision record reference, timestamp and redacted rationale are required");
+      !allRefsInScope(lineageRefs, input.context.scope_ref) ||
+      (input.supersedes_decision_ref !== undefined &&
+       (!refInScope(input.supersedes_decision_ref, input.context.scope_ref) ||
+        input.supersedes_decision_ref.object_kind !== "DECISION_RECORD"))) {
+    return fail("VALIDATION_ERROR", "Decision references, lineage, timestamp and redacted rationale must be valid and in scope");
   }
-  if (input.route_proposal && input.route_proposal.disposition !== input.disposition) {
-    return fail("VALIDATION_ERROR", "Decision disposition must match its route proposal");
+  if (input.route_proposal &&
+      (input.route_proposal.disposition !== input.disposition ||
+       !refInScope(input.route_proposal.route_ref, input.context.scope_ref) ||
+       !allRefsInScope(input.route_proposal.input_refs, input.context.scope_ref))) {
+    return fail("VALIDATION_ERROR", "Decision disposition and scoped RouteProposal must match");
   }
-  if (input.outcome_proposal && input.outcome_proposal.intent_ref.object_id !== input.intent.intent_ref.object_id) {
-    return fail("VALIDATION_ERROR", "Outcome proposal must belong to the normalized intent");
+  if (input.outcome_proposal &&
+      (input.outcome_proposal.intent_ref.object_id !== intentRef.object_id ||
+       input.outcome_proposal.intent_ref.object_version !== intentRef.object_version ||
+       !sameScope(input.outcome_proposal.proposal_ref, intentRef))) {
+    return fail("VALIDATION_ERROR", "Outcome proposal must belong to the exact normalized Intent revision and scope");
   }
-  if (input.clarification && input.clarification.intent_ref.object_id !== input.intent.intent_ref.object_id) {
-    return fail("VALIDATION_ERROR", "Clarification request must belong to the normalized intent");
+  if (input.clarification &&
+      (input.clarification.intent_ref.object_id !== intentRef.object_id ||
+       input.clarification.intent_ref.object_version !== intentRef.object_version ||
+       !sameScope(input.clarification.clarification_ref, intentRef))) {
+    return fail("VALIDATION_ERROR", "Clarification request must belong to the exact normalized Intent revision and scope");
   }
   const state: DecisionState =
     input.disposition === "CLARIFY" ? "AWAITING_CLARIFICATION" :
@@ -639,11 +732,10 @@ export function createClarificationRequest(input: {
   expires_at?: Timestamp;
 }): DomainResult<ClarificationRequest> {
   const { clarification_ref, intent } = input;
-  if (!isObjectRef(clarification_ref) ||
+  if (!isObjectRef(intent.intent_ref) ||
+      intent.intent_ref.object_kind !== "INTENT" ||
+      !refInScope(clarification_ref, intent.intent_ref.scope_ref) ||
       clarification_ref.object_kind !== "CLARIFICATION_REQUEST" ||
-      clarification_ref.scope_ref.scope_id !== intent.intent_ref.scope_ref.scope_id ||
-      clarification_ref.scope_ref.scope_kind !== intent.intent_ref.scope_ref.scope_kind ||
-      !isObjectRef(intent.intent_ref) ||
       intent.lifecycle_state !== "AWAITING_CLARIFICATION") {
     return fail("VALIDATION_ERROR", "Clarification must reference an awaiting Intent in the same scope");
   }

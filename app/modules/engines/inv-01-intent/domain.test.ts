@@ -232,6 +232,104 @@ describe("INV-01 intent domain", () => {
     expect(applied.value.state).toBe("ACCEPTED_BY_WORK");
     expect(applied.value.acceptance_receipt_ref).toEqual(ref("OUTCOME_ACCEPTANCE_RECEIPT", "receipt-1"));
   });
+  it("rejects foreign-scope context, source, prior Intent and Work references during normalization", () => {
+    const foreignScope = { scope_id: "scope-foreign", scope_kind: "WORK" as const };
+    const input = baseInput();
+    input.request.requested_context_refs = [{
+      ...ref("PROJECT", "foreign-project"),
+      scope_ref: foreignScope,
+    }];
+    expect(normalizeIntent(input).ok).toBe(false);
+
+    const sourceInput = baseInput();
+    sourceInput.request.input_source_refs = [{
+      object_ref: { ...ref("FILE", "foreign-file"), scope_ref: foreignScope },
+    }];
+    expect(normalizeIntent(sourceInput).ok).toBe(false);
+
+    const priorInput = baseInput();
+    priorInput.request.prior_intent_ref = { ...ref("INTENT", "prior"), scope_ref: foreignScope };
+    expect(normalizeIntent(priorInput).ok).toBe(false);
+
+    const workInput = baseInput();
+    workInput.request.related_work_ref = { ...ref("WORK", "foreign-work"), scope_ref: foreignScope };
+    expect(normalizeIntent(workInput).ok).toBe(false);
+  });
+
+  it("rejects cross-scope OutcomeProposal and acceptance receipt references", () => {
+    const intent = normalizeIntent(baseInput());
+    expect(intent.ok).toBe(true);
+    if (!intent.ok) return;
+    const foreignScope = { scope_id: "scope-foreign", scope_kind: "WORK" as const };
+    const proposal = createOutcomeProposal({
+      proposal_ref: { ...ref("OUTCOME_PROPOSAL", "proposal-foreign"), scope_ref: foreignScope },
+      intent: intent.value,
+      proposal_revision: 1,
+      desired_effect: "A bounded result",
+      acceptance_criteria: [],
+      assumption_refs: [],
+      unresolved_criterion_refs: [],
+      created_at: "2026-11-13T03:00:02Z",
+    });
+    expect(proposal.ok).toBe(false);
+
+    const validProposal = createOutcomeProposal({
+      proposal_ref: ref("OUTCOME_PROPOSAL", "proposal-valid"),
+      intent: intent.value,
+      proposal_revision: 1,
+      desired_effect: "A bounded result",
+      acceptance_criteria: [],
+      assumption_refs: [],
+      unresolved_criterion_refs: [],
+      created_at: "2026-11-13T03:00:02Z",
+    });
+    expect(validProposal.ok).toBe(true);
+    if (!validProposal.ok) return;
+    const foreignReceipt = applyOutcomeAcceptanceReceipt(validProposal.value, {
+      receipt_ref: ref("OUTCOME_ACCEPTANCE_RECEIPT", "receipt-foreign"),
+      proposal_ref: validProposal.value.proposal_ref,
+      work_ref: { ...ref("WORK", "foreign-work"), scope_ref: foreignScope },
+      acceptance_state: "ACCEPTED",
+      acceptance_basis: "EXPLICIT_USER_CONFIRMATION",
+      accepted_target_ref: ref("WORK_DESIRED_OUTCOME_REVISION", "target"),
+      accepted_target_revision: 1,
+      received_at: "2026-11-13T03:00:03Z",
+    });
+    expect(foreignReceipt.ok).toBe(false);
+  });
+
+  it("rejects cross-scope RouteProposal inputs and DecisionRecord identities/lineage", () => {
+    const normalized = normalizeIntent(baseInput());
+    expect(normalized.ok).toBe(true);
+    if (!normalized.ok) return;
+    const ready = transitionIntent(normalized.value, "READY_FOR_DECISION");
+    expect(ready.ok).toBe(true);
+    if (!ready.ok) return;
+    const foreignScope = { scope_id: "scope-foreign", scope_kind: "WORK" as const };
+    const route = createRouteProposal({
+      route_ref: { ...ref("ROUTE_PROPOSAL", "route-foreign"), scope_ref: foreignScope },
+      intent: ready.value,
+      disposition: "RESEARCH",
+      target_engine_id: "INV-13",
+      target_operation: "submit_research_request",
+      input_refs: [ready.value.intent_ref],
+      required_authority_check: false,
+      created_at: "2026-11-13T03:00:02Z",
+    });
+    expect(route.ok).toBe(false);
+
+    const foreignLineage = createDecisionRecord({
+      context,
+      decision_ref: { ...ref("DECISION_RECORD", "decision-foreign"), scope_ref: foreignScope },
+      intent: ready.value,
+      disposition: "ANSWER_DIRECTLY",
+      rationale_summary: "Bounded answer.",
+      capability_refs: [{ ...ref("CAPABILITY", "foreign-capability"), scope_ref: foreignScope }],
+      created_at: "2026-11-13T03:00:03Z",
+    });
+    expect(foreignLineage.ok).toBe(false);
+  });
+
   it("creates a clarification request pinned to the exact awaiting Intent revision", () => {
     const input = baseInput();
     input.ambiguity_items = [{
