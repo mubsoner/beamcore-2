@@ -22,7 +22,6 @@ import {
   type PolicyEvaluationAudit,
   type PrincipalContext,
   type SafeDecisionExplanation,
-  type TrustAssessment,
 } from "./domain";
 
 export interface AuthorizationIdPort {
