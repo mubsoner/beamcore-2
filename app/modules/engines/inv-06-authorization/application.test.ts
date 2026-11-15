@@ -608,7 +608,7 @@ describe("INV-06 authorization application boundary", () => {
     const result = await decideApprovalRequest(
       harness.deps, approverContext, approval.approval_ref, input, "2",
     );
-    expect(result.status).toBe("OK");
+    expect(result.status, JSON.stringify(result.errors)).toBe("OK");
     expect(result.data?.state).toBe("APPROVED");
     expect(harness.repository.updateApprovalWithEvent).toHaveBeenCalledTimes(1);
   });
