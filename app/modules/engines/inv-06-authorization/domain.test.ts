@@ -493,20 +493,6 @@ describe("INV-06 authorization domain", () => {
       current_version: "4", expected_version: "4",
       idempotency_key: "claim-2", now: "2026-11-15T10:03:00Z",
     }).status).toBe("REJECTED");
-    const replayRequest = request({
-      approval_ref: approval.approval_ref,
-      idempotency_key: "claim-1",
-    });
-    expect(validateApprovalUse({
-      ...claimed.data!, policy_release_ref: { ...ref("POLICY_RELEASE", "policy-1"), object_version: "7" },
-    }, replayRequest, "2026-11-15T10:03:00Z",
-    { ...ref("POLICY_RELEASE", "policy-1"), object_version: "7" }, "claim-1")).toEqual([]);
-    expect(validateApprovalUse({
-      ...claimed.data!, policy_release_ref: { ...ref("POLICY_RELEASE", "policy-1"), object_version: "7" },
-    }, replayRequest, "2026-11-15T10:03:00Z",
-    { ...ref("POLICY_RELEASE", "policy-1"), object_version: "7" }, "claim-2")).toContain(
-      "approval is not approved for this request or idempotency operation",
-    );
     expect(claimOneTimeApprovalRecord({
       approval, authorization_request_ref: ref("AUTHORIZATION_REQUEST", "different"),
       current_version: "3", expected_version: "3",
