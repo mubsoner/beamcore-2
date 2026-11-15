@@ -159,6 +159,8 @@ export interface RetryDecision {
   failure_classification: string;
   side_effect_class: SideEffectClass;
   next_attempt_number?: number;
+  eligibility_expires_at?: Timestamp;
+  policy_decision_ref?: ObjectRef;
   reconciliation_ref?: ObjectRef;
   decided_at: Timestamp;
 }
@@ -652,13 +654,56 @@ export function decideRetry(input: {
   side_effect_class: SideEffectClass;
   retryable_failure: boolean;
   next_attempt_number: number;
+  eligibility_expires_at?: Timestamp;
+  policy_decision_ref?: ObjectRef;
   reconciliation_ref?: ObjectRef;
   decided_at: Timestamp;
 }): OrchestrationResult<RetryDecision> {
+  const dispatch = input.dispatch;
+  const sideEffectClasses: readonly SideEffectClass[] = [
+    "IDEMPOTENT", "DEDUPLICATED", "REVERSIBLE", "NON_IDEMPOTENT", "UNKNOWN",
+  ];
   if (!isObjectRef(input.retry_decision_ref) || input.retry_decision_ref.object_kind !== "RETRY_DECISION" ||
-      !isTimestamp(input.decided_at) || !input.failure_classification.trim()) {
-    return fail("VALIDATION_ERROR", "Retry decision requires a valid reference, failure class and timestamp");
+      !dispatch || !isObjectRef(dispatch.dispatch_ref) || dispatch.dispatch_ref.object_kind !== "DISPATCH_ATTEMPT" ||
+      !isTimestamp(input.decided_at) ||
+      typeof input.failure_classification !== "string" || !input.failure_classification.trim() ||
+      !sideEffectClasses.includes(input.side_effect_class) ||
+      typeof input.retryable_failure !== "boolean" ||
+      !Number.isSafeInteger(dispatch.attempt_number) || dispatch.attempt_number < 1 ||
+      typeof dispatch.idempotency_key !== "string" || !dispatch.idempotency_key.trim() ||
+      (input.eligibility_expires_at !== undefined &&
+        (!isTimestamp(input.eligibility_expires_at) ||
+          Date.parse(input.eligibility_expires_at) < Date.parse(input.decided_at))) ||
+      (input.policy_decision_ref !== undefined && !isObjectRef(input.policy_decision_ref)) ||
+      (input.reconciliation_ref !== undefined && !isObjectRef(input.reconciliation_ref))) {
+    return fail("VALIDATION_ERROR", "Retry decision requires valid dispatch identity, attempt, idempotency, classification and timestamps");
   }
+
+  const dispatchRefs = [
+    dispatch.orchestration_ref,
+    dispatch.node_coordination_ref,
+    dispatch.work_ref,
+    dispatch.graph_revision_ref,
+    dispatch.graph_node_ref,
+    dispatch.target_capability_ref,
+    dispatch.authorization_decision_ref,
+    dispatch.resource_admission_ref,
+    ...(dispatch.execution_ref ? [dispatch.execution_ref] : []),
+    ...(dispatch.reconciliation_ref ? [dispatch.reconciliation_ref] : []),
+    ...dispatch.error_refs,
+  ];
+  const dispatchScope = dispatch.dispatch_ref.scope_ref;
+  if (!sameScopeRef(input.retry_decision_ref.scope_ref, dispatchScope) ||
+      !dispatchRefs.every((ref) => isObjectRef(ref) && sameScopeRef(ref.scope_ref, dispatchScope)) ||
+      (input.policy_decision_ref && !sameScopeRef(input.policy_decision_ref.scope_ref, dispatchScope)) ||
+      (input.reconciliation_ref && !sameScopeRef(input.reconciliation_ref.scope_ref, dispatchScope))) {
+    return fail("FORBIDDEN", "Retry decision references must remain inside the dispatch scope");
+  }
+
+  if (!["FAILED", "REJECTED", "UNKNOWN"].includes(dispatch.state)) {
+    return fail("INVALID_TRANSITION", "Retry can only be decided after a failed, rejected or unknown dispatch attempt");
+  }
+
   let disposition: RetryDisposition;
   let reason_code: string;
   if (input.side_effect_class === "UNKNOWN" || input.side_effect_class === "NON_IDEMPOTENT" || input.side_effect_class === "REVERSIBLE") {
@@ -667,7 +712,7 @@ export function decideRetry(input: {
   } else if (!input.retryable_failure) {
     disposition = "NO_RETRY";
     reason_code = "FAILURE_NOT_RETRYABLE";
-  } else if (!Number.isSafeInteger(input.next_attempt_number) || input.next_attempt_number <= input.dispatch.attempt_number) {
+  } else if (!Number.isSafeInteger(input.next_attempt_number) || input.next_attempt_number <= dispatch.attempt_number) {
     return fail("VALIDATION_ERROR", "Next attempt number must increase monotonically");
   } else {
     disposition = "RETRY_ALLOWED";
@@ -675,12 +720,14 @@ export function decideRetry(input: {
   }
   return ok({
     retry_decision_ref: input.retry_decision_ref,
-    dispatch_ref: input.dispatch.dispatch_ref,
+    dispatch_ref: dispatch.dispatch_ref,
     disposition,
     reason_code,
     failure_classification: input.failure_classification,
     side_effect_class: input.side_effect_class,
     ...(disposition === "RETRY_ALLOWED" ? { next_attempt_number: input.next_attempt_number } : {}),
+    ...(input.eligibility_expires_at ? { eligibility_expires_at: input.eligibility_expires_at } : {}),
+    ...(input.policy_decision_ref ? { policy_decision_ref: input.policy_decision_ref } : {}),
     ...(input.reconciliation_ref ? { reconciliation_ref: input.reconciliation_ref } : {}),
     decided_at: input.decided_at,
   });

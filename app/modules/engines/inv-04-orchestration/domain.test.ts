@@ -439,9 +439,10 @@ describe("INV-04 orchestration domain", () => {
       attempt_number: 1, submitted_at: "2026-11-13T03:00:09Z",
     });
     if (!attempt.ok) return;
+    const failedAttempt = { ...attempt.value, state: "FAILED" as const };
     const unsafe = decideRetry({
       retry_decision_ref: ref("RETRY_DECISION", "retry-1"),
-      dispatch: attempt.value, failure_classification: "timeout",
+      dispatch: failedAttempt, failure_classification: "timeout",
       side_effect_class: "UNKNOWN", retryable_failure: true,
       next_attempt_number: 2, decided_at: "2026-11-13T03:00:10Z",
     });
@@ -449,12 +450,72 @@ describe("INV-04 orchestration domain", () => {
     if (unsafe.ok) expect(unsafe.value.disposition).toBe("RECONCILE_FIRST");
     const safe = decideRetry({
       retry_decision_ref: ref("RETRY_DECISION", "retry-2"),
-      dispatch: attempt.value, failure_classification: "transient-read",
+      dispatch: failedAttempt, failure_classification: "transient-read",
       side_effect_class: "IDEMPOTENT", retryable_failure: true,
       next_attempt_number: 2, decided_at: "2026-11-13T03:00:10Z",
     });
     expect(safe.ok).toBe(true);
     if (safe.ok) expect(safe.value.disposition).toBe("RETRY_ALLOWED");
+
+    for (const state of ["CREATED", "RUNNING", "COMPLETED", "CANCELLED", "RECONCILING"] as const) {
+      const premature = decideRetry({
+        retry_decision_ref: ref("RETRY_DECISION", "retry-" + state.toLowerCase()),
+        dispatch: { ...failedAttempt, state },
+        failure_classification: "transient-read",
+        side_effect_class: "IDEMPOTENT",
+        retryable_failure: true,
+        next_attempt_number: 2,
+        decided_at: "2026-11-13T03:00:10Z",
+      });
+      expect(premature.ok).toBe(false);
+      if (!premature.ok) expect(premature.issues[0].code).toBe("INVALID_TRANSITION");
+    }
+
+    const governed = decideRetry({
+      retry_decision_ref: ref("RETRY_DECISION", "retry-governed"),
+      dispatch: failedAttempt,
+      failure_classification: "transient-read",
+      side_effect_class: "IDEMPOTENT",
+      retryable_failure: true,
+      next_attempt_number: 2,
+      eligibility_expires_at: "2026-11-13T03:01:00Z",
+      policy_decision_ref: ref("POLICY_DECISION", "policy-1"),
+      decided_at: "2026-11-13T03:00:10Z",
+    });
+    expect(governed.ok).toBe(true);
+    if (governed.ok) {
+      expect(governed.value.eligibility_expires_at).toBe("2026-11-13T03:01:00Z");
+      expect(governed.value.policy_decision_ref).toEqual(ref("POLICY_DECISION", "policy-1"));
+    }
+
+    const expiredEligibility = decideRetry({
+      retry_decision_ref: ref("RETRY_DECISION", "retry-expired"),
+      dispatch: failedAttempt,
+      failure_classification: "transient-read",
+      side_effect_class: "IDEMPOTENT",
+      retryable_failure: true,
+      next_attempt_number: 2,
+      eligibility_expires_at: "2026-11-13T03:00:09Z",
+      decided_at: "2026-11-13T03:00:10Z",
+    });
+    expect(expiredEligibility.ok).toBe(false);
+    if (!expiredEligibility.ok) expect(expiredEligibility.issues[0].code).toBe("VALIDATION_ERROR");
+
+    const foreignScopeRef = {
+      ...ref("RETRY_DECISION", "retry-foreign"),
+      scope_ref: { scope_id: "scope-other", scope_kind: "WORK" as const },
+    };
+    const foreignScope = decideRetry({
+      retry_decision_ref: foreignScopeRef,
+      dispatch: failedAttempt,
+      failure_classification: "transient-read",
+      side_effect_class: "IDEMPOTENT",
+      retryable_failure: true,
+      next_attempt_number: 2,
+      decided_at: "2026-11-13T03:00:10Z",
+    });
+    expect(foreignScope.ok).toBe(false);
+    if (!foreignScope.ok) expect(foreignScope.issues[0].code).toBe("FORBIDDEN");
   });
 
   it("guards node state transitions with optimistic versioning", () => {
