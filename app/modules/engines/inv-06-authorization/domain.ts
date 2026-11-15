@@ -904,9 +904,18 @@ export function isDecisionCurrentForRequest(
     decision.reason_codes.length > 0;
 }
 
+const SAFE_PUBLIC_REASON_CODES = new Set([
+  "AUTHENTICATION_NOT_VALID", "REAUTHENTICATION_REQUIRED", "AUTHENTICATION_STATE_UNKNOWN",
+  "SCOPE_MISMATCH", "AUTHORITY_CONSTRAINT_NOT_SATISFIED", "AUTHORITY_FACTS_UNAVAILABLE",
+  "PRINCIPAL_CONTEXT_EXPIRED", "AUTHORITY_FACTS_EXPIRED", "RISK_CONTEXT_NOT_CURRENT",
+  "CURRENT_POLICY_UNAVAILABLE", "RISK_ASSESSMENT_REQUIRED", "SCOPED_TRUST_ASSESSMENT_REQUIRED",
+  "SCOPED_APPROVAL_REQUIRED", "APPROVAL_INVALID_OR_MISMATCHED", "APPROVER_AUTHORITY_NOT_CURRENT",
+  "INDEPENDENT_APPROVER_REQUIRED", "DELEGATION_NOT_VALIDATED", "RESOURCE_VERSION_STALE",
+  "DELEGATION_REFERENCE_NOT_VERIFIED",
+]);
+
 export function createSafeDecisionExplanation(
   decision: AuthorizationDecision,
-  userVisibleRefs: ObjectRef[] = [],
 ): SafeDecisionExplanation {
   const copy: Record<AuthorizationResult, { message: string; next: SafeDecisionExplanation["permitted_next_step"] }> = {
     ALLOW: { message: "This action is currently authorized, subject to enforcement-time rechecks.", next: "NONE" },
@@ -922,10 +931,11 @@ export function createSafeDecisionExplanation(
     decision_ref: decision.decision_ref,
     result: decision.result,
     safe_message: copy[decision.result].message,
-    visible_reason_codes: [...decision.reason_codes],
+    visible_reason_codes: decision.reason_codes.filter(code => SAFE_PUBLIC_REASON_CODES.has(code)),
     permitted_next_step: copy[decision.result].next,
-    user_visible_refs: userVisibleRefs.filter(ref => isObjectRef(ref) &&
-      sameScopeRef(ref.scope_ref, decision.applicable_scope_ref)),
+    // Object-level visibility belongs to the access-filtered read adapter; the
+    // pure explanation helper does not trust caller-supplied references.
+    user_visible_refs: [],
   };
 }
 
@@ -1001,6 +1011,8 @@ export function decideApproval(input: {
     !isExactObjectRef(decision.approval_ref, approval.approval_ref) ||
     !sameScopeRef(decision.approval_ref.scope_ref, approval.scope_ref) ||
     decision.expected_version !== input.expected_current_version ||
+    !approval.approval_ref.object_version ||
+    approval.approval_ref.object_version !== input.expected_current_version ||
     !decision.idempotency_key?.trim() ||
     !isPrincipalRef(decision.approver_ref) || !isTimestamp(decision.decided_at) ||
     !isTimestamp(input.now) || Date.parse(decision.decided_at) > Date.parse(input.now)) {
@@ -1031,6 +1043,40 @@ export function decideApproval(input: {
     ...(decision.evidence_method_ref ? { evidence_method_ref: decision.evidence_method_ref } : {}),
   };
   return createOperationResult({ status: "OK", correlation_id: "authorization", data: updated });
+}
+
+/** Expiry/revocation lifecycle; terminal approval states cannot be reopened. */
+export function transitionApproval(
+  approval: ApprovalRecord,
+  to: "EXPIRED" | "REVOKED",
+  now: Timestamp,
+): OperationResult<ApprovalRecord> {
+  if (!isTimestamp(now) || !isObjectRef(approval.approval_ref)) {
+    return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
+      errors: [createOperationError("VALIDATION_ERROR", "Approval lifecycle input is invalid")] });
+  }
+  const allowed: Record<ApprovalState, readonly string[]> = {
+    PENDING: ["EXPIRED", "REVOKED"],
+    APPROVED: ["EXPIRED", "REVOKED"],
+    REJECTED: [],
+    EXPIRED: [],
+    REVOKED: [],
+    CONSUMED: [],
+  };
+  if (!allowed[approval.state].includes(to)) {
+    return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
+      errors: [createOperationError("VERSION_CONFLICT", "Approval lifecycle transition is not permitted")] });
+  }
+  if (to === "EXPIRED" && (!approval.expires_at || Date.parse(approval.expires_at) > Date.parse(now))) {
+    return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
+      errors: [createOperationError("POLICY_DENIED", "Approval has not reached its expiry time")] });
+  }
+  return createOperationResult({ status: "OK", correlation_id: "authorization",
+    data: {
+      ...approval,
+      state: to,
+      ...(to === "REVOKED" ? { revoked_at: now } : {}),
+    } });
 }
 
 /**
@@ -1149,18 +1195,31 @@ export function validateDelegationRequest(
   request: DelegationRequest,
   authority: DelegationGrantAuthority,
   parent?: DelegationRecord,
+  now?: Timestamp,
 ): string[] {
   const issues: string[] = [];
+  if (!request || typeof request !== "object" || !authority || typeof authority !== "object") {
+    return ["delegation request and current grantor authority are required"];
+  }
+  if (!Array.isArray(request.allowed_actions) || !Array.isArray(request.resource_constraints) ||
+      !Array.isArray(request.limits) || !Array.isArray(request.conditions) ||
+      !Array.isArray(authority.grantor_allowed_actions) ||
+      !Array.isArray(authority.grantor_resource_constraints)) {
+    return ["delegation action, resource, limit or condition collections are invalid"];
+  }
   if (!isObjectRef(request.delegation_ref) || request.delegation_ref.object_kind !== "DELEGATION" ||
     !sameScopeRef(request.delegation_ref.scope_ref, request.scope_ref) ||
     !isPrincipalRef(request.grantor_ref) || !isPrincipalRef(request.delegate_ref) ||
-    request.grantor_ref.principal_id === request.delegate_ref.principal_id) {
+    samePrincipal(request.grantor_ref, request.delegate_ref)) {
     issues.push("delegation identity or actor references are invalid");
   }
-  if (!request.purpose.trim() || !request.allowed_actions.length ||
+  if (!request.purpose?.trim() || !request.allowed_actions.length ||
+    request.allowed_actions.some(action => typeof action !== "string" || !action.trim()) ||
     new Set(request.allowed_actions).size !== request.allowed_actions.length ||
-    !Array.isArray(request.resource_constraints) || !Array.isArray(request.limits) ||
-    !Array.isArray(request.conditions) || request.limits.some(limit => !limit.trim())) {
+    request.limits.some(limit => typeof limit !== "string" || !limit.trim()) ||
+    request.conditions.some(condition =>
+      !condition || !condition.condition_id?.trim() || !condition.condition_kind?.trim() ||
+      typeof condition.must_hold_at_enforcement !== "boolean")) {
     issues.push("delegation purpose and unique allowed actions are required");
   }
   if (!isScopeRef(request.scope_ref) || !sameScopeRef(request.scope_ref, authority.grantor_scope_ref)) {
@@ -1170,7 +1229,9 @@ export function validateDelegationRequest(
     Date.parse(request.expires_at) <= Date.parse(request.not_before)) {
     issues.push("delegation validity window is invalid");
   }
-  if (!authority.grantor_authenticated || !authority.grantor_may_delegate) {
+  if (!authority.grantor_authenticated || !authority.grantor_may_delegate ||
+      !isScopeRef(authority.grantor_scope_ref) ||
+      !isTimestamp(now ?? request.not_before)) {
     issues.push("grantor is not currently authorized to delegate");
   }
   if (request.allowed_actions.some(action => !authority.grantor_allowed_actions.includes(action))) {
@@ -1190,7 +1251,9 @@ export function validateDelegationRequest(
   if (request.parent_delegation_ref) {
     if (!parent || !parent.allow_subdelegation || parent.state !== "ACTIVE" ||
       !sameObjectRef(parent.delegation_ref, request.parent_delegation_ref) ||
+      sameObjectRef(parent.delegation_ref, request.delegation_ref) ||
       !sameScopeRef(parent.scope_ref, request.scope_ref) ||
+      (now !== undefined && (!isTimestamp(parent.expires_at) || Date.parse(parent.expires_at) <= Date.parse(now))) ||
       request.allowed_actions.some(action => !parent.allowed_actions.includes(action)) ||
       request.resource_constraints.some(resource => !parent.resource_constraints.some(allowed => isExactObjectRef(allowed, resource))) ||
       request.limits.some(limit => !parent.limits.includes(limit)) ||
@@ -1206,6 +1269,9 @@ export function validateDelegationRequest(
     }
   } else if (request.allow_subdelegation && !authority.grantor_may_subdelegate) {
     issues.push("subdelegation is not explicitly authorized");
+  }
+  if (now !== undefined && Date.parse(request.expires_at) <= Date.parse(now)) {
+    issues.push("delegation is already expired");
   }
   if (authority.valid_until && Date.parse(request.expires_at) > Date.parse(authority.valid_until)) {
     issues.push("delegation outlives the grantor's current authority");
@@ -1284,9 +1350,14 @@ export function transitionPolicyRelease(
   const allowed = (nextIndex === currentIndex + 1) ||
     ((release.state === "RELEASED" || release.state === "MONITORING") && to === "SUSPENDED") ||
     ((release.state === "MONITORING" || release.state === "SUSPENDED") && to === "RETIRED");
-  if (!allowed || !isTimestamp(now)) {
+  if (!release || !isObjectRef(release.policy_release_ref) ||
+      release.policy_release_ref.object_kind !== "POLICY_RELEASE" ||
+      !isVersion(release.version) ||
+      release.policy_release_ref.object_version !== release.version ||
+      !release.ruleset_digest?.trim() ||
+      !allowed || !isTimestamp(now)) {
     return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
-      errors: [createOperationError("VERSION_CONFLICT", "Policy release transition is invalid")] });
+      errors: [createOperationError("VERSION_CONFLICT", "Policy release identity or transition is invalid")] });
   }
   return createOperationResult({ status: "OK", correlation_id: "authorization",
     data: {
