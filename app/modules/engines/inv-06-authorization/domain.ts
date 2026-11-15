@@ -395,6 +395,11 @@ export interface DelegationGrantAuthority {
   grantor_allowed_actions: string[];
   grantor_scope_ref: ScopeRef;
   grantor_resource_constraints: ObjectRef[];
+  /** Every inherited grantor limit must remain attached to the child delegation. */
+  grantor_limits: string[];
+  /** Every inherited must-hold condition must remain attached to the child delegation. */
+  grantor_conditions: DecisionCondition[];
+  grantor_valid_from?: Timestamp;
   valid_until?: Timestamp;
 }
 
@@ -1391,6 +1396,13 @@ export function validateDelegationRequest(
       !authority.grantor_allowed_actions.every(action => typeof action === "string" && !!action.trim()) ||
       !Array.isArray(authority.grantor_resource_constraints) ||
       !authority.grantor_resource_constraints.every(isObjectRef) ||
+      !Array.isArray(authority.grantor_limits) ||
+      !authority.grantor_limits.every(limit => typeof limit === "string" && !!limit.trim()) ||
+      !Array.isArray(authority.grantor_conditions) ||
+      !authority.grantor_conditions.every(condition => !!condition &&
+        !!condition.condition_id?.trim() && !!condition.condition_kind?.trim() &&
+        typeof condition.must_hold_at_enforcement === "boolean") ||
+      (authority.grantor_valid_from !== undefined && !isTimestamp(authority.grantor_valid_from)) ||
       (authority.valid_until !== undefined && !isTimestamp(authority.valid_until))) {
     return ["delegation action, resource, limit or condition collections are invalid"];
   }
@@ -1423,6 +1435,16 @@ export function validateDelegationRequest(
   }
   if (request.allowed_actions.some(action => !authority.grantor_allowed_actions.includes(action))) {
     issues.push("delegation cannot grant actions the grantor does not hold");
+  }
+  if (authority.grantor_limits.some(limit => !request.limits.includes(limit))) {
+    issues.push("delegation omits a limit that already constrains the grantor");
+  }
+  if (authority.grantor_conditions.some(condition => !request.conditions.some(child =>
+    child.condition_id === condition.condition_id &&
+    child.condition_kind === condition.condition_kind &&
+    child.must_hold_at_enforcement === condition.must_hold_at_enforcement &&
+    JSON.stringify(child.parameters_ref ?? null) === JSON.stringify(condition.parameters_ref ?? null)))) {
+    issues.push("delegation omits a condition that already constrains the grantor");
   }
   for (const resource of request.resource_constraints) {
     if (!isObjectRef(resource) || !sameScopeRef(resource.scope_ref, request.scope_ref) ||
@@ -1467,6 +1489,9 @@ export function validateDelegationRequest(
   }
   if (now !== undefined && Date.parse(request.expires_at) <= Date.parse(now)) {
     issues.push("delegation is already expired");
+  }
+  if (authority.grantor_valid_from && Date.parse(request.not_before) < Date.parse(authority.grantor_valid_from)) {
+    issues.push("delegation begins before the grantor's own authority");
   }
   if (authority.valid_until && Date.parse(request.expires_at) > Date.parse(authority.valid_until)) {
     issues.push("delegation outlives the grantor's current authority");
