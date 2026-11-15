@@ -14,6 +14,7 @@ import {
   requestExecutionCancellation,
   startExecutionAttempt,
   transitionExecution,
+  validateExecutionAttemptConsistency,
   validateExecutionRequest,
   validateTrustedRuntimeAssurance,
   validateRuntimeProfile,
@@ -293,6 +294,27 @@ describe("INV-05 execution runtime domain", () => {
       changed_at: "2026-11-15T08:00:04Z",
     });
     expect(unconfirmed.status).toBe("REJECTED");
+  });
+
+  it("requires Execution and latest Attempt states to describe the same runtime facts", () => {
+    const { execution, attempt } = startRecord();
+    const valid = validateExecutionAttemptConsistency(context, execution, [attempt]);
+    expect(valid.status).toBe("OK");
+
+    const disagreement = validateExecutionAttemptConsistency(
+      context,
+      { ...execution, state: "FAILED" },
+      [attempt],
+    );
+    expect(disagreement.status).toBe("REJECTED");
+    expect(disagreement.errors[0]?.code).toBe("INTEGRITY_OR_UNTRUSTED_INPUT");
+
+    const foreignProfileAttempt = validateExecutionAttemptConsistency(
+      context,
+      execution,
+      [{ ...attempt, runtime_profile_ref: ref("RUNTIME_PROFILE", "different-profile") }],
+    );
+    expect(foreignProfileAttempt.status).toBe("REJECTED");
   });
 
   it("uses optimistic versions and requires termination proof for terminal runtime states", () => {
