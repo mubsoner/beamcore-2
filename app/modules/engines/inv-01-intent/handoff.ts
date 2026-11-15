@@ -406,7 +406,7 @@ export async function requestRouteHandoff(
       recorded_at: command.requested_at,
     };
     const appended = await transaction.appendOnly<StoredHandoffReceipt>("inv-01.handoff-receipts")
-      .append(context, stored);
+      .append(context, command.route_proposal_ref, stored);
     if (appended.status !== "OK") return propagated<HandoffReceipt>(context, appended);
 
     const type =
