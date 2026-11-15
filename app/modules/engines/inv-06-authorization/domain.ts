@@ -1254,9 +1254,12 @@ export function transitionDelegation(
     return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
       errors: [createOperationError("VERSION_CONFLICT", "Delegation state transition is not permitted")] });
   }
-  if (to === "ACTIVE" && Date.parse(delegation.not_before) > Date.parse(now)) {
+  if (to === "ACTIVE" && (
+    Date.parse(delegation.not_before) > Date.parse(now) ||
+    Date.parse(delegation.expires_at) <= Date.parse(now)
+  )) {
     return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
-      errors: [createOperationError("POLICY_DENIED", "Delegation is not yet valid")] });
+      errors: [createOperationError("POLICY_DENIED", "Delegation is not within its validity window")] });
   }
   if (to === "EXPIRED" && Date.parse(delegation.expires_at) > Date.parse(now)) {
     return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
@@ -1284,13 +1287,6 @@ export function transitionPolicyRelease(
   if (!allowed || !isTimestamp(now)) {
     return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
       errors: [createOperationError("VERSION_CONFLICT", "Policy release transition is invalid")] });
-  }
-  if ((release.state === "RELEASED" || release.state === "MONITORING" ||
-    release.state === "SUSPENDED" || release.state === "RETIRED") &&
-    release.version === release.policy_release_ref.object_version &&
-    to !== "SUSPENDED" && to !== "RETIRED") {
-    return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
-      errors: [createOperationError("POLICY_DENIED", "Released policy versions are immutable; publish a new version")] });
   }
   return createOperationResult({ status: "OK", correlation_id: "authorization",
     data: {
