@@ -8,8 +8,10 @@ import {
   decideApproval,
   evaluateAuthorizationDecision,
   isDecisionCurrentForRequest,
+  transitionApproval,
   transitionDelegation,
   transitionPolicyRelease,
+  createSafeDecisionExplanation,
   validateApprovalUse,
   validateDelegationRequest,
   validateAuthorizationRequest,
@@ -160,6 +162,11 @@ describe("INV-06 authorization domain", () => {
       scope_ref: { scope_id: "other", scope_kind: "ORGANIZATION" },
     })).length).toBeGreaterThan(0);
   });
+  it("requires a separately resolved service identity when a service identity is asserted", () => {
+    const service = { principal_id: "service-1", principal_kind: "SERVICE" as const };
+    expect(evaluate({ req: { service_identity_ref: service } }).data?.result).toBe("DENY");
+    expect(evaluate({ req: { service_identity_ref: service }, principal: { service_identity_ref: service } }).data?.result).toBe("ALLOW");
+  });
   it("fails closed for unauthenticated, revoked, unknown and stale authority", () => {
     expect(evaluate({ principal: { authentication_state: "UNAUTHENTICATED" } }).data?.result).toBe("DENY");
     expect(evaluate({ facts: { membership_state: "REVOKED" } }).data?.result).toBe("DENY");
@@ -299,6 +306,27 @@ describe("INV-06 authorization domain", () => {
       ...delegationRequest, allow_subdelegation: true,
     }, { ...grantor, grantor_allowed_actions: ["artifact.publish"] })).toContain("subdelegation is not explicitly authorized");
   });
+  it("prevents delegation reactivation after its expiry", () => {
+    const delegation: DelegationRecord = {
+      delegation_id: "delegation-expired",
+      delegation_ref: ref("DELEGATION", "delegation-expired"),
+      grantor_ref: context.actor_ref,
+      delegate_ref: { principal_id: "agent-2", principal_kind: "AGENT" },
+      purpose: "read",
+      scope_ref: scope,
+      allowed_actions: ["artifact.read"],
+      resource_constraints: [ref("ARTIFACT", "artifact-1")],
+      limits: [],
+      conditions: [],
+      not_before: "2026-11-15T09:00:00Z",
+      expires_at: "2026-11-15T09:59:00Z",
+      allow_subdelegation: false,
+      authorized_by_decision_ref: ref("AUTHORIZATION_DECISION", "decision-expired"),
+      state: "SUSPENDED",
+      created_at: "2026-11-15T09:00:00Z",
+    };
+    expect(transitionDelegation(delegation, "ACTIVE", "2026-11-15T10:00:00Z").status).toBe("REJECTED");
+  });
   it("keeps delegation terminal after revocation", () => {
     const delegation: DelegationRecord = {
       delegation_id: "delegation-1", delegation_ref: ref("DELEGATION", "delegation-1"),
@@ -315,8 +343,30 @@ describe("INV-06 authorization domain", () => {
   });
   it("does not reuse a released policy version for edits", () => {
     const released = policy().policy_release;
+    expect(transitionPolicyRelease(released, "MONITORING", "2026-11-15T10:00:00Z").data?.state).toBe("MONITORING");
     expect(transitionPolicyRelease(released, "SUSPENDED", "2026-11-15T10:00:00Z").data?.state).toBe("SUSPENDED");
     expect(transitionPolicyRelease(released, "RETIRED", "2026-11-15T10:00:00Z").status).toBe("REJECTED");
+  });
+  it("allows approval expiry and revocation only through valid lifecycle transitions", () => {
+    const pending = createPendingApproval({
+      approval_ref: ref("APPROVAL", "approval-lifecycle"), approval_id: "approval-lifecycle",
+      request_ref: ref("AUTHORIZATION_REQUEST", "auth-req-1"),
+      requested_by_ref: context.actor_ref, required_approver_constraints: [],
+      action: "artifact.publish", resource_ref: ref("ARTIFACT", "artifact-1"),
+      scope_ref: scope, environment_ref: ref("ENVIRONMENT", "production"),
+      context_version_refs: [], approval_use_mode: "ONE_TIME",
+      created_at: "2026-11-15T10:00:00Z", expires_at: "2026-11-15T10:10:00Z",
+    }).data!;
+    expect(transitionApproval(pending, "EXPIRED", "2026-11-15T10:05:00Z").status).toBe("REJECTED");
+    const revoked = transitionApproval(pending, "REVOKED", "2026-11-15T10:05:00Z");
+    expect(revoked.data?.state).toBe("REVOKED");
+    expect(transitionApproval(revoked.data!, "REVOKED", "2026-11-15T10:06:00Z").status).toBe("REJECTED");
+  });
+  it("filters private policy reason codes from user-facing explanations", () => {
+    const decision = evaluate({ policy: { reason_codes: ["PRIVATE_RULE_SECRET", "POLICY_MATCHED"] } }).data!;
+    const explanation = createSafeDecisionExplanation(decision, []);
+    expect(explanation.visible_reason_codes).not.toContain("PRIVATE_RULE_SECRET");
+    expect(explanation.user_visible_refs).toEqual([]);
   });
   it("rejects stale or mismatched decisions at the enforcement boundary", () => {
     const decision = evaluate().data!;
