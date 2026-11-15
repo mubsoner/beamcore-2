@@ -11,7 +11,7 @@
 - **INTEGRATION BLOCKER** — completion needs an actual provider, persistent repository, or another engine's enforcement/source adapter; a port or fake test adapter is not proof.
 - **GAP** — required logical behavior or test is still missing/incomplete.
 
-**Current engine test inventory:** 31 domain tests + 26 application tests = 57 focused INV-06 tests. Latest branch head inspected: `922677878ba67dbf690c3808caf989a4b667568d`; CI run `43775252037` for that exact head was `in_progress` at matrix update time. This inventory is a test count, not a pass count. Passing unit tests are not substitutes for the provider/integration blockers below.
+**Current engine test inventory:** 31 domain tests + 28 application tests = 59 focused INV-06 tests. Latest branch head inspected: `bc6ffe0201b93f57185b3d1df1217f532e816eba`; CI run `43775412219` for that exact head was `in_progress` at matrix update time. This inventory is a test count, not a pass count. Passing unit tests are not substitutes for the provider/integration blockers below.
 
 ## Acceptance status
 
@@ -49,7 +49,7 @@
 | T30 | Expired approval is rejected | TEST EXISTS — approval expiry and expiry lifecycle transitions are tested | Verify scheduler/persistence expiry and action-boundary reads |
 | T31 | Revoked approval is rejected even if an earlier allow decision is cached | LOGIC ONLY — action boundary reloads approval and checks current state | Add cached-decision plus durable approval revocation integration test |
 | T32 | A one-time approval cannot be consumed by two concurrent authorization requests | INTEGRATION BLOCKER — claim command carries exact current row version and request; database compare-and-set is required | Prove concurrent CAS and transaction rollback on selected persistent repository |
-| T33 | Replayed one-time approval is rejected with an auditable safe reason | TEST EXISTS — same request + same idempotency key can replay its claim; another key/request is denied | Prove durable idempotent replay and audit/outbox in database adapter |
+| T33 | Replayed one-time approval is rejected with an auditable safe reason | TEST EXISTS — same request + same idempotency key replays its claim after current authority recheck; another key/request is denied | Prove durable idempotent replay and audit/outbox in database adapter |
 | T34 | Reusable approval works only where the current policy explicitly permits reusable use within scope | TEST EXISTS — reusable binding allows equivalent requests but rejects changed resource/action/scope/context | Add integration test against live policy and approval store |
 | T35 | Delegation cannot grant a permission the grantor does not currently possess | TEST EXISTS — current grantor action set and inherited limits/conditions constrain the child | Verify source adapter against live INV-18 and policy facts |
 | T36 | Delegation scope cannot exceed grantor authority or the parent delegation | TEST EXISTS — direct parent and full ancestor chain constrain scope/actions/resources/limits/conditions/time | Add live multi-level lineage-source conformance test |
