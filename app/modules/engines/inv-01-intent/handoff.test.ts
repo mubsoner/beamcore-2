@@ -78,7 +78,7 @@ function makeHarness() {
       return value
         ? createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: value, object_version: "1" })
         : createOperationResult<RouteProposal>({ status: "REJECTED", correlation_id: context.correlation_id });
-    ),
+    }),
     create: vi.fn(async () => createOperationResult<RouteProposal>({ status: "REJECTED", correlation_id: context.correlation_id })),
     update: vi.fn(async () => createOperationResult<RouteProposal>({ status: "REJECTED", correlation_id: context.correlation_id })),
   };
