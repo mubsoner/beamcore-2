@@ -10,6 +10,7 @@ import {
 import {
   buildAuthorityFingerprintMaterial,
   createSafeDecisionExplanation,
+  validateAuthorizationRequest,
   evaluateAuthorizationDecision,
   type ApprovalDecisionInput,
   type ApprovalRecord,
@@ -71,6 +72,10 @@ export async function authorizeAction(
   context: RequestContext,
   request: AuthorizationRequest,
 ): Promise<OperationResult<{ decision: AuthorizationDecision; explanation: SafeDecisionExplanation }>> {
+  const requestIssues = validateAuthorizationRequest(context, request);
+  if (requestIssues.length) {
+    return fail(context, "VALIDATION_ERROR", "Authorization request failed canonical validation");
+  }
   const principalResult = await deps.sources.resolvePrincipal(context);
   if (principalResult.status !== "OK" || !principalResult.data) {
     return fail(context, "UNAUTHENTICATED", "The authenticated principal could not be verified");
