@@ -812,7 +812,9 @@ export function buildAuthorityFingerprintMaterial(input: {
   facts: AuthorityFacts;
   policy: PolicyEvaluation;
   approval?: ApprovalRecord;
+  idempotency_key?: string;
 }): string {
+  const operationKey = input.idempotency_key ?? input.request.idempotency_key;
   const sources = (items: AuthoritySourceRef[]) => items.map(source => ({
     source_kind: source.source_kind,
     object_ref: source.object_ref,
@@ -882,20 +884,20 @@ export function buildAuthorityFingerprintMaterial(input: {
       policy_release_ref: input.approval.policy_release_ref ?? null,
       use_mode: input.approval.approval_use_mode,
       state: input.approval.state === "CONSUMED" &&
-        input.request.idempotency_key &&
-        input.approval.consumed_idempotency_key === input.request.idempotency_key &&
+        operationKey &&
+        input.approval.consumed_idempotency_key === operationKey &&
         input.approval.consumed_by_request_ref?.object_id === input.request.authorization_request_id
           ? "APPROVED" : input.approval.state,
       expires_at: input.approval.expires_at ?? null,
       revoked_at: input.approval.revoked_at ?? null,
       consumed_at: input.approval.state === "CONSUMED" &&
-        input.request.idempotency_key &&
-        input.approval.consumed_idempotency_key === input.request.idempotency_key &&
+        operationKey &&
+        input.approval.consumed_idempotency_key === operationKey &&
         input.approval.consumed_by_request_ref?.object_id === input.request.authorization_request_id
           ? null : input.approval.consumed_at ?? null,
       consumed_by_request_ref: input.approval.state === "CONSUMED" &&
-        input.request.idempotency_key &&
-        input.approval.consumed_idempotency_key === input.request.idempotency_key &&
+        operationKey &&
+        input.approval.consumed_idempotency_key === operationKey &&
         input.approval.consumed_by_request_ref?.object_id === input.request.authorization_request_id
           ? null : input.approval.consumed_by_request_ref ?? null,
     } : null,
