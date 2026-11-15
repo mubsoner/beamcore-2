@@ -57,36 +57,25 @@ export function createInMemoryEventInbox(
       context: RequestContext,
       consumer_id: string,
       event: InboxEventEnvelope,
-      fingerprint: string,
     ) => {
       const issues = validateInboxEvent(context, consumer_id, event);
-      if (issues.length > 0 || !/^[a-f0-9]{64}$/.test(fingerprint)) {
+      if (issues.length > 0) {
         return createOperationResult<InboxAcceptance>({
           status: "REJECTED",
           correlation_id: context.correlation_id,
           errors: [createOperationError(
             "VALIDATION_ERROR",
-            issues.join("; ") || "fingerprint must be a lowercase SHA-256 digest",
+            issues.join("; "),
           )],
         });
       }
 
-      // Never trust a caller-supplied digest as proof of the event contents.
+      // The adapter owns fingerprint calculation; callers cannot supply or forge it.
       const verifiedFingerprint = await fingerprintInboxEvent(context, consumer_id, event);
-      if (
-        verifiedFingerprint.status !== "OK" ||
-        !verifiedFingerprint.data ||
-        verifiedFingerprint.data !== fingerprint
-      ) {
-        return createOperationResult<InboxAcceptance>({
-          status: "REJECTED",
-          correlation_id: context.correlation_id,
-          errors: [createOperationError(
-            "INTEGRITY_OR_UNTRUSTED_INPUT",
-            "Supplied Inbox fingerprint does not match the canonical event envelope",
-          )],
-        });
+      if (verifiedFingerprint.status !== "OK" || !verifiedFingerprint.data) {
+        return verifiedFingerprint as ReturnType<EventInboxPort["accept"]> extends Promise<infer T> ? T : never;
       }
+      const fingerprint = verifiedFingerprint.data;
 
       const scopeKey = JSON.stringify(context.scope_ref);
       const eventKey = JSON.stringify([scopeKey, consumer_id, event.event_id]);
