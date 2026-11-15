@@ -143,7 +143,7 @@ function makeUnitOfWork() {
   };
 
   const revisionRepository: AppendOnlyRepository<WorkRevision> = {
-    append: async (_context, revision) => {
+    append: async (_context, _revisionRef, revision) => {
       revisions.push(revision);
       return createOperationResult({
         status: "OK",
@@ -219,7 +219,7 @@ function makeUnitOfWork() {
   };
 
   const receiptRepository: AppendOnlyRepository<AcceptOutcomeProposalResult["receipt"]> = {
-    append: async (_context, receipt) => {
+    append: async (_context, _receiptRef, receipt) => {
       receipts.push(receipt);
       return createOperationResult({
         status: "OK",
