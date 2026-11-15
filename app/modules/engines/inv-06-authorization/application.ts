@@ -66,7 +66,19 @@ export interface AuthorizationSourcePort {
   /** Return current ancestry ordered immediate parent first and root last; cycles/missing links must fail. */
   readDelegationLineage(context: RequestContext, parentRef: ObjectRef): Promise<OperationResult<DelegationRecord[]>>;
   /** Verify the approver's current permission and independence against live membership and policy sources. */
-  verifyApprover(context: RequestContext, approval: ApprovalRecord, approver: PrincipalRef): Promise<OperationResult<{ authorized: boolean; independent_required: boolean }>>;
+  /**
+   * Re-resolve live approver authority and policy. satisfied_constraints must list
+   * every approval constraint proven for this exact approver and approval record.
+   */
+  verifyApprover(
+    context: RequestContext,
+    approval: ApprovalRecord,
+    approver: PrincipalRef,
+  ): Promise<OperationResult<{
+    authorized: boolean;
+    independent_required: boolean;
+    satisfied_constraints: string[];
+  }>>;
   /** Resolve grantor powers from authoritative identity, membership, policy and delegation sources. */
   resolveDelegationGrantAuthority(context: RequestContext, request: DelegationRequest): Promise<OperationResult<DelegationGrantAuthority>>;
   /** Verify the cited decision is current, ALLOW, exact-request-bound and sufficient for this grant. */
@@ -271,8 +283,11 @@ async function authorizeActionCore(
         if (approverResult.status !== "OK" || !approverResult.data) {
           return fail(context, "DEPENDENCY_UNAVAILABLE", "Current approver authority could not be verified");
         }
+        const constraintsSatisfied = approval.required_approver_constraints.every(constraint =>
+          approverResult.data.satisfied_constraints.includes(constraint));
         approvalAuthorityVerified =
           approverResult.data.authorized &&
+          constraintsSatisfied &&
           (!policyResult.data.independent_approver_required || approverResult.data.independent_required) &&
           (!policyResult.data.independent_approver_required ||
             !samePrincipal(approval.approver_ref, approval.requested_by_ref));
@@ -575,6 +590,11 @@ export async function decideApprovalRequest(
   const approver = await deps.sources.verifyApprover(context, current.data, input.approver_ref);
   if (approver.status !== "OK" || !approver.data) {
     return fail(context, "DEPENDENCY_UNAVAILABLE", "Current approver authority could not be verified");
+  }
+  const constraintsSatisfied = current.data.required_approver_constraints.every(constraint =>
+    approver.data!.satisfied_constraints.includes(constraint));
+  if (!approver.data.authorized || !constraintsSatisfied) {
+    return fail(context, "FORBIDDEN", "Approver does not satisfy the current approval authority constraints");
   }
   const transitioned = decideApproval({
     approval: current.data,
