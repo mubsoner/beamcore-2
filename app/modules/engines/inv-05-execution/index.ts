@@ -5,3 +5,7 @@ export * as CanonicalDomain from "./domain";
 
 /** Canonical execution use cases are exposed separately from the legacy prototype API. */
 export * as Application from "./application";
+
+
+/** Provider-neutral ports; no concrete sandbox, worker, storage or secret provider is selected here. */
+export * as RuntimePorts from "./runtime-ports";
