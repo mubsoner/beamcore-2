@@ -603,6 +603,8 @@ export function validatePrincipalContext(
   }
   if (!isTimestamp(principal.valid_until)) {
     issues.push("principal context must have a bounded validity timestamp");
+  } else if (Date.parse(principal.valid_until) <= Date.parse(now)) {
+    issues.push("principal context is expired");
   }
   for (const group of [
     principal.organization_membership_refs,
