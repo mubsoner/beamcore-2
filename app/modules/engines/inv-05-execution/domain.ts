@@ -331,6 +331,15 @@ export interface ReconciliationRecord {
   limitations: string[];
 }
 
+export const EXECUTION_EVENT_TYPES = [
+  "execution.accepted", "execution.queued", "execution.starting", "execution.started",
+  "execution.output_captured", "execution.cancel_requested", "execution.cancelling",
+  "execution.succeeded", "execution.failed", "execution.timed_out", "execution.cancelled",
+  "execution.unknown", "execution.reconciliation_required", "execution.checkpoint_available",
+  "execution.resource_limit_reached", "execution.cleanup_started", "execution.cleaned_up",
+  "execution.cleanup_failed",
+] as const;
+
 export type ExecutionEventType =
   | "execution.accepted"
   | "execution.queued"
@@ -635,7 +644,9 @@ export function validateExecutionRequest(
       issue?.safe_message ?? "Runtime profile validation failed",
     );
   }
-  if (!request.runtime_profile.allowed_capability_refs.some((ref) => sameObjectRef(ref, request.capability_ref))) {
+  if (!isRefKind(request.runtime_profile.profile_ref, "RUNTIME_PROFILE") ||
+      !sameScopeRef(request.runtime_profile.profile_ref.scope_ref, context.scope_ref) ||
+      !request.runtime_profile.allowed_capability_refs.some((ref) => sameObjectRef(ref, request.capability_ref))) {
     return rejected(context, "CAPABILITY_UNAVAILABLE", "Runtime profile does not allow the exact capability reference");
   }
   return succeeded(context, request);
@@ -785,7 +796,8 @@ export function confirmExecutionAttemptStarted(
   attempt: ExecutionAttempt,
   input: ConfirmAttemptStartedInput,
 ): OperationResult<{ execution: ExecutionRecord; attempt: ExecutionAttempt }> {
-  if (!sameScopeRef(execution.scope_ref, context.scope_ref) ||
+  if (!isObjectRef(input.runtime_instance_ref) ||
+      !sameScopeRef(execution.scope_ref, context.scope_ref) ||
       !sameObjectRef(attempt.execution_ref, execution.execution_ref) ||
       !execution.attempt_refs.some((ref) => sameObjectRef(ref, attempt.attempt_ref)) ||
       !sameScopeRef(input.runtime_instance_ref.scope_ref, context.scope_ref)) {
@@ -1007,7 +1019,8 @@ export function createResourceMeasurement(
       !USAGE_MEASUREMENT_KINDS.includes(input.kind) ||
       !MEASUREMENT_QUALITIES.includes(input.confidence) ||
       !Number.isFinite(input.value) || input.value < 0 ||
-      !input.unit.trim() || !input.measurement_source.trim() ||
+      typeof input.unit !== "string" || !input.unit.trim() ||
+      typeof input.measurement_source !== "string" || !input.measurement_source.trim() ||
       !isTimestamp(input.measured_at) ||
       (input.source_digest !== undefined && !isVersion(input.source_digest))) {
     return rejected(context, "VALIDATION_ERROR", "Resource measurement identity, quantity, quality or provenance is invalid");
@@ -1027,6 +1040,7 @@ export function createRuntimeCheckpoint(
   checkpoint: RuntimeCheckpoint,
 ): OperationResult<RuntimeCheckpoint> {
   if (!sameScopeRef(execution.scope_ref, context.scope_ref) ||
+      !isObjectRef(attempt.attempt_ref) ||
       !sameObjectRef(attempt.execution_ref, execution.execution_ref) ||
       !execution.attempt_refs.some((ref) => sameObjectRef(ref, attempt.attempt_ref))) {
     return rejected(context, "FORBIDDEN", "Checkpoint must reference an attempt in the scoped Execution");
@@ -1059,6 +1073,14 @@ export function createReconciliationRecord(
   if (!sameScopeRef(execution.scope_ref, context.scope_ref) ||
       !sameObjectRef(input.execution_ref, execution.execution_ref)) {
     return rejected(context, "FORBIDDEN", "Reconciliation must target the scoped Execution");
+  }
+  if (!Array.isArray(input.evidence_refs) || !Array.isArray(input.limitations)) {
+    return rejected(context, "VALIDATION_ERROR", "Reconciliation requires evidence and limitation arrays");
+  }
+  if (execution.state !== "UNKNOWN" &&
+      execution.effect_knowledge !== "UNKNOWN" &&
+      execution.effect_knowledge !== "RECONCILIATION_REQUIRED") {
+    return rejected(context, "VALIDATION_ERROR", "Reconciliation is only valid for unknown execution or side-effect state");
   }
   const refs = [
     input.reconciliation_ref,
@@ -1102,7 +1124,8 @@ export function createExecutionEvent<T>(
       !sameScopeRef(execution.execution_ref.scope_ref, context.scope_ref)) {
     return rejected(context, "FORBIDDEN", "Execution event is outside the authenticated scope");
   }
-  if (!isVersion(input.event_id) ||
+  if (!EXECUTION_EVENT_TYPES.includes(input.event_type) ||
+      !isVersion(input.event_id) ||
       !isTimestamp(input.occurred_at) ||
       !Number.isSafeInteger(input.schema_version) || input.schema_version < 1 ||
       (input.causation_id !== undefined && !isVersion(input.causation_id))) {
