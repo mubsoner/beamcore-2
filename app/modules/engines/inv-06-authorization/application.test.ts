@@ -5,6 +5,7 @@ import {
   advancePolicyReleaseReviewStage,
   beginPolicyReleaseMonitoring,
   authenticatePrincipal,
+  decideApprovalRequest,
   explainDenialSafe,
   getAuthorityDecision,
   publishPolicyRelease,
@@ -545,6 +546,71 @@ describe("INV-06 authorization application boundary", () => {
     const result = await requestApproval(harness.deps, context, authorizationRequest());
     expect(result.status).toBe("REJECTED");
     expect(harness.repository.createApprovalWithEvent).not.toHaveBeenCalled();
+  });
+
+  it("rejects an approval decision when the approver's current authority is stale or revoked", async () => {
+    const harness = makeDependencies();
+    const pending = { ...approval, state: "PENDING" as const };
+    vi.mocked(harness.sources.readApproval).mockResolvedValue(
+      createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: pending, object_version: "2" }),
+    );
+    vi.mocked(harness.sources.verifyApprover).mockResolvedValue(
+      createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: {
+        authorized: false, independent_required: true, satisfied_constraints: [],
+      } }),
+    );
+    const approverContext = {
+      ...context,
+      actor_ref: approval.approver_ref!,
+      idempotency_key: "approval-decision-stale",
+    };
+    const input = {
+      approval_ref: approval.approval_ref,
+      approver_ref: approval.approver_ref!,
+      decision: "APPROVE" as const,
+      expected_version: "2",
+      idempotency_key: approverContext.idempotency_key!,
+      decided_at: "2026-11-15T10:01:00Z",
+    };
+    const result = await decideApprovalRequest(
+      harness.deps, approverContext, approval.approval_ref, input, "2",
+    );
+    expect(result.status).toBe("REJECTED");
+    expect(harness.repository.updateApprovalWithEvent).not.toHaveBeenCalled();
+  });
+
+  it("records an approval decision only when every required approver constraint is proven", async () => {
+    const harness = makeDependencies();
+    const pending = { ...approval, state: "PENDING" as const };
+    vi.mocked(harness.sources.readApproval).mockResolvedValue(
+      createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: pending, object_version: "2" }),
+    );
+    vi.mocked(harness.sources.verifyApprover).mockResolvedValue(
+      createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: {
+        authorized: true,
+        independent_required: true,
+        satisfied_constraints: ["INDEPENDENT_APPROVER"],
+      } }),
+    );
+    const approverContext = {
+      ...context,
+      actor_ref: approval.approver_ref!,
+      idempotency_key: "approval-decision-valid",
+    };
+    const input = {
+      approval_ref: approval.approval_ref,
+      approver_ref: approval.approver_ref!,
+      decision: "APPROVE" as const,
+      expected_version: "2",
+      idempotency_key: approverContext.idempotency_key!,
+      decided_at: "2026-11-15T10:01:00Z",
+    };
+    const result = await decideApprovalRequest(
+      harness.deps, approverContext, approval.approval_ref, input, "2",
+    );
+    expect(result.status).toBe("OK");
+    expect(result.data?.state).toBe("APPROVED");
+    expect(harness.repository.updateApprovalWithEvent).toHaveBeenCalledTimes(1);
   });
 
   it("revokes an approval only after lifecycle authority is verified", async () => {
