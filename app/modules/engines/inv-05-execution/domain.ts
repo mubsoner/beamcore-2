@@ -1003,6 +1003,225 @@ export function requestExecutionCancellation(
   return succeeded(context, { execution: transition.data, cancellation }, String(transition.data.state_version));
 }
 
+const ATTEMPT_TRANSITIONS: Record<AttemptState, readonly AttemptState[]> = {
+  QUEUED: ["STARTING", "FAILED", "CANCELLED"],
+  STARTING: ["RUNNING", "FAILED", "TIMED_OUT", "CANCELLED", "UNKNOWN"],
+  RUNNING: ["CANCELLATION_REQUESTED", "SUCCEEDED", "FAILED", "TIMED_OUT", "UNKNOWN"],
+  CANCELLATION_REQUESTED: ["CANCELLING", "SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED", "UNKNOWN"],
+  CANCELLING: ["CANCELLED", "SUCCEEDED", "FAILED", "TIMED_OUT", "UNKNOWN"],
+  SUCCEEDED: [],
+  FAILED: [],
+  TIMED_OUT: [],
+  CANCELLED: [],
+  UNKNOWN: ["SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED", "UNKNOWN"],
+};
+
+export interface TransitionExecutionAttemptInput {
+  expected_state_version: RevisionNumber;
+  to_state: AttemptState;
+  changed_at: Timestamp;
+  termination_knowledge?: TerminationKnowledge;
+  process_exit_code?: number;
+  termination_reason?: string;
+  stdout_ref?: ObjectRef;
+  stderr_ref?: ObjectRef;
+  result_payload_ref?: ObjectRef;
+  output_digest?: string;
+  output_completeness?: OutputCompleteness;
+  error_refs?: ObjectRef[];
+  resolution_evidence_refs?: ObjectRef[];
+}
+
+export function transitionExecutionAttempt(
+  context: RequestContext,
+  execution: ExecutionRecord,
+  attempt: ExecutionAttempt,
+  input: TransitionExecutionAttemptInput,
+): OperationResult<ExecutionAttempt> {
+  if (!isRequestContext(context) ||
+      !sameScopeRef(execution.scope_ref, context.scope_ref) ||
+      !sameObjectRef(attempt.execution_ref, execution.execution_ref) ||
+      !execution.attempt_refs.some((ref) => sameObjectRef(ref, attempt.attempt_ref))) {
+    return rejected(context, "FORBIDDEN", "Attempt must belong to the authenticated Execution scope");
+  }
+  if (attempt.state_version !== input.expected_state_version) {
+    return rejected(context, "VERSION_CONFLICT", "Execution attempt state version is stale");
+  }
+  if (!isTimestamp(input.changed_at) ||
+      !ATTEMPT_STATES.includes(input.to_state) ||
+      !ATTEMPT_TRANSITIONS[attempt.state].includes(input.to_state) ||
+      input.to_state === "RUNNING") {
+    return rejected(context, "VALIDATION_ERROR", "Execution attempt transition is not permitted");
+  }
+
+  const termination = input.termination_knowledge ?? attempt.termination_knowledge;
+  const hasStarted = attempt.started_at !== undefined;
+  if (["SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED"].includes(input.to_state)) {
+    if (hasStarted && termination !== "CONFIRMED_TERMINATED") {
+      return rejected(context, "OUTCOME_UNKNOWN_OR_RECONCILIATION_REQUIRED", "A terminal attempt requires confirmed runtime termination");
+    }
+    if (!hasStarted && termination !== "NOT_REQUESTED" && termination !== "CONFIRMED_TERMINATED") {
+      return rejected(context, "OUTCOME_UNKNOWN_OR_RECONCILIATION_REQUIRED", "A pre-start terminal attempt requires evidence that no process ran");
+    }
+    if (input.to_state === "SUCCEEDED" && !hasStarted) {
+      return rejected(context, "VALIDATION_ERROR", "An attempt cannot succeed unless runtime start was observed");
+    }
+  }
+  if (input.to_state === "CANCELLATION_REQUESTED" && termination !== "REQUESTED") {
+    return rejected(context, "VALIDATION_ERROR", "Cancellation request must retain REQUESTED termination knowledge");
+  }
+  if (input.to_state === "CANCELLING" &&
+      termination !== "REQUESTED" && termination !== "CONFIRMED_STILL_RUNNING") {
+    return rejected(context, "VALIDATION_ERROR", "CANCELLING requires a recorded cancellation request");
+  }
+  if (attempt.state === "UNKNOWN" && input.to_state !== "UNKNOWN" &&
+      (!input.resolution_evidence_refs?.length ||
+       !input.resolution_evidence_refs.every((ref) => isObjectRef(ref) && sameScopeRef(ref.scope_ref, context.scope_ref)))) {
+    return rejected(context, "OUTCOME_UNKNOWN_OR_RECONCILIATION_REQUIRED", "Resolving an unknown attempt requires scoped runtime evidence");
+  }
+
+  const refs = [
+    ...(input.stdout_ref ? [input.stdout_ref] : []),
+    ...(input.stderr_ref ? [input.stderr_ref] : []),
+    ...(input.result_payload_ref ? [input.result_payload_ref] : []),
+    ...(input.error_refs ?? []),
+    ...(input.resolution_evidence_refs ?? []),
+  ];
+  if (!hasSameScope(refs, context.scope_ref)) {
+    return rejected(context, "FORBIDDEN", "Attempt outputs, errors and resolution evidence must match the authenticated scope");
+  }
+  if (input.process_exit_code !== undefined && !Number.isSafeInteger(input.process_exit_code)) {
+    return rejected(context, "VALIDATION_ERROR", "Process exit code must be a safe integer");
+  }
+  if (input.output_digest !== undefined && !isVersion(input.output_digest)) {
+    return rejected(context, "VALIDATION_ERROR", "Attempt output digest is invalid");
+  }
+  if (input.output_completeness !== undefined && !OUTPUT_COMPLETENESS.includes(input.output_completeness)) {
+    return rejected(context, "VALIDATION_ERROR", "Attempt output completeness is invalid");
+  }
+
+  const updated: ExecutionAttempt = {
+    ...attempt,
+    state: input.to_state,
+    state_version: attempt.state_version + 1,
+    termination_knowledge: termination,
+    ...(input.process_exit_code !== undefined ? { process_exit_code: input.process_exit_code } : {}),
+    ...(input.termination_reason !== undefined ? { termination_reason: input.termination_reason } : {}),
+    ...(input.stdout_ref ? { stdout_ref: input.stdout_ref } : {}),
+    ...(input.stderr_ref ? { stderr_ref: input.stderr_ref } : {}),
+    ...(input.result_payload_ref ? { result_payload_ref: input.result_payload_ref } : {}),
+    ...(input.output_digest ? { output_digest: input.output_digest } : {}),
+    ...(input.output_completeness ? { output_completeness: input.output_completeness } : {}),
+    ...(input.error_refs ? { error_refs: [...attempt.error_refs, ...input.error_refs] } : {}),
+    ...(["SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED"].includes(input.to_state)
+      ? { ended_at: input.changed_at }
+      : {}),
+  };
+  return succeeded(context, updated, String(updated.state_version));
+}
+
+export interface CaptureExecutionOutputInput {
+  expected_execution_version: RevisionNumber;
+  expected_attempt_version: RevisionNumber;
+  output_ref: ObjectRef;
+  output_digest: string;
+  output_completeness: Exclude<OutputCompleteness, "NONE">;
+  captured_at: Timestamp;
+}
+
+export function captureExecutionOutput(
+  context: RequestContext,
+  execution: ExecutionRecord,
+  attempt: ExecutionAttempt,
+  input: CaptureExecutionOutputInput,
+): OperationResult<{ execution: ExecutionRecord; attempt: ExecutionAttempt }> {
+  if (!sameScopeRef(execution.scope_ref, context.scope_ref) ||
+      !sameObjectRef(attempt.execution_ref, execution.execution_ref) ||
+      !execution.attempt_refs.some((ref) => sameObjectRef(ref, attempt.attempt_ref))) {
+    return rejected(context, "FORBIDDEN", "Output must belong to an attempt in the authenticated Execution scope");
+  }
+  if (execution.state_version !== input.expected_execution_version ||
+      attempt.state_version !== input.expected_attempt_version) {
+    return rejected(context, "VERSION_CONFLICT", "Execution or attempt changed before output capture");
+  }
+  if (!isObjectRef(input.output_ref) ||
+      !sameScopeRef(input.output_ref.scope_ref, context.scope_ref) ||
+      !isVersion(input.output_digest) ||
+      !OUTPUT_COMPLETENESS.includes(input.output_completeness) ||
+      input.output_completeness === "NONE" ||
+      !isTimestamp(input.captured_at)) {
+    return rejected(context, "VALIDATION_ERROR", "Output reference, digest, completeness or capture timestamp is invalid");
+  }
+  if (execution.state === "FAILED" || execution.state === "TIMED_OUT" || execution.state === "CANCELLED") {
+    if (input.output_completeness !== "PARTIAL" && input.output_completeness !== "UNKNOWN") {
+      return rejected(context, "VALIDATION_ERROR", "Output captured after failed, timed-out or cancelled execution cannot be marked COMPLETE");
+    }
+  }
+  if (execution.output_refs.some((ref) => sameObjectRef(ref, input.output_ref))) {
+    return rejected(context, "IDEMPOTENCY_CONFLICT", "Output reference is already registered for this Execution");
+  }
+  const updatedAttempt: ExecutionAttempt = {
+    ...attempt,
+    state_version: attempt.state_version + 1,
+    result_payload_ref: input.output_ref,
+    output_digest: input.output_digest,
+    output_completeness: input.output_completeness,
+  };
+  const updatedExecution: ExecutionRecord = {
+    ...execution,
+    state_version: execution.state_version + 1,
+    output_refs: [...execution.output_refs, input.output_ref],
+    output_completeness: input.output_completeness,
+  };
+  return succeeded(context, {
+    execution: updatedExecution,
+    attempt: updatedAttempt,
+  }, String(updatedExecution.state_version));
+}
+
+/** Cleanup lifecycle is independent from process result and Outcome verification. */
+export function transitionExecutionCleanup(
+  context: RequestContext,
+  execution: ExecutionRecord,
+  input: {
+    expected_state_version: RevisionNumber;
+    to_state: CleanupState;
+    changed_at: Timestamp;
+    error_refs?: ObjectRef[];
+  },
+): OperationResult<ExecutionRecord> {
+  if (!sameScopeRef(execution.scope_ref, context.scope_ref)) {
+    return rejected(context, "FORBIDDEN", "Execution cleanup is outside the authenticated scope");
+  }
+  if (execution.state_version !== input.expected_state_version) {
+    return rejected(context, "VERSION_CONFLICT", "Execution changed before cleanup state update");
+  }
+  const allowed: Record<CleanupState, readonly CleanupState[]> = {
+    NOT_STARTED: ["PENDING", "UNKNOWN"],
+    PENDING: ["CLEANING", "FAILED", "UNKNOWN"],
+    CLEANING: ["SUCCEEDED", "FAILED", "UNKNOWN"],
+    SUCCEEDED: [],
+    FAILED: ["CLEANING", "UNKNOWN"],
+    UNKNOWN: ["CLEANING", "SUCCEEDED", "FAILED", "UNKNOWN"],
+  };
+  if (!isTimestamp(input.changed_at) ||
+      !CLEANUP_STATES.includes(input.to_state) ||
+      !allowed[execution.cleanup_state].includes(input.to_state)) {
+    return rejected(context, "VALIDATION_ERROR", "Cleanup state transition is not permitted");
+  }
+  if (!hasSameScope(input.error_refs ?? [], context.scope_ref)) {
+    return rejected(context, "FORBIDDEN", "Cleanup error references are outside the authenticated scope");
+  }
+  const updated: ExecutionRecord = {
+    ...execution,
+    cleanup_state: input.to_state,
+    state_version: execution.state_version + 1,
+    ...(input.to_state === "SUCCEEDED" ? { cleaned_at: input.changed_at } : {}),
+    ...(input.error_refs ? { error_refs: [...execution.error_refs, ...input.error_refs] } : {}),
+  };
+  return succeeded(context, updated, String(updated.state_version));
+}
+
 export function createResourceMeasurement(
   context: RequestContext,
   execution: ExecutionRecord,
