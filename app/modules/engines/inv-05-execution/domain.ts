@@ -146,6 +146,37 @@ export const RUNTIME_TRUST_CLASSES = [
 ] as const;
 export type RuntimeTrustClass = (typeof RUNTIME_TRUST_CLASSES)[number];
 
+export const RUNTIME_ENFORCEMENT_CONTROLS = [
+  "CPU_LIMIT",
+  "MEMORY_LIMIT",
+  "WALL_TIME_LIMIT",
+  "STORAGE_LIMIT",
+  "PROCESS_LIMIT",
+  "OUTPUT_SIZE_LIMIT",
+  "CONCURRENCY_LIMIT",
+  "NETWORK_EGRESS",
+  "FILESYSTEM_ISOLATION",
+  "SECRET_ISOLATION",
+  "PROCESS_TERMINATION",
+  "CLEANUP",
+] as const;
+export type RuntimeEnforcementControl = (typeof RUNTIME_ENFORCEMENT_CONTROLS)[number];
+
+export interface TrustedRuntimeAssurance {
+  attestation_ref: ObjectRef;
+  runtime_identity_ref: ObjectRef;
+  runtime_profile_ref: ObjectRef;
+  runtime_profile_version: string;
+  runtime_profile_digest: string;
+  enforcement_evidence_ref: ObjectRef;
+  enforcement_test_evidence_ref: ObjectRef;
+  verifier_ref: ObjectRef;
+  verification_status: "VERIFIED" | "DENIED" | "UNKNOWN";
+  enforced_controls: RuntimeEnforcementControl[];
+  verified_at: Timestamp;
+  valid_until: Timestamp;
+}
+
 export type ExecutionEffectClass =
   | "IDEMPOTENT"
   | "DEDUPLICATED"
@@ -166,6 +197,7 @@ export interface Duration {
 export interface RuntimeProfile {
   profile_ref: ObjectRef;
   profile_version: string;
+  profile_digest?: string;
   profile_status: RuntimeProfileStatus;
   trust_class: RuntimeTrustClass;
   isolation_requirement: string;
@@ -432,6 +464,10 @@ function isRefKind(value: unknown, kind: string): value is ObjectRef {
   return isObjectRef(value) && value.object_kind === kind;
 }
 
+function sameExactObjectRef(a: ObjectRef, b: ObjectRef): boolean {
+  return sameObjectRef(a, b) && a.object_version === b.object_version;
+}
+
 function samePrincipal(a: PrincipalRef, b: PrincipalRef): boolean {
   return (
     a.principal_id === b.principal_id &&
@@ -493,6 +529,9 @@ export function validateRuntimeProfile(
     !profile ||
     !isRefKind(profile.profile_ref, "RUNTIME_PROFILE") ||
     !isVersion(profile.profile_version) ||
+    (profile.profile_digest !== undefined && !isVersion(profile.profile_digest)) ||
+    (profile.profile_ref?.object_version !== undefined &&
+      profile.profile_ref.object_version !== profile.profile_version) ||
     !RUNTIME_PROFILE_STATUSES.includes(profile.profile_status) ||
     !RUNTIME_TRUST_CLASSES.includes(profile.trust_class) ||
     !isTimestamp(profile.created_at) ||
@@ -575,10 +614,64 @@ export function validateRuntimeProfile(
     return rejected(context, "VALIDATION_ERROR", "Runtime profile approval reference is invalid or out of scope");
   }
   if (profile.trust_class === "UNTRUSTED_GENERATED_CODE" &&
-      (!profile.approved_by || !profile.approval_ref || !profile.secret_injection_policy_ref)) {
-    return rejected(context, "POLICY_DENIED", "Untrusted generated code requires an approved profile, approval provenance and secret policy");
+      (!profile.approved_by || !profile.approval_ref || !profile.secret_injection_policy_ref ||
+       !isVersion(profile.profile_digest))) {
+    return rejected(context, "POLICY_DENIED", "Untrusted generated code requires an approved profile, approval provenance, profile digest and secret policy");
   }
   return succeeded(context, profile, profile.profile_version);
+}
+
+/**
+ * Validates evidence returned by the trusted runtime-assurance adapter.
+ * A profile marked APPROVED is not, by itself, proof that isolation controls
+ * were actually enforced by the runtime currently assigned to this execution.
+ */
+export function validateTrustedRuntimeAssurance(
+  context: RequestContext,
+  profile: RuntimeProfile,
+  assurance: TrustedRuntimeAssurance,
+  now: Timestamp,
+): OperationResult<void> {
+  if (!isRequestContext(context) || !isTimestamp(now) || !assurance ||
+      !isTimestamp(assurance.verified_at) || !isTimestamp(assurance.valid_until)) {
+    return rejected(context, "VALIDATION_ERROR", "Trusted runtime assurance evidence is incomplete or invalid");
+  }
+  const references: Array<[ObjectRef, string]> = [
+    [assurance.attestation_ref, "RUNTIME_ASSURANCE_ATTESTATION"],
+    [assurance.runtime_identity_ref, "RUNTIME_IDENTITY"],
+    [assurance.runtime_profile_ref, "RUNTIME_PROFILE"],
+    [assurance.enforcement_evidence_ref, "RUNTIME_ENFORCEMENT_EVIDENCE"],
+    [assurance.enforcement_test_evidence_ref, "RUNTIME_ENFORCEMENT_TEST_EVIDENCE"],
+    [assurance.verifier_ref, "TRUSTED_RUNTIME_ATTESTATION_VERIFIER"],
+  ];
+  if (references.some(([ref, kind]) => !isRefKind(ref, kind) ||
+      !sameScopeRef(ref.scope_ref, context.scope_ref))) {
+    return rejected(context, "FORBIDDEN", "Runtime assurance references must use canonical kinds and the authenticated scope");
+  }
+  if (!sameExactObjectRef(assurance.runtime_profile_ref, profile.profile_ref) ||
+      assurance.runtime_profile_version !== profile.profile_version ||
+      !profile.profile_digest ||
+      assurance.runtime_profile_digest !== profile.profile_digest) {
+    return rejected(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Runtime attestation does not bind the exact approved profile version and digest");
+  }
+  if (assurance.verification_status !== "VERIFIED" ||
+      Date.parse(assurance.verified_at) > Date.parse(now) ||
+      Date.parse(assurance.valid_until) <= Date.parse(now)) {
+    return rejected(context, "POLICY_DENIED", "Trusted runtime attestation is unverified, not yet valid, or expired");
+  }
+  if (!Array.isArray(assurance.enforced_controls) ||
+      assurance.enforced_controls.some((control) => !RUNTIME_ENFORCEMENT_CONTROLS.includes(control))) {
+    return rejected(context, "VALIDATION_ERROR", "Runtime attestation contains an unknown enforcement control");
+  }
+  const requiredControls = new Set<RuntimeEnforcementControl>(RUNTIME_ENFORCEMENT_CONTROLS);
+  const suppliedControls = new Set(assurance.enforced_controls);
+  if ([...requiredControls].some((control) => !suppliedControls.has(control))) {
+    return rejected(context, "RESOURCE_LIMIT", "Runtime attestation does not prove every mandatory hard-enforcement control");
+  }
+  return createOperationResult({
+    status: "OK",
+    correlation_id: context.correlation_id,
+  });
 }
 
 export function validateExecutionRequest(
@@ -613,8 +706,7 @@ export function validateExecutionRequest(
   }
   if (
     !isVersion(request.capability_version) ||
-    (request.capability_ref.object_version !== undefined &&
-      request.capability_ref.object_version !== request.capability_version) ||
+    request.capability_ref.object_version !== request.capability_version ||
     !isVersion(request.request_digest) ||
     !isVersion(request.idempotency_key) ||
     context.idempotency_key !== request.idempotency_key ||
@@ -646,7 +738,7 @@ export function validateExecutionRequest(
   }
   if (!isRefKind(request.runtime_profile.profile_ref, "RUNTIME_PROFILE") ||
       !sameScopeRef(request.runtime_profile.profile_ref.scope_ref, context.scope_ref) ||
-      !request.runtime_profile.allowed_capability_refs.some((ref) => sameObjectRef(ref, request.capability_ref))) {
+      !request.runtime_profile.allowed_capability_refs.some((ref) => sameExactObjectRef(ref, request.capability_ref))) {
     return rejected(context, "CAPABILITY_UNAVAILABLE", "Runtime profile does not allow the exact capability reference");
   }
   return succeeded(context, request);
