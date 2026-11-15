@@ -1,3 +1,4 @@
+export * as InboxOutbox from "./inbox-outbox";
 export * as IntentEngine from "./inv-01-intent";
 export * as WorkEngine from "./inv-02-work";
 export * as PlanningEngine from "./inv-03-planning";
