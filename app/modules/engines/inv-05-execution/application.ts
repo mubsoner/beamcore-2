@@ -20,6 +20,7 @@ import {
   createExecutionRecord,
   validateExecutionRequest,
   type ExecutionRecord,
+  type ExecutionAttempt,
   validateTrustedRuntimeAssurance,
   type ExecutionRequest,
   type RuntimeAdmission,
@@ -91,6 +92,32 @@ export interface SubmitExecutionCommand {
   request: ExecutionRequest;
   execution_event_ref: ObjectRef;
   created_at: Timestamp;
+}
+
+/** Immutable request manifest retained for later starts and recovery. */
+export interface ExecutionInvocationManifest {
+  execution_ref: ObjectRef;
+  request_digest: string;
+  capability_ref: ObjectRef;
+  capability_version: string;
+  runtime_profile_ref: ObjectRef;
+  runtime_profile_version: string;
+  input_refs: ObjectRef[];
+  input_digests: string[];
+  side_effect_class: ExecutionRequest["side_effect_class"];
+  request: ExecutionRequest;
+  created_at: Timestamp;
+}
+
+export interface ExecutionSnapshot {
+  execution: ExecutionRecord;
+  attempts: ExecutionAttempt[];
+}
+
+export interface ExecutionReadPort {
+  readExecution(context: RequestContext, execution_ref: ObjectRef): Promise<OperationResult<ExecutionRecord>>;
+  readAttempts(context: RequestContext, execution_ref: ObjectRef): Promise<OperationResult<ExecutionAttempt[]>>;
+  readInvocationManifest(context: RequestContext, execution_ref: ObjectRef): Promise<OperationResult<ExecutionInvocationManifest>>;
 }
 
 function rejected<T>(
@@ -270,6 +297,7 @@ async function persistExecution(
   unitOfWork: EngineUnitOfWorkPort,
   command: SubmitExecutionCommand,
   execution: ExecutionRecord,
+  acceptedRequest: ExecutionRequest,
 ): Promise<OperationResult<ExecutionRecord>> {
   return unitOfWork.execute(command.context, async (transaction) => {
     const idempotencyKey = command.context.idempotency_key!;
@@ -295,6 +323,28 @@ async function persistExecution(
         "INTEGRITY_OR_UNTRUSTED_INPUT",
         "Execution repository did not confirm the persisted identity and version",
       );
+    }
+
+    const manifest: ExecutionInvocationManifest = {
+      execution_ref: execution.execution_ref,
+      request_digest: execution.request_digest,
+      capability_ref: execution.capability_ref,
+      capability_version: execution.capability_version,
+      runtime_profile_ref: execution.runtime_profile_ref,
+      runtime_profile_version: execution.runtime_profile_version,
+      input_refs: [...acceptedRequest.input_refs],
+      input_digests: [...acceptedRequest.input_digests],
+      side_effect_class: acceptedRequest.side_effect_class,
+      request: acceptedRequest,
+      created_at: command.created_at,
+    };
+    const manifestSaved = await transaction.repository<ExecutionInvocationManifest>(
+      "inv-05.execution_invocation_manifests",
+    ).create(command.context, manifest.execution_ref, manifest);
+    if (manifestSaved.status !== "OK" || !manifestSaved.data ||
+        !sameExactObjectRef(manifestSaved.data.execution_ref, execution.execution_ref) ||
+        manifestSaved.data.request_digest !== execution.request_digest) {
+      return propagateFailure<ExecutionRecord>(manifestSaved);
     }
 
     const eventResult = createExecutionEvent(command.context, saved.data, {
@@ -477,7 +527,7 @@ export async function submitExecution(
   if (execution.status !== "OK" || !execution.data) return propagateFailure<ExecutionRecord>(execution);
 
   try {
-    return await persistExecution(unitOfWork, command, execution.data);
+    return await persistExecution(unitOfWork, command, execution.data, trustedRequest);
   } catch {
     return rejected(
       command.context,
@@ -486,3 +536,120 @@ export async function submitExecution(
     );
   }
 }
+
+function validateExecutionSnapshot(
+  context: RequestContext,
+  executionRef: ObjectRef,
+  execution: ExecutionRecord,
+  attempts: readonly ExecutionAttempt[],
+): OperationResult<ExecutionSnapshot> {
+  if (!isObjectRef(executionRef) || executionRef.object_kind !== "EXECUTION" ||
+      !sameScopeRef(executionRef.scope_ref, context.scope_ref) ||
+      !isObjectRef(execution.execution_ref) ||
+      !sameExactObjectRef(execution.execution_ref, executionRef) ||
+      !sameScopeRef(execution.scope_ref, context.scope_ref) ||
+      !Array.isArray(execution.attempt_refs) || !Array.isArray(attempts)) {
+    return rejected(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Execution read returned an invalid identity, scope or attempt collection");
+  }
+  if (execution.attempt_refs.length !== attempts.length) {
+    return rejected(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Execution attempt references do not match the complete authoritative attempt history");
+  }
+  const seen = new Set<string>();
+  let priorAttemptNumber = 0;
+  for (let index = 0; index < attempts.length; index += 1) {
+    const attempt = attempts[index];
+    const expectedRef = execution.attempt_refs[index];
+    if (
+      !attempt || !isObjectRef(attempt.attempt_ref) || !isObjectRef(attempt.execution_ref) ||
+      !isObjectRef(expectedRef) ||
+      !sameExactObjectRef(attempt.attempt_ref, expectedRef) ||
+      !sameScopeRef(attempt.attempt_ref.scope_ref, context.scope_ref) ||
+      !sameExactObjectRef(attempt.execution_ref, execution.execution_ref) ||
+      !Number.isSafeInteger(attempt.attempt_number) ||
+      attempt.attempt_number <= priorAttemptNumber ||
+      seen.has(attempt.attempt_ref.object_id)
+    ) {
+      return rejected(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Execution attempt history contains missing, duplicate, out-of-order or cross-scope records");
+    }
+    priorAttemptNumber = attempt.attempt_number;
+    seen.add(attempt.attempt_ref.object_id);
+  }
+  return createOperationResult({
+    status: "OK",
+    correlation_id: context.correlation_id,
+    data: { execution, attempts: [...attempts] },
+    object_version: String(execution.state_version),
+  });
+}
+
+/** Status reads preserve UNKNOWN, partial output and cleanup status as separate facts. */
+export async function readExecutionSnapshot(
+  reader: ExecutionReadPort,
+  context: RequestContext,
+  executionRef: ObjectRef,
+): Promise<OperationResult<ExecutionSnapshot>> {
+  if (!isRequestContext(context) || !isObjectRef(executionRef) ||
+      executionRef.object_kind !== "EXECUTION" ||
+      !sameScopeRef(executionRef.scope_ref, context.scope_ref)) {
+    return rejected(context, "FORBIDDEN", "Execution read requires an in-scope EXECUTION reference");
+  }
+  try {
+    const [executionResult, attemptsResult] = await Promise.all([
+      reader.readExecution(context, executionRef),
+      reader.readAttempts(context, executionRef),
+    ]);
+    if (executionResult.status !== "OK" || !executionResult.data) {
+      return propagateFailure<ExecutionSnapshot>(executionResult);
+    }
+    if (attemptsResult.status !== "OK" || !attemptsResult.data) {
+      return propagateFailure<ExecutionSnapshot>(attemptsResult);
+    }
+    return validateExecutionSnapshot(context, executionRef, executionResult.data, attemptsResult.data);
+  } catch {
+    return rejected(context, "DEPENDENCY_UNAVAILABLE", "Authoritative Execution status or attempt history could not be read");
+  }
+}
+
+/** Reads the exact accepted input manifest; callers cannot supply replacement inputs. */
+export async function readExecutionInvocationManifest(
+  reader: ExecutionReadPort,
+  context: RequestContext,
+  execution: ExecutionRecord,
+): Promise<OperationResult<ExecutionInvocationManifest>> {
+  if (!isRequestContext(context) || !isObjectRef(execution?.execution_ref) ||
+      !sameScopeRef(execution.execution_ref.scope_ref, context.scope_ref)) {
+    return rejected(context, "FORBIDDEN", "Invocation manifest read requires an in-scope Execution");
+  }
+  try {
+    const result = await reader.readInvocationManifest(context, execution.execution_ref);
+    if (result.status !== "OK" || !result.data) return propagateFailure<ExecutionInvocationManifest>(result);
+    const manifest = result.data;
+    if (
+      !isObjectRef(manifest.execution_ref) ||
+      !sameExactObjectRef(manifest.execution_ref, execution.execution_ref) ||
+      manifest.request_digest !== execution.request_digest ||
+      !sameExactObjectRef(manifest.capability_ref, execution.capability_ref) ||
+      manifest.capability_version !== execution.capability_version ||
+      !sameExactObjectRef(manifest.runtime_profile_ref, execution.runtime_profile_ref) ||
+      manifest.runtime_profile_version !== execution.runtime_profile_version ||
+      !Array.isArray(manifest.input_refs) || !Array.isArray(manifest.input_digests) ||
+      manifest.input_refs.length !== manifest.input_digests.length ||
+      manifest.input_refs.some((ref) => !isObjectRef(ref) || !sameScopeRef(ref.scope_ref, context.scope_ref)) ||
+      manifest.input_digests.some((digest) => !isVersion(digest)) ||
+      !manifest.request || manifest.request.request_digest !== execution.request_digest ||
+      !sameExactObjectRef(manifest.request.execution_ref, execution.execution_ref) ||
+      !sameExactObjectRef(manifest.request.runtime_profile.profile_ref, execution.runtime_profile_ref) ||
+      manifest.request.runtime_profile.profile_version !== execution.runtime_profile_version
+    ) {
+      return rejected(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Stored invocation manifest does not bind the exact accepted Execution and immutable inputs");
+    }
+    return createOperationResult({
+      status: "OK",
+      correlation_id: context.correlation_id,
+      data: manifest,
+    });
+  } catch {
+    return rejected(context, "DEPENDENCY_UNAVAILABLE", "The accepted invocation manifest could not be read");
+  }
+}
+
