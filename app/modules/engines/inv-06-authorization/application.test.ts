@@ -3,6 +3,7 @@ import { createOperationResult, type ObjectRef, type PrincipalRef, type RequestC
 import {
   activateDelegation,
   advancePolicyReleaseReviewStage,
+  beginPolicyReleaseMonitoring,
   authenticatePrincipal,
   explainDenialSafe,
   getAuthorityDecision,
@@ -561,6 +562,30 @@ describe("INV-06 authorization application boundary", () => {
     const result = await expireApproval(harness.deps, context, approval.approval_ref, "1");
     expect(result.status).toBe("OK");
     expect(result.data?.state).toBe("EXPIRED");
+  });
+
+  it("moves a released policy into monitoring with a dedicated lifecycle event", async () => {
+    const harness = makeDependencies();
+    vi.mocked(harness.sources.readPolicyRelease).mockResolvedValue(
+      createOperationResult({ status: "OK", correlation_id: context.correlation_id,
+        data: { ...policy.policy_release, state: "RELEASED" },
+        object_version: "2" }),
+    );
+    const policyRef = { ...ref("POLICY_RELEASE", "policy-1"), object_version: "1" };
+    const operation = {
+      requested_by_ref: actor,
+      change_ref: ref("POLICY_CHANGE", "monitor-change"),
+      expected_version: "2",
+      correlation_id: context.correlation_id,
+      idempotency_key: context.idempotency_key!,
+    };
+    const result = await beginPolicyReleaseMonitoring(harness.deps, context, policyRef, operation);
+    expect(result.status).toBe("OK");
+    expect(result.data?.state).toBe("MONITORING");
+    expect(harness.repository.updatePolicyReleaseWithEvent).toHaveBeenCalledWith(
+      context, expect.objectContaining({ state: "MONITORING" }), "2",
+      "policy.version_monitoring", expect.any(Object), operation,
+    );
   });
 
   it("suspends a monitoring policy release under current authority with a reason", async () => {
