@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { createOperationResult, type ObjectRef, type PrincipalRef, type RequestContext, type ScopeRef } from "../shared";
 import {
+  activateDelegation,
+  advancePolicyReleaseReviewStage,
   authenticatePrincipal,
   explainDenialSafe,
   getAuthorityDecision,
@@ -352,6 +354,140 @@ describe("INV-06 authorization application boundary", () => {
     expect(suspended.status).toBe("OK");
     expect(suspended.data?.state).toBe("SUSPENDED");
     expect(harness.repository.updateDelegationWithEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("reactivates a suspended delegation only after current grantor and cited decision revalidation", async () => {
+    const harness = makeDependencies();
+    const delegation: DelegationRecord = {
+      delegation_id: "delegation-reactivate",
+      delegation_ref: ref("DELEGATION", "delegation-reactivate"),
+      grantor_ref: actor,
+      delegate_ref: { principal_id: "agent-1", principal_kind: "AGENT" },
+      purpose: "read artifact",
+      scope_ref: scope,
+      allowed_actions: ["artifact.read"],
+      resource_constraints: [ref("ARTIFACT", "artifact-1")],
+      limits: [],
+      conditions: [],
+      not_before: "2026-11-15T09:00:00Z",
+      expires_at: "2026-11-15T10:10:00Z",
+      allow_subdelegation: false,
+      authorized_by_decision_ref: ref("AUTHORIZATION_DECISION", "delegation-grant"),
+      state: "SUSPENDED",
+      created_at: "2026-11-15T09:00:00Z",
+    };
+    vi.mocked(harness.sources.readDelegation).mockResolvedValue(
+      createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: delegation, object_version: "2" }),
+    );
+    vi.mocked(harness.sources.resolveDelegationGrantAuthority).mockResolvedValue(
+      createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: {
+        grantor_authenticated: true,
+        grantor_may_delegate: true,
+        grantor_may_subdelegate: false,
+        grantor_allowed_actions: ["artifact.read"],
+        grantor_scope_ref: scope,
+        grantor_resource_constraints: [ref("ARTIFACT", "artifact-1")],
+        valid_until: "2026-11-15T10:30:00Z",
+      } }),
+    );
+    vi.mocked(harness.sources.verifyDelegationDecision).mockResolvedValue(
+      createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { valid: true } }),
+    );
+    const result = await activateDelegation(harness.deps, context, delegation.delegation_ref, "2");
+    expect(result.status).toBe("OK");
+    expect(result.data?.state).toBe("ACTIVE");
+    expect(harness.sources.resolveDelegationGrantAuthority).toHaveBeenCalledTimes(1);
+    expect(harness.sources.verifyDelegationDecision).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses delegation reactivation when grantor no longer holds the delegated action", async () => {
+    const harness = makeDependencies();
+    const delegation: DelegationRecord = {
+      delegation_id: "delegation-no-longer-authorized",
+      delegation_ref: ref("DELEGATION", "delegation-no-longer-authorized"),
+      grantor_ref: actor,
+      delegate_ref: { principal_id: "agent-1", principal_kind: "AGENT" },
+      purpose: "read artifact",
+      scope_ref: scope,
+      allowed_actions: ["artifact.read"],
+      resource_constraints: [ref("ARTIFACT", "artifact-1")],
+      limits: [],
+      conditions: [],
+      not_before: "2026-11-15T09:00:00Z",
+      expires_at: "2026-11-15T10:10:00Z",
+      allow_subdelegation: false,
+      authorized_by_decision_ref: ref("AUTHORIZATION_DECISION", "delegation-grant"),
+      state: "SUSPENDED",
+      created_at: "2026-11-15T09:00:00Z",
+    };
+    vi.mocked(harness.sources.readDelegation).mockResolvedValue(
+      createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: delegation, object_version: "2" }),
+    );
+    vi.mocked(harness.sources.resolveDelegationGrantAuthority).mockResolvedValue(
+      createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: {
+        grantor_authenticated: true,
+        grantor_may_delegate: true,
+        grantor_may_subdelegate: false,
+        grantor_allowed_actions: [],
+        grantor_scope_ref: scope,
+        grantor_resource_constraints: [],
+        valid_until: "2026-11-15T10:30:00Z",
+      } }),
+    );
+    vi.mocked(harness.sources.verifyDelegationDecision).mockResolvedValue(
+      createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { valid: true } }),
+    );
+    const result = await activateDelegation(harness.deps, context, delegation.delegation_ref, "2");
+    expect(result.status).toBe("REJECTED");
+    expect(harness.repository.updateDelegationWithEvent).not.toHaveBeenCalled();
+  });
+
+  it("advances policy review only one verified stage at a time", async () => {
+    const harness = makeDependencies();
+    vi.mocked(harness.sources.readPolicyRelease).mockResolvedValue(
+      createOperationResult({ status: "OK", correlation_id: context.correlation_id,
+        data: { ...policy.policy_release, state: "VALIDATED" },
+        object_version: "4" }),
+    );
+    const policyRef = { ...ref("POLICY_RELEASE", "policy-1"), object_version: "1" };
+    const operation = {
+      requested_by_ref: actor,
+      change_ref: ref("POLICY_CHANGE", "change-review"),
+      expected_version: "4",
+      correlation_id: context.correlation_id,
+      idempotency_key: context.idempotency_key!,
+    };
+    const result = await advancePolicyReleaseReviewStage(
+      harness.deps, context, policyRef, "STATIC_ANALYSIS_PASSED", operation,
+    );
+    expect(result.status).toBe("OK");
+    expect(result.data?.state).toBe("STATIC_ANALYSIS_PASSED");
+    expect(harness.repository.updatePolicyReleaseWithEvent).toHaveBeenCalledWith(
+      context, expect.objectContaining({ state: "STATIC_ANALYSIS_PASSED" }), "4",
+      "policy.review_stage_static_analysis_passed", expect.any(Object), operation,
+    );
+  });
+
+  it("rejects skipped policy review stages", async () => {
+    const harness = makeDependencies();
+    vi.mocked(harness.sources.readPolicyRelease).mockResolvedValue(
+      createOperationResult({ status: "OK", correlation_id: context.correlation_id,
+        data: { ...policy.policy_release, state: "VALIDATED" },
+        object_version: "4" }),
+    );
+    const operation = {
+      requested_by_ref: actor,
+      change_ref: ref("POLICY_CHANGE", "change-skip"),
+      expected_version: "4",
+      correlation_id: context.correlation_id,
+      idempotency_key: context.idempotency_key!,
+    };
+    const result = await advancePolicyReleaseReviewStage(
+      harness.deps, context, { ...ref("POLICY_RELEASE", "policy-1"), object_version: "1" },
+      "SCENARIO_TESTED", operation,
+    );
+    expect(result.status).toBe("REJECTED");
+    expect(harness.repository.updatePolicyReleaseWithEvent).not.toHaveBeenCalled();
   });
 
   it("publishes a policy release only when impact and approval references are provided", async () => {
