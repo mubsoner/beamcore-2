@@ -341,6 +341,18 @@ describe("INV-06 authorization domain", () => {
       independent_approval_required: true, now: "2026-11-15T10:01:00Z",
     });
     expect(rejected.status).toBe("REJECTED");
+    const distinctKindApprover = decideApproval({
+      approval,
+      decision: {
+        approval_ref: approval.approval_ref,
+        approver_ref: { principal_id: context.actor_ref.principal_id, principal_kind: "SERVICE" },
+        decision: "APPROVE", expected_version: "1", idempotency_key: "approval-decision-2",
+        decided_at: "2026-11-15T10:01:00Z",
+      },
+      expected_current_version: "1", approver_is_authorized: true,
+      independent_approval_required: true, now: "2026-11-15T10:01:00Z",
+    });
+    expect(distinctKindApprover.status).toBe("OK");
   });
   it("consumes a one-time approval only for its exact request and current version", () => {
     const created = createPendingApproval({
