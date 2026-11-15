@@ -313,6 +313,36 @@ async function persistExecution(
           "Execution idempotency key was already used with a different request digest",
         );
       }
+      const priorExecution = prior.data.result.data;
+      if (!priorExecution || !isObjectRef(priorExecution.execution_ref)) {
+        return rejected(
+          command.context,
+          "INTEGRITY_OR_UNTRUSTED_INPUT",
+          "The idempotency record does not contain its authoritative Execution reference",
+        );
+      }
+      const priorManifestResult = await transaction.repository<ExecutionInvocationManifest>(
+        "inv-05.execution_invocation_manifests",
+      ).get(command.context, priorExecution.execution_ref);
+      if (priorManifestResult.status !== "OK" || !priorManifestResult.data) {
+        return propagateFailure<ExecutionRecord>(priorManifestResult);
+      }
+      const priorManifest = priorManifestResult.data;
+      if (
+        !sameExactObjectRef(priorManifest.execution_ref, priorExecution.execution_ref) ||
+        priorManifest.request_digest !== priorExecution.request_digest ||
+        !sameExactObjectRef(priorManifest.runtime_profile_ref, priorExecution.runtime_profile_ref) ||
+        priorManifest.runtime_profile_version !== priorExecution.runtime_profile_version ||
+        priorManifest.input_digests.length !== priorManifest.request.input_digests.length ||
+        priorManifest.input_digests.some((digest, index) => digest !== priorManifest.request.input_digests[index]) ||
+        priorManifest.request.request_digest !== priorManifest.request_digest
+      ) {
+        return rejected(
+          command.context,
+          "INTEGRITY_OR_UNTRUSTED_INPUT",
+          "The prior idempotent Execution has no matching immutable invocation manifest",
+        );
+      }
       return prior.data.result;
     }
 
@@ -544,6 +574,7 @@ function validateExecutionSnapshot(
   executionRef: ObjectRef,
   execution: ExecutionRecord,
   attempts: readonly ExecutionAttempt[],
+  storageVersion: string,
 ): OperationResult<ExecutionSnapshot> {
   if (!isObjectRef(executionRef) || executionRef.object_kind !== "EXECUTION" ||
       !sameScopeRef(executionRef.scope_ref, context.scope_ref) ||
@@ -583,7 +614,7 @@ function validateExecutionSnapshot(
     status: "OK",
     correlation_id: context.correlation_id,
     data: { execution, attempts: [...attempts] },
-    ...(execution.state_version ? { object_version: String(execution.state_version) } : {}),
+    object_version: storageVersion,
   });
 }
 
@@ -609,7 +640,16 @@ export async function readExecutionSnapshot(
     if (attemptsResult.status !== "OK" || !attemptsResult.data) {
       return propagateFailure<ExecutionSnapshot>(attemptsResult);
     }
-    return validateExecutionSnapshot(context, executionRef, executionResult.data, attemptsResult.data);
+    if (!executionResult.object_version || !isVersion(executionResult.object_version)) {
+      return rejected(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Execution repository did not return its authoritative storage version");
+    }
+    return validateExecutionSnapshot(
+      context,
+      executionRef,
+      executionResult.data,
+      attemptsResult.data,
+      executionResult.object_version,
+    );
   } catch {
     return rejected(context, "DEPENDENCY_UNAVAILABLE", "Authoritative Execution status or attempt history could not be read");
   }
