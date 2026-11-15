@@ -74,14 +74,15 @@ const policy = (overrides: Partial<PolicyEvaluation> = {}): PolicyEvaluation => 
   effect: "ALLOW",
   policy_release: {
     policy_release_id: "policy-1", policy_family_id: "artifact-policy",
-    policy_release_ref: ref("POLICY_RELEASE", "policy-1"),
+    policy_release_ref: { ...ref("POLICY_RELEASE", "policy-1"), object_version: "7" },
     version: "7", state: "RELEASED", ruleset_digest: "sha256:policy",
     evaluator_contract_version: "1", effective_from: "2026-11-15T09:00:00Z",
     valid_until: "2026-11-15T11:00:00Z",
   },
   evaluator_version: "evaluator-1", reason_codes: ["POLICY_MATCHED"],
   conditions: [], obligations: [], valid_until: "2026-11-15T10:04:00Z",
-  approval_required: false, independent_approver_required: false,
+  approval_required: false, approval_expires_at: "2026-11-15T10:08:00Z",
+  independent_approver_required: false,
   risk_assessment_required: true, trust_required: false,
   ...overrides,
 });
@@ -174,20 +175,22 @@ describe("INV-06 authorization domain", () => {
       state: "APPROVED", created_at: "2026-11-15T09:00:00Z",
       decided_at: "2026-11-15T09:01:00Z", expires_at: "2026-11-15T11:00:00Z",
     };
-    const currentRequest = request();
-    const policyRef = ref("POLICY_RELEASE", "policy-1");
+    const policyRef = { ...ref("POLICY_RELEASE", "policy-1"), object_version: "7" };
+    const currentRequest = request({ approval_ref: ref("APPROVAL", "approval-1") });
     expect(validateApprovalUse(approval, currentRequest, "2026-11-15T10:00:00Z", policyRef).length).toBeGreaterThan(0);
     expect(validateApprovalUse({
-      ...approval, action: currentRequest.action, policy_release_ref: policyRef,
+      ...approval, action: currentRequest.action, approval_ref: currentRequest.approval_ref!,
+      policy_release_ref: policyRef,
       request_ref: ref("AUTHORIZATION_REQUEST", "different-request"),
     }, currentRequest, "2026-11-15T10:00:00Z", policyRef)).toContain("approval request identity does not match");
     expect(validateApprovalUse({
-      ...approval, action: currentRequest.action, policy_release_ref: policyRef,
-      request_ref: ref("AUTHORIZATION_REQUEST", "auth-req-1"),
+      ...approval, approval_ref: currentRequest.approval_ref!, action: currentRequest.action,
+      policy_release_ref: policyRef, request_ref: ref("AUTHORIZATION_REQUEST", "auth-req-1"),
       requested_by_ref: { principal_id: "other-user", principal_kind: "USER" },
     }, currentRequest, "2026-11-15T10:00:00Z", policyRef)).toContain("approval requester does not match the requesting actor");
     expect(validateApprovalUse({
-      ...approval, action: currentRequest.action, policy_release_ref: ref("POLICY_RELEASE", "old-policy"),
+      ...approval, approval_ref: currentRequest.approval_ref!, action: currentRequest.action,
+      policy_release_ref: ref("POLICY_RELEASE", "old-policy"),
       request_ref: ref("AUTHORIZATION_REQUEST", "auth-req-1"),
     }, currentRequest, "2026-11-15T10:00:00Z", policyRef)).toContain("approval policy release does not match");
   });
