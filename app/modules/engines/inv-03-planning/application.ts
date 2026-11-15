@@ -1057,7 +1057,7 @@ export async function validateAndRecordGraph(
 
     const storedValidation = await transaction.appendOnly<GraphValidationResult>(
       "inv-03.graph-validation-results",
-    ).append(command.context, validation.value);
+    ).append(command.context, validation.value.validation_ref, validation.value);
     if (storedValidation.status !== "OK") {
       return propagateFailure<GraphValidationApplicationResult>(storedValidation);
     }
