@@ -298,6 +298,7 @@ export interface ApprovalDecisionInput {
   reason_ref?: ObjectRef;
   evidence_method_ref?: ObjectRef;
   expected_version: Version;
+  idempotency_key: string;
   decided_at: Timestamp;
 }
 
@@ -938,7 +939,7 @@ export function createPendingApproval(input: {
   policy_release_ref?: ObjectRef;
   approval_use_mode: ApprovalUseMode;
   created_at: Timestamp;
-  expires_at?: Timestamp;
+  expires_at: Timestamp;
 }): OperationResult<ApprovalRecord> {
   if (!input.approval_id?.trim() ||
     !["ONE_TIME", "REUSABLE_WITHIN_SCOPE"].includes(input.approval_use_mode) ||
@@ -995,6 +996,7 @@ export function decideApproval(input: {
     !isExactObjectRef(decision.approval_ref, approval.approval_ref) ||
     !sameScopeRef(decision.approval_ref.scope_ref, approval.scope_ref) ||
     decision.expected_version !== input.expected_current_version ||
+    !decision.idempotency_key?.trim() ||
     !isPrincipalRef(decision.approver_ref) || !isTimestamp(decision.decided_at) ||
     !isTimestamp(input.now) || Date.parse(decision.decided_at) > Date.parse(input.now)) {
     return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
@@ -1010,7 +1012,8 @@ export function decideApproval(input: {
     return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
       errors: [createOperationError("FORBIDDEN", "Approver does not hold the required independent approval authority")] });
   }
-  if (approval.expires_at && Date.parse(approval.expires_at) <= Date.parse(input.now)) {
+  if (!approval.expires_at || !isTimestamp(approval.expires_at) ||
+      Date.parse(approval.expires_at) <= Date.parse(input.now)) {
     return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
       errors: [createOperationError("APPROVAL_REQUIRED", "Approval has already expired")] });
   }
@@ -1023,6 +1026,52 @@ export function decideApproval(input: {
     ...(decision.evidence_method_ref ? { evidence_method_ref: decision.evidence_method_ref } : {}),
   };
   return createOperationResult({ status: "OK", correlation_id: "authorization", data: updated });
+}
+
+/**
+ * Pure transition used by the repository's atomic compare-and-set adapter.
+ * A ONE_TIME claim is valid only for the exact authorization request and version.
+ */
+export function claimOneTimeApprovalRecord(input: {
+  approval: ApprovalRecord;
+  authorization_request_ref: ObjectRef;
+  expected_version: Version;
+  idempotency_key: string;
+  now: Timestamp;
+}): OperationResult<ApprovalRecord> {
+  const { approval, authorization_request_ref, expected_version, idempotency_key, now } = input;
+  if (!isObjectRef(authorization_request_ref) ||
+      authorization_request_ref.object_kind !== "AUTHORIZATION_REQUEST" ||
+      !sameScopeRef(authorization_request_ref.scope_ref, approval.scope_ref) ||
+      !isVersion(expected_version) || !idempotency_key.trim() || !isTimestamp(now)) {
+    return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
+      errors: [createOperationError("VALIDATION_ERROR", "One-time approval claim input is invalid")] });
+  }
+  if (approval.approval_use_mode !== "ONE_TIME" || approval.state !== "APPROVED") {
+    return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
+      errors: [createOperationError("APPROVAL_REQUIRED", "Approval is not an available one-time approval")] });
+  }
+  if (!approval.approval_ref.object_version || approval.approval_ref.object_version !== expected_version) {
+    return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
+      errors: [createOperationError("VERSION_CONFLICT", "Approval version changed before consumption")] });
+  }
+  if (!sameObjectRef(approval.request_ref, authorization_request_ref)) {
+    return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
+      errors: [createOperationError("APPROVAL_REQUIRED", "Approval is bound to a different authorization request")] });
+  }
+  if (!approval.expires_at || Date.parse(approval.expires_at) <= Date.parse(now) ||
+      (approval.valid_from && Date.parse(approval.valid_from) > Date.parse(now)) ||
+      approval.revoked_at !== undefined || approval.consumed_at !== undefined) {
+    return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
+      errors: [createOperationError("APPROVAL_REQUIRED", "Approval is expired, revoked or already consumed")] });
+  }
+  return createOperationResult({ status: "OK", correlation_id: "authorization",
+    data: {
+      ...approval,
+      state: "CONSUMED",
+      consumed_at: now,
+      consumed_by_request_ref: authorization_request_ref,
+    } });
 }
 
 export function validateApprovalUse(
