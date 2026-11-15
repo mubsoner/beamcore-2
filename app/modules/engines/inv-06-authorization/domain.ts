@@ -74,6 +74,8 @@ export interface AuthoritySourceRef {
 
 export interface PrincipalContext {
   principal_ref: PrincipalRef;
+  /** Verified service identity acting alongside the human/agent principal, when present. */
+  service_identity_ref?: PrincipalRef;
   authentication_state: AuthenticationState;
   session_ref?: ObjectRef;
   assurance_context_ref?: ObjectRef;
@@ -444,6 +446,9 @@ export function validatePrincipalContext(
     principal.principal_ref.principal_kind !== context.actor_ref.principal_kind) {
     issues.push("resolved principal does not match authenticated request actor");
   }
+  if (principal.service_identity_ref !== undefined && !isPrincipalRef(principal.service_identity_ref)) {
+    issues.push("verified service identity reference is invalid");
+  }
   if (!(AUTHENTICATION_STATES as readonly string[]).includes(principal.authentication_state)) {
     issues.push("authentication_state is invalid");
   }
@@ -647,6 +652,7 @@ export function buildAuthorityFingerprintMaterial(input: {
     request: buildCanonicalRequestFingerprint(input.request),
     principal: {
       principal_ref: input.principal.principal_ref,
+      service_identity_ref: input.principal.service_identity_ref ?? null,
       authentication_state: input.principal.authentication_state,
       session_ref: input.principal.session_ref ?? null,
       assurance_context_ref: input.principal.assurance_context_ref ?? null,
@@ -767,7 +773,11 @@ export function evaluateAuthorizationDecision(input: {
   const reasons: string[] = [];
   const validUntil: string[] = [];
 
-  if (principal.authentication_state === "UNAUTHENTICATED" ||
+  if (request.service_identity_ref &&
+      (!principal.service_identity_ref ||
+        !samePrincipal(request.service_identity_ref, principal.service_identity_ref))) {
+    result = "DENY"; reasons.push("SERVICE_IDENTITY_NOT_VERIFIED");
+  } else if (principal.authentication_state === "UNAUTHENTICATED" ||
       principal.authentication_state === "REVOKED") {
     result = "DENY"; reasons.push("AUTHENTICATION_NOT_VALID");
   } else if (principal.authentication_state === "STEP_UP_REQUIRED" ||
@@ -911,7 +921,7 @@ const SAFE_PUBLIC_REASON_CODES = new Set([
   "CURRENT_POLICY_UNAVAILABLE", "RISK_ASSESSMENT_REQUIRED", "SCOPED_TRUST_ASSESSMENT_REQUIRED",
   "SCOPED_APPROVAL_REQUIRED", "APPROVAL_INVALID_OR_MISMATCHED", "APPROVER_AUTHORITY_NOT_CURRENT",
   "INDEPENDENT_APPROVER_REQUIRED", "DELEGATION_NOT_VALIDATED", "RESOURCE_VERSION_STALE",
-  "DELEGATION_REFERENCE_NOT_VERIFIED",
+  "DELEGATION_REFERENCE_NOT_VERIFIED", "SERVICE_IDENTITY_NOT_VERIFIED",
 ]);
 
 export function createSafeDecisionExplanation(
