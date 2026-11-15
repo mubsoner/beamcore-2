@@ -638,8 +638,17 @@ export async function readExecutionInvocationManifest(
       manifest.input_digests.some((digest) => !isVersion(digest)) ||
       !manifest.request || manifest.request.request_digest !== execution.request_digest ||
       !sameExactObjectRef(manifest.request.execution_ref, execution.execution_ref) ||
+      !manifest.request.runtime_profile ||
+      !isObjectRef(manifest.request.runtime_profile.profile_ref) ||
       !sameExactObjectRef(manifest.request.runtime_profile.profile_ref, execution.runtime_profile_ref) ||
-      manifest.request.runtime_profile.profile_version !== execution.runtime_profile_version
+      manifest.request.runtime_profile.profile_version !== execution.runtime_profile_version ||
+      !Array.isArray(manifest.request.input_refs) ||
+      !Array.isArray(manifest.request.input_digests) ||
+      manifest.request.input_refs.length !== manifest.input_refs.length ||
+      manifest.request.input_digests.length !== manifest.input_digests.length ||
+      manifest.request.input_refs.some((ref, index) => !sameExactObjectRef(ref, manifest.input_refs[index])) ||
+      manifest.request.input_digests.some((digest, index) => digest !== manifest.input_digests[index]) ||
+      manifest.side_effect_class !== manifest.request.side_effect_class
     ) {
       return rejected(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Stored invocation manifest does not bind the exact accepted Execution and immutable inputs");
     }
