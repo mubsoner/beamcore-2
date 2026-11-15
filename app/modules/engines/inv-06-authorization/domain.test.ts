@@ -477,6 +477,41 @@ describe("INV-06 authorization domain", () => {
     }, [parent, root], "2026-11-15T10:05:00Z")).toContain("child delegation exceeds an ancestor's effective authority");
   });
 
+  it("requires child delegation to inherit grantor limits and must-hold conditions", () => {
+    const delegationRequest: DelegationRequest = {
+      delegation_ref: ref("DELEGATION", "bounded-child"),
+      grantor_ref: context.actor_ref,
+      delegate_ref: { principal_id: "agent-bounded", principal_kind: "AGENT" },
+      purpose: "read artifact under inherited controls",
+      scope_ref: scope,
+      allowed_actions: ["artifact.read"],
+      resource_constraints: [ref("ARTIFACT", "artifact-1")],
+      limits: [],
+      conditions: [],
+      not_before: "2026-11-15T10:00:00Z",
+      expires_at: "2026-11-15T10:30:00Z",
+      allow_subdelegation: false,
+      authorized_by_decision_ref: ref("AUTHORIZATION_DECISION", "bounded-grant"),
+    };
+    const grantor = {
+      grantor_authenticated: true,
+      grantor_may_delegate: true,
+      grantor_may_subdelegate: false,
+      grantor_allowed_actions: ["artifact.read"],
+      grantor_scope_ref: scope,
+      grantor_resource_constraints: [ref("ARTIFACT", "artifact-1")],
+      grantor_limits: ["daily-5"],
+      grantor_conditions: [{
+        condition_id: "mfa",
+        condition_kind: "MFA",
+        must_hold_at_enforcement: true,
+      }],
+    };
+    const issues = validateDelegationRequest(delegationRequest, grantor, undefined, "2026-11-15T10:00:00Z");
+    expect(issues).toContain("delegation omits a limit that already constrains the grantor");
+    expect(issues).toContain("delegation omits a condition that already constrains the grantor");
+  });
+
   it("prevents delegation reactivation after its expiry", () => {
     const delegation: DelegationRecord = {
       delegation_id: "delegation-expired",
