@@ -204,6 +204,8 @@ export interface ApprovalRecord {
   approval_id: string;
   approval_ref: ObjectRef;
   request_ref: ObjectRef;
+  /** Canonical fingerprint of the original action request, excluding the approval_ref itself. */
+  request_binding_fingerprint: string;
   requested_by_ref: PrincipalRef;
   approver_ref?: PrincipalRef;
   required_approver_constraints: string[];
@@ -741,7 +743,6 @@ export function buildCanonicalRequestFingerprint(request: AuthorizationRequest):
     execution: request.execution_ref ?? null,
     capability: request.capability_ref ?? null,
     delegation: request.delegation_ref ?? null,
-    approval: request.approval_ref ?? null,
     risk: request.risk_context,
     arguments_digest: request.action_arguments_digest ?? null,
     expected_resource_version: request.expected_resource_version ?? null,
@@ -815,6 +816,7 @@ export function buildAuthorityFingerprintMaterial(input: {
     approval: input.approval ? {
       approval_ref: input.approval.approval_ref,
       request_ref: input.approval.request_ref,
+      request_binding_fingerprint: input.approval.request_binding_fingerprint,
       requested_by_ref: input.approval.requested_by_ref,
       approver_ref: input.approval.approver_ref ?? null,
       action: input.approval.action,
@@ -1078,6 +1080,7 @@ export function createPendingApproval(input: {
   approval_ref: ObjectRef;
   approval_id: string;
   request_ref: ObjectRef;
+  request_binding_fingerprint: string;
   requested_by_ref: PrincipalRef;
   required_approver_constraints: string[];
   action: string;
@@ -1097,6 +1100,7 @@ export function createPendingApproval(input: {
     !sameScopeRef(input.approval_ref.scope_ref, input.scope_ref) ||
     !isObjectRef(input.request_ref) || input.request_ref.object_kind !== "AUTHORIZATION_REQUEST" ||
     !sameScopeRef(input.request_ref.scope_ref, input.scope_ref) ||
+    !input.request_binding_fingerprint?.trim() ||
     !isPrincipalRef(input.requested_by_ref) || !input.action.trim() ||
     !isObjectRef(input.resource_ref) || !sameScopeRef(input.resource_ref.scope_ref, input.scope_ref) ||
     !isObjectRef(input.environment_ref) || !sameScopeRef(input.environment_ref.scope_ref, input.scope_ref) ||
@@ -1116,6 +1120,7 @@ export function createPendingApproval(input: {
       approval_id: input.approval_id,
       approval_ref: input.approval_ref,
       request_ref: input.request_ref,
+      request_binding_fingerprint: input.request_binding_fingerprint,
       requested_by_ref: input.requested_by_ref,
       required_approver_constraints: [...input.required_approver_constraints],
       action: input.action,
@@ -1292,6 +1297,10 @@ export function validateApprovalUse(
     approval.request_ref.object_id !== request.authorization_request_id ||
     !sameScopeRef(approval.request_ref.scope_ref, request.scope_ref)) {
     issues.push("approval request identity does not match");
+  }
+  if (!approval.request_binding_fingerprint ||
+      approval.request_binding_fingerprint !== buildCanonicalRequestFingerprint(request)) {
+    issues.push("approval is bound to a different canonical request payload");
   }
   if (!samePrincipal(approval.requested_by_ref, request.actor_ref)) {
     issues.push("approval requester does not match the requesting actor");
