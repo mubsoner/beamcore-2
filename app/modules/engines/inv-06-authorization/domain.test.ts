@@ -610,7 +610,7 @@ describe("INV-06 authorization domain", () => {
       request_ref: ref("AUTHORIZATION_REQUEST", "auth-req-1"),
       policy_release_ref: policyRef,
       request_binding_fingerprint: buildApprovalBindingFingerprint(currentRequest, "ONE_TIME"),
-    }, currentRequest, "2026-11-15T10:00:00Z", policyRef)).toContain("approval is not approved");
+    }, currentRequest, "2026-11-15T10:00:00Z", policyRef)).toContain("approval is not approved for this request or idempotency operation");
     expect(validateApprovalUse({
       ...approval, approval_ref: currentRequest.approval_ref!, action: currentRequest.action,
       request_binding_fingerprint: buildApprovalBindingFingerprint(currentRequest, "ONE_TIME"),
