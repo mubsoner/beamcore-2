@@ -126,7 +126,7 @@ function sameExactObjectRef(a: ObjectRef, b: ObjectRef): boolean {
   return sameObjectRef(a, b) && a.object_version === b.object_version;
 }
 
-function validateAcceptedDispatchBinding(
+function validateCreatedDispatchBinding(
   context: RequestContext,
   request: ExecutionRequest,
   dispatch: DispatchAttempt,
@@ -169,7 +169,7 @@ function validateAcceptedDispatchBinding(
     dispatch.idempotency_key !== context.idempotency_key ||
     dispatch.request_correlation_id !== context.correlation_id
   ) {
-    return rejected(context, "INVALID_TRANSITION", "Dispatch must be an unconsumed CREATED attempt bound to this idempotency key and request correlation");
+    return rejected(context, "VALIDATION_ERROR", "Dispatch must be an unconsumed CREATED attempt bound to this idempotency key and request correlation");
   }
   return createOperationResult({
     status: "OK",
@@ -187,6 +187,13 @@ function validateSubmissionEnvelope(command: SubmitExecutionCommand): string | u
   }
   if (!isTimestamp(command.created_at)) {
     return "Execution creation timestamp must be a valid offset-aware timestamp";
+  }
+  if (
+    !isObjectRef(command.request.dispatch_ref) ||
+    command.request.dispatch_ref.object_kind !== "DISPATCH_ATTEMPT" ||
+    !sameScopeRef(command.request.dispatch_ref.scope_ref, command.context.scope_ref)
+  ) {
+    return "Execution submission requires an in-scope INV-04 dispatch reference";
   }
   if (
     !isObjectRef(command.execution_event_ref) ||
@@ -394,7 +401,7 @@ export async function submitExecution(
   if (dispatchResult.status !== "OK" || !dispatchResult.data) {
     return propagateFailure<ExecutionRecord>(dispatchResult);
   }
-  const dispatchValidation = validateAcceptedDispatchBinding(
+  const dispatchValidation = validateCreatedDispatchBinding(
     command.context,
     trustedRequest,
     dispatchResult.data,
