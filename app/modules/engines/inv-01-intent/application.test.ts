@@ -303,7 +303,6 @@ describe("INV-01 submitIntent application use case", () => {
     expect(result.status).toBe("REJECTED");
     expect(repo.create).not.toHaveBeenCalled();
   });
-}
 
   it("reads the persisted normalized Intent and Decision through their scoped owners", async () => {
     const { unitOfWork, repo } = makeUnitOfWork();
