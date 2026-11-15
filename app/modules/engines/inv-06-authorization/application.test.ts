@@ -237,6 +237,23 @@ describe("INV-06 authorization application boundary", () => {
     expect(harness.commitCalls[0].decision.reason_codes).toContain("ENFORCEMENT_CONDITIONS_UNSATISFIED");
   });
 
+  it("uses the repository's current approval row version, not the stable reference version", async () => {
+    const harness = makeDependencies();
+    vi.mocked(harness.sources.readApproval).mockResolvedValue(
+      createOperationResult({
+        status: "OK",
+        correlation_id: context.correlation_id,
+        data: approval,
+        object_version: "3",
+      }),
+    );
+    const request = authorizationRequest({ approval_ref: approval.approval_ref });
+    const result = await recheckAuthorizationAtActionBoundary(harness.deps, context, request);
+    expect(result.status).toBe("OK");
+    expect(approval.approval_ref.object_version).toBe("1");
+    expect(harness.commitCalls[0].command.approval_claim?.expected_version).toBe("3");
+  });
+
   it("does not claim a one-time approval when the resource version has changed", async () => {
     const harness = makeDependencies({ ...facts, current_resource_version: "2" });
     const request = authorizationRequest({ approval_ref: approval.approval_ref });
