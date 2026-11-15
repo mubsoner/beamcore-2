@@ -999,6 +999,7 @@ export function evaluateAuthorizationDecision(input: {
   evaluated_at: Timestamp;
   authority_fingerprint: string;
   approval_authority_verified?: boolean;
+  approval_authority?: ApprovalAuthoritySnapshot;
   idempotency_key?: string;
 }): OperationResult<AuthorizationDecision> {
   const correlation_id = input.context.correlation_id;
@@ -1108,7 +1109,8 @@ export function evaluateAuthorizationDecision(input: {
       } else if (!isApprovalForRequest(input.approval, request,
           policy.policy_release.policy_release_ref, input.evaluated_at, policy.approval_use_mode, input.idempotency_key)) {
         result = "DENY"; reasons.push("APPROVAL_INVALID_OR_MISMATCHED");
-      } else if (input.approval_authority_verified !== true) {
+      } else if (input.approval_authority_verified !== true ||
+          validateApprovalAuthoritySnapshot(input.approval_authority, request.scope_ref, input.evaluated_at).length > 0) {
         result = "DENY"; reasons.push("APPROVER_AUTHORITY_NOT_CURRENT");
       } else if (policy.independent_approver_required &&
           samePrincipal(input.approval.approver_ref!, input.approval.requested_by_ref)) {
