@@ -173,7 +173,7 @@ export async function requestApproval(
   const { createPendingApproval } = await import("./domain");
   const created = createPendingApproval(input);
   if (created.status !== "OK" || !created.data) return propagate(context, created);
-  const saved = await deps.repository.createApproval(context, created.data);
+  const saved = await deps.repository.createApprovalWithEvent(context, created.data);
   if (saved.status !== "OK" || !saved.data) return propagate(context, saved);
   return saved;
 }
