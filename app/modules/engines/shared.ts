@@ -223,7 +223,6 @@ export interface EventInboxPort {
     context: RequestContext,
     consumer_id: string,
     event: InboxEventEnvelope,
-    fingerprint: string,
   ): Promise<OperationResult<InboxAcceptance>>;
 }
 
