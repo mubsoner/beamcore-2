@@ -565,6 +565,9 @@ function validateExecutionSnapshot(
       !sameExactObjectRef(attempt.attempt_ref, expectedRef) ||
       !sameScopeRef(attempt.attempt_ref.scope_ref, context.scope_ref) ||
       !sameExactObjectRef(attempt.execution_ref, execution.execution_ref) ||
+      !sameExactObjectRef(attempt.runtime_profile_ref, execution.runtime_profile_ref) ||
+      attempt.runtime_profile_version !== execution.runtime_profile_version ||
+      !Number.isSafeInteger(attempt.state_version) || attempt.state_version < 1 ||
       !Number.isSafeInteger(attempt.attempt_number) ||
       attempt.attempt_number <= priorAttemptNumber ||
       seen.has(attempt.attempt_ref.object_id)
@@ -578,7 +581,7 @@ function validateExecutionSnapshot(
     status: "OK",
     correlation_id: context.correlation_id,
     data: { execution, attempts: [...attempts] },
-    object_version: String(execution.state_version),
+    ...(execution.state_version ? { object_version: String(execution.state_version) } : {}),
   });
 }
 
@@ -625,11 +628,14 @@ export async function readExecutionInvocationManifest(
     if (result.status !== "OK" || !result.data) return propagateFailure<ExecutionInvocationManifest>(result);
     const manifest = result.data;
     if (
+      !manifest || typeof manifest !== "object" ||
       !isObjectRef(manifest.execution_ref) ||
       !sameExactObjectRef(manifest.execution_ref, execution.execution_ref) ||
       manifest.request_digest !== execution.request_digest ||
+      !isObjectRef(manifest.capability_ref) ||
       !sameExactObjectRef(manifest.capability_ref, execution.capability_ref) ||
       manifest.capability_version !== execution.capability_version ||
+      !isObjectRef(manifest.runtime_profile_ref) ||
       !sameExactObjectRef(manifest.runtime_profile_ref, execution.runtime_profile_ref) ||
       manifest.runtime_profile_version !== execution.runtime_profile_version ||
       !Array.isArray(manifest.input_refs) || !Array.isArray(manifest.input_digests) ||
@@ -637,7 +643,19 @@ export async function readExecutionInvocationManifest(
       manifest.input_refs.some((ref) => !isObjectRef(ref) || !sameScopeRef(ref.scope_ref, context.scope_ref)) ||
       manifest.input_digests.some((digest) => !isVersion(digest)) ||
       !manifest.request || manifest.request.request_digest !== execution.request_digest ||
+      !isObjectRef(manifest.request.execution_ref) ||
       !sameExactObjectRef(manifest.request.execution_ref, execution.execution_ref) ||
+      !sameExactObjectRef(manifest.request.work_ref, execution.work_ref) ||
+      !sameExactObjectRef(manifest.request.orchestration_run_ref, execution.orchestration_run_ref) ||
+      !sameExactObjectRef(manifest.request.graph_revision_ref, execution.graph_revision_ref) ||
+      !sameExactObjectRef(manifest.request.graph_node_ref, execution.graph_node_ref) ||
+      !sameExactObjectRef(manifest.request.dispatch_ref, execution.dispatch_ref) ||
+      !sameExactObjectRef(manifest.request.capability_ref, execution.capability_ref) ||
+      !sameExactObjectRef(manifest.request.authorization_decision_ref, execution.authorization_decision_ref) ||
+      !isPrincipalRef(manifest.request.actor_ref) ||
+      manifest.request.actor_ref.principal_id !== execution.actor_ref.principal_id ||
+      manifest.request.actor_ref.principal_kind !== execution.actor_ref.principal_kind ||
+      manifest.request.idempotency_key !== execution.idempotency_key ||
       !manifest.request.runtime_profile ||
       !isObjectRef(manifest.request.runtime_profile.profile_ref) ||
       !sameExactObjectRef(manifest.request.runtime_profile.profile_ref, execution.runtime_profile_ref) ||
@@ -646,7 +664,8 @@ export async function readExecutionInvocationManifest(
       !Array.isArray(manifest.request.input_digests) ||
       manifest.request.input_refs.length !== manifest.input_refs.length ||
       manifest.request.input_digests.length !== manifest.input_digests.length ||
-      manifest.request.input_refs.some((ref, index) => !sameExactObjectRef(ref, manifest.input_refs[index])) ||
+      manifest.request.input_refs.some((ref, index) =>
+        !isObjectRef(ref) || !sameExactObjectRef(ref, manifest.input_refs[index])) ||
       manifest.request.input_digests.some((digest, index) => digest !== manifest.input_digests[index]) ||
       manifest.side_effect_class !== manifest.request.side_effect_class
     ) {
