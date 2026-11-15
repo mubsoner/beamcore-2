@@ -174,7 +174,21 @@ describe("INV-06 authorization domain", () => {
       state: "APPROVED", created_at: "2026-11-15T09:00:00Z",
       decided_at: "2026-11-15T09:01:00Z", expires_at: "2026-11-15T11:00:00Z",
     };
-    expect(validateApprovalUse(approval, request(), "2026-11-15T10:00:00Z", ref("POLICY_RELEASE", "policy-1")).length).toBeGreaterThan(0);
+    const currentRequest = request();
+    const policyRef = ref("POLICY_RELEASE", "policy-1");
+    expect(validateApprovalUse(approval, currentRequest, "2026-11-15T10:00:00Z", policyRef).length).toBeGreaterThan(0);
+    expect(validateApprovalUse({
+      ...approval, action: currentRequest.action, policy_release_ref: policyRef,
+    }, currentRequest, "2026-11-15T10:00:00Z", policyRef)).toContain("approval request identity does not match");
+    expect(validateApprovalUse({
+      ...approval, action: currentRequest.action, policy_release_ref: policyRef,
+      request_ref: ref("AUTHORIZATION_REQUEST", "auth-req-1"),
+      requested_by_ref: { principal_id: "other-user", principal_kind: "USER" },
+    }, currentRequest, "2026-11-15T10:00:00Z", policyRef)).toContain("approval requester does not match the requesting actor");
+    expect(validateApprovalUse({
+      ...approval, action: currentRequest.action, policy_release_ref: ref("POLICY_RELEASE", "old-policy"),
+      request_ref: ref("AUTHORIZATION_REQUEST", "auth-req-1"),
+    }, currentRequest, "2026-11-15T10:00:00Z", policyRef)).toContain("approval policy release does not match");
   });
   it("prevents delegation from exceeding grantor actions, resources, scope or expiry", () => {
     const delegationRequest: DelegationRequest = {
