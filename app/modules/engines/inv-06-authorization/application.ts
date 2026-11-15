@@ -520,6 +520,7 @@ export async function requestApproval(
       object_version: "1",
       scope_ref: context.scope_ref,
     },
+    request_binding_fingerprint: buildCanonicalRequestFingerprint(request),
     requested_by_ref: request.actor_ref,
     required_approver_constraints: constraints,
     action: request.action,
