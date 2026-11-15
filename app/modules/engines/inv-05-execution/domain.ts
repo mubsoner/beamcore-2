@@ -923,6 +923,80 @@ export function confirmExecutionAttemptStarted(
   return succeeded(context, { execution: updatedExecution, attempt: updatedAttempt }, String(updatedExecution.state_version));
 }
 
+/**
+ * Checks the persisted Execution projection against its immutable attempt
+ * lineage. This does not decide retries; a QUEUED Execution may retain prior
+ * terminal attempts when INV-04 has authorized a new dispatch.
+ */
+export function validateExecutionAttemptConsistency(
+  context: RequestContext,
+  execution: ExecutionRecord,
+  attempts: readonly ExecutionAttempt[],
+): OperationResult<void> {
+  if (!isRequestContext(context) || !execution ||
+      !sameScopeRef(execution.scope_ref, context.scope_ref) ||
+      !Array.isArray(execution.attempt_refs) || !Array.isArray(attempts)) {
+    return rejected(context, "VALIDATION_ERROR", "Execution and attempt lineage are required for consistency validation");
+  }
+  if (execution.attempt_refs.length !== attempts.length) {
+    return rejected(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Execution attempt references do not match the supplied attempt history");
+  }
+  for (let index = 0; index < attempts.length; index += 1) {
+    const attempt = attempts[index];
+    const expected = execution.attempt_refs[index];
+    if (
+      !attempt ||
+      !isObjectRef(expected) ||
+      !isObjectRef(attempt.attempt_ref) ||
+      !isObjectRef(attempt.execution_ref) ||
+      !sameObjectRef(attempt.attempt_ref, expected) ||
+      attempt.attempt_ref.object_version !== expected.object_version ||
+      !sameObjectRef(attempt.execution_ref, execution.execution_ref) ||
+      attempt.execution_ref.object_version !== execution.execution_ref.object_version ||
+      !sameScopeRef(attempt.attempt_ref.scope_ref, context.scope_ref) ||
+      !sameScopeRef(attempt.execution_ref.scope_ref, context.scope_ref) ||
+      !sameObjectRef(attempt.runtime_profile_ref, execution.runtime_profile_ref) ||
+      attempt.runtime_profile_ref.object_version !== execution.runtime_profile_ref.object_version ||
+      attempt.runtime_profile_version !== execution.runtime_profile_version
+    ) {
+      return rejected(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Attempt lineage contains a mismatched execution, profile, version or scope");
+    }
+  }
+
+  const latest = attempts[attempts.length - 1];
+  if (!latest) {
+    if (["STARTING", "RUNNING", "CANCELLATION_REQUESTED", "CANCELLING", "SUCCEEDED", "TIMED_OUT"].includes(execution.state) ||
+        (execution.state === "FAILED" && execution.started_at !== undefined)) {
+      return rejected(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Execution state claims a runtime attempt that is absent from its attempt history");
+    }
+    return createOperationResult({ status: "OK", correlation_id: context.correlation_id });
+  }
+
+  const requiredAttemptState: Partial<Record<ExecutionState, AttemptState>> = {
+    STARTING: "STARTING",
+    RUNNING: "RUNNING",
+    CANCELLATION_REQUESTED: "CANCELLATION_REQUESTED",
+    CANCELLING: "CANCELLING",
+    SUCCEEDED: "SUCCEEDED",
+    FAILED: "FAILED",
+    TIMED_OUT: "TIMED_OUT",
+    CANCELLED: "CANCELLED",
+    UNKNOWN: "UNKNOWN",
+  };
+  const required = requiredAttemptState[execution.state];
+  if (required && latest.state !== required) {
+    return rejected(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Execution state and latest runtime Attempt state disagree");
+  }
+  if (execution.state === "CREATED") {
+    return rejected(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "A CREATED Execution cannot already contain a runtime Attempt");
+  }
+  if (execution.state === "QUEUED" &&
+      !["FAILED", "TIMED_OUT", "CANCELLED", "SUCCEEDED"].includes(latest.state)) {
+    return rejected(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "A queued Execution cannot retain a non-terminal current Attempt");
+  }
+  return createOperationResult({ status: "OK", correlation_id: context.correlation_id });
+}
+
 export interface TransitionExecutionInput {
   expected_state_version: RevisionNumber;
   to_state: ExecutionState;
