@@ -249,17 +249,20 @@ describe("INV-06 authorization domain", () => {
     const requestRef = ref("AUTHORIZATION_REQUEST", "auth-req-1");
     const claimed = claimOneTimeApprovalRecord({
       approval, authorization_request_ref: requestRef,
-      expected_version: "1", idempotency_key: "claim-1", now: "2026-11-15T10:02:00Z",
+      current_version: "3", expected_version: "3",
+      idempotency_key: "claim-1", now: "2026-11-15T10:02:00Z",
     });
     expect(claimed.data?.state).toBe("CONSUMED");
     expect(claimed.data?.consumed_by_request_ref).toEqual(requestRef);
     expect(claimOneTimeApprovalRecord({
       approval: claimed.data!, authorization_request_ref: requestRef,
-      expected_version: "1", idempotency_key: "claim-2", now: "2026-11-15T10:03:00Z",
+      current_version: "4", expected_version: "3",
+      idempotency_key: "claim-2", now: "2026-11-15T10:03:00Z",
     }).status).toBe("REJECTED");
     expect(claimOneTimeApprovalRecord({
       approval, authorization_request_ref: ref("AUTHORIZATION_REQUEST", "different"),
-      expected_version: "1", idempotency_key: "claim-3", now: "2026-11-15T10:03:00Z",
+      current_version: "3", expected_version: "3",
+      idempotency_key: "claim-3", now: "2026-11-15T10:03:00Z",
     }).status).toBe("REJECTED");
   });
   it("rejects approvals with a different action, target, environment, tenant or expiry", () => {
