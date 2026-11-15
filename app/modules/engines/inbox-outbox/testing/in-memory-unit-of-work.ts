@@ -13,6 +13,7 @@ import {
   type Version,
   type VersionedRepository,
 } from "../../shared";
+import { sameScopeRef } from "../../shared";
 import {
   cloneInMemoryInboxState,
   createInMemoryEventInbox,
@@ -82,13 +83,21 @@ function scopeKey(context: RequestContext): string {
   return JSON.stringify(visit(context.scope_ref));
 }
 
+function refScopeKey(ref: ObjectRef): string {
+  const visit = (scope: ObjectRef["scope_ref"]): unknown => [
+    scope.scope_kind,
+    scope.scope_id,
+    scope.parent_scope_ref ? visit(scope.parent_scope_ref) : null,
+  ];
+  return JSON.stringify(visit(ref.scope_ref));
+}
+
 function refKey(ref: ObjectRef): string {
-  return JSON.stringify([
-    ref.object_kind,
-    ref.object_id,
-    ref.scope_ref.scope_kind,
-    ref.scope_ref.scope_id,
-  ]);
+  return JSON.stringify([ref.object_kind, ref.object_id, refScopeKey(ref)]);
+}
+
+function isRefInContext(context: RequestContext, ref: ObjectRef): boolean {
+  return sameScopeRef(context.scope_ref, ref.scope_ref);
 }
 
 function result<T>(
@@ -96,8 +105,15 @@ function result<T>(
   status: OperationResult<T>["status"],
   data?: T,
   errors: OperationResult<T>["errors"] = [],
+  object_version?: Version,
 ): OperationResult<T> {
-  return createOperationResult({ status, correlation_id: context.correlation_id, data, errors });
+  return createOperationResult({
+    status,
+    correlation_id: context.correlation_id,
+    data,
+    errors,
+    ...(object_version === undefined ? {} : { object_version }),
+  });
 }
 
 /**
@@ -132,16 +148,26 @@ export function createInMemoryEngineUnitOfWork(): EngineUnitOfWorkPort & {
         const transaction: EngineTransaction = {
           repository: <V>(name: string): VersionedRepository<V> => ({
             get: async (ctx, ref) => {
+              if (!isRefInContext(ctx, ref)) {
+                return result<V>(ctx, "REJECTED", undefined, [
+                  createOperationError("NOT_FOUND_OR_NOT_VISIBLE", "Record was not found"),
+                ]);
+              }
               const record = staged.repositories.get(name)?.get(
                 JSON.stringify([scopeKey(ctx), refKey(ref)]),
               );
               return record
-                ? result(ctx, "OK", structuredClone(record.value as V))
+                ? result(ctx, "OK", structuredClone(record.value as V), [], record.version)
                 : result<V>(ctx, "REJECTED", undefined, [
                     createOperationError("NOT_FOUND_OR_NOT_VISIBLE", "Record was not found"),
                   ]);
             },
             create: async (ctx, ref, value) => {
+              if (!isRefInContext(ctx, ref)) {
+                return result<V>(ctx, "REJECTED", undefined, [
+                  createOperationError("NOT_FOUND_OR_NOT_VISIBLE", "Record was not found"),
+                ]);
+              }
               const key = JSON.stringify([scopeKey(ctx), refKey(ref)]);
               const records = staged.repositories.get(name) ?? new Map();
               if (records.has(key)) {
@@ -151,9 +177,14 @@ export function createInMemoryEngineUnitOfWork(): EngineUnitOfWorkPort & {
               }
               records.set(key, { version: "1", value: structuredClone(value) });
               staged.repositories.set(name, records);
-              return result(ctx, "OK", structuredClone(value));
+              return result(ctx, "OK", structuredClone(value), [], "1");
             },
             update: async (ctx, ref, expectedVersion, value) => {
+              if (!isRefInContext(ctx, ref)) {
+                return result<V>(ctx, "REJECTED", undefined, [
+                  createOperationError("NOT_FOUND_OR_NOT_VISIBLE", "Record was not found"),
+                ]);
+              }
               const key = JSON.stringify([scopeKey(ctx), refKey(ref)]);
               const records = staged.repositories.get(name) ?? new Map();
               const current = records.get(key);
@@ -168,9 +199,10 @@ export function createInMemoryEngineUnitOfWork(): EngineUnitOfWorkPort & {
                   createOperationError("VERSION_CONFLICT", "Reference adapter requires a safe integer version token"),
                 ]);
               }
-              records.set(key, { version: String(next + 1), value: structuredClone(value) });
+              const nextVersion = String(next + 1);
+              records.set(key, { version: nextVersion, value: structuredClone(value) });
               staged.repositories.set(name, records);
-              return result(ctx, "OK", structuredClone(value));
+              return result(ctx, "OK", structuredClone(value), [], nextVersion);
             },
           }),
           appendOnly: <V>(name: string): AppendOnlyRepository<V> => ({
