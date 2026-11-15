@@ -325,8 +325,20 @@ export interface PolicyEvaluationAudit {
   request_ref: ObjectRef;
   decision_ref: ObjectRef;
   actor_ref: PrincipalRef;
+  service_identity_ref?: PrincipalRef;
+  action: string;
   target_ref: ObjectRef;
+  resource_version?: Version;
+  environment_ref: ObjectRef;
   scope_ref: ScopeRef;
+  work_ref?: ObjectRef;
+  plan_revision_ref?: ObjectRef;
+  graph_revision_ref?: ObjectRef;
+  execution_ref?: ObjectRef;
+  capability_ref?: ObjectRef;
+  delegation_ref?: ObjectRef;
+  approval_refs: ObjectRef[];
+  risk_assessment_ref?: ObjectRef;
   policy_release_ref?: ObjectRef;
   authority_fingerprint: string;
   reason_codes: string[];
@@ -881,6 +893,15 @@ export function evaluateAuthorizationDecision(input: {
       (!principal.service_identity_ref ||
         !samePrincipal(request.service_identity_ref, principal.service_identity_ref))) {
     result = "DENY"; reasons.push("SERVICE_IDENTITY_NOT_VERIFIED");
+  } else if (request.service_identity_ref &&
+      !samePrincipal(request.service_identity_ref, request.actor_ref) &&
+      !request.delegation_ref) {
+    result = "DENY"; reasons.push("SERVICE_DELEGATION_REQUIRED");
+  } else if (request.delegation_ref &&
+      (!principal.delegation_refs.some(ref => isExactObjectRef(ref, request.delegation_ref!)) ||
+       !facts.verified_delegation_ref ||
+       !isExactObjectRef(facts.verified_delegation_ref, request.delegation_ref))) {
+    result = "DENY"; reasons.push("DELEGATION_REFERENCE_NOT_VERIFIED");
   } else if (principal.authentication_state === "UNAUTHENTICATED" ||
       principal.authentication_state === "REVOKED") {
     result = "DENY"; reasons.push("AUTHENTICATION_NOT_VALID");
@@ -1025,7 +1046,7 @@ const SAFE_PUBLIC_REASON_CODES = new Set([
   "CURRENT_POLICY_UNAVAILABLE", "RISK_ASSESSMENT_REQUIRED", "SCOPED_TRUST_ASSESSMENT_REQUIRED",
   "SCOPED_APPROVAL_REQUIRED", "APPROVAL_INVALID_OR_MISMATCHED", "APPROVER_AUTHORITY_NOT_CURRENT",
   "INDEPENDENT_APPROVER_REQUIRED", "DELEGATION_NOT_VALIDATED", "RESOURCE_VERSION_STALE",
-  "DELEGATION_REFERENCE_NOT_VERIFIED", "SERVICE_IDENTITY_NOT_VERIFIED",
+  "DELEGATION_REFERENCE_NOT_VERIFIED", "SERVICE_IDENTITY_NOT_VERIFIED", "SERVICE_DELEGATION_REQUIRED",
 ]);
 
 export function createSafeDecisionExplanation(
