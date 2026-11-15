@@ -501,8 +501,9 @@ export function validateAuthorizationRequest(
   } else {
     if (request.risk_context.assessment_state === "ASSESSED" &&
       (!isTimestamp(request.risk_context.assessed_at) ||
-       (request.risk_context.valid_until !== undefined && !isTimestamp(request.risk_context.valid_until)))) {
-      issues.push("assessed risk context must include valid assessment timestamps");
+       !isTimestamp(request.risk_context.valid_until) ||
+       Date.parse(request.risk_context.valid_until) <= Date.parse(request.risk_context.assessed_at))) {
+      issues.push("assessed risk context must include a bounded, ordered assessment validity window");
     }
   }
   if (request.action_arguments_digest !== undefined &&
@@ -989,8 +990,10 @@ export function evaluateAuthorizationDecision(input: {
     result = "INDETERMINATE"; reasons.push("AUTHORITY_FACTS_EXPIRED");
   } else if (request.risk_context.assessment_state === "INDETERMINATE" ||
       (request.risk_context.assessment_state === "ASSESSED" &&
-       request.risk_context.valid_until !== undefined &&
-       Date.parse(request.risk_context.valid_until) <= Date.parse(input.evaluated_at))) {
+       (!isTimestamp(request.risk_context.assessed_at) ||
+        Date.parse(request.risk_context.assessed_at) > Date.parse(input.evaluated_at) ||
+        !isTimestamp(request.risk_context.valid_until) ||
+        Date.parse(request.risk_context.valid_until) <= Date.parse(input.evaluated_at)))) {
     result = "INDETERMINATE"; reasons.push("RISK_CONTEXT_NOT_CURRENT");
   } else if (!policy || !policy.policy_release ||
       !["RELEASED", "MONITORING"].includes(policy.policy_release.state) ||
