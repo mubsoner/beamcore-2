@@ -17,6 +17,7 @@ import {
   validateDelegationRequest,
   validateDelegationLineage,
   validateAuthorizationRequest,
+  validatePrincipalContext,
   validateAuthorityFacts,
   validatePolicyEvaluation,
   type ApprovalRecord,
@@ -159,6 +160,22 @@ describe("INV-06 authorization domain", () => {
     });
     expect(membershipChanged).not.toBe(a);
   });
+  it("rejects principal membership, role, session and provenance references outside the authenticated scope", () => {
+    const otherScope: ScopeRef = { scope_id: "tenant-elsewhere", scope_kind: "ORGANIZATION" };
+    expect(validatePrincipalContext(context, principal({
+      role_binding_refs: [ref("ROLE_BINDING", "foreign-role", otherScope)],
+    }), "2026-11-15T10:00:00Z").length).toBeGreaterThan(0);
+    expect(validatePrincipalContext(context, principal({
+      session_ref: ref("SESSION", "foreign-session", otherScope),
+    }), "2026-11-15T10:00:00Z").length).toBeGreaterThan(0);
+    expect(validatePrincipalContext(context, principal({
+      authority_source_refs: [{
+        source_kind: "membership", object_ref: ref("MEMBERSHIP", "foreign-membership", otherScope),
+        source_version: "1", observed_at: "2026-11-15T09:59:30Z",
+      }],
+    }), "2026-11-15T10:00:00Z").length).toBeGreaterThan(0);
+  });
+
   it("rejects actor spoofing and mismatched scope before evaluation", () => {
     expect(validateAuthorizationRequest(context, request({
       actor_ref: { principal_id: "attacker", principal_kind: "USER" },
@@ -475,6 +492,12 @@ describe("INV-06 authorization domain", () => {
     expect(validateDelegationLineage({
       ...child, allowed_actions: ["artifact.delete"],
     }, [parent, root], "2026-11-15T10:05:00Z")).toContain("child delegation exceeds an ancestor's effective authority");
+    expect(validateDelegationLineage({
+      ...child, limits: [],
+    }, [parent, root], "2026-11-15T10:05:00Z")).toContain("child delegation exceeds an ancestor's effective authority");
+    expect(validateDelegationLineage({
+      ...child, conditions: [],
+    }, [parent, root], "2026-11-15T10:05:00Z")).toContain("child delegation weakens or changes an ancestor condition");
   });
 
   it("requires child delegation to inherit grantor limits and must-hold conditions", () => {
