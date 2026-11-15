@@ -4,7 +4,6 @@ import {
   isObjectRef,
   isRequestContext,
   isTimestamp,
-  isVersion,
   sameObjectRef,
   sameScopeRef,
   type ClockPort,
@@ -101,6 +100,10 @@ function propagateFailure<T>(source: OperationResult<unknown>): OperationResult<
 }
 
 function validateSubmissionEnvelope(command: SubmitExecutionCommand): string | undefined {
+  if (!command || typeof command !== "object" || !command.request || typeof command.request !== "object" ||
+      !isObjectRef(command.request.execution_ref)) {
+    return "Execution submission requires a complete request envelope";
+  }
   if (!isRequestContext(command.context) || !command.context.idempotency_key?.trim()) {
     return "Execution submission requires a valid authenticated request context and idempotency key";
   }
@@ -113,9 +116,6 @@ function validateSubmissionEnvelope(command: SubmitExecutionCommand): string | u
     !sameScopeRef(command.execution_event_ref.scope_ref, command.context.scope_ref)
   ) {
     return "Execution submission requires an in-scope DOMAIN_EVENT reference";
-  }
-  if (command.execution_event_ref.object_id !== command.request.execution_ref.object_id) {
-    return "The accepted event identity must be distinct from the Execution identity";
   }
   return undefined;
 }
@@ -132,7 +132,8 @@ export function validateExecutionAdmission(
   now: Timestamp,
 ): OperationResult<void> {
   if (!isRequestContext(context) || !isTimestamp(now) || !snapshot ||
-      !isTimestamp(snapshot.checked_at)) {
+      typeof snapshot !== "object" || !snapshot.authorization || !snapshot.capability ||
+      !snapshot.resource || !snapshot.environment || !isTimestamp(snapshot.checked_at)) {
     return rejected(context, "VALIDATION_ERROR", "A valid context, clock value and admission snapshot are required");
   }
   if (Date.parse(snapshot.checked_at) > Date.parse(now)) {
@@ -279,7 +280,7 @@ export async function submitExecution(
   } catch {
     return rejected(command.context, "DEPENDENCY_UNAVAILABLE", "Current admission evidence could not be read");
   }
-  if (admission.status !== "OK" || !admission.data) return propagateFailure<ExecutionAdmissionSnapshot>(admission);
+  if (admission.status !== "OK" || !admission.data) return propagateFailure<ExecutionRecord>(admission);
 
   const admissionValidation = validateExecutionAdmission(
     command.context,
