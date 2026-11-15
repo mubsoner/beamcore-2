@@ -304,6 +304,50 @@ describe("INV-06 authorization domain", () => {
     }, request({ ...currentRequest, risk_context: { ...currentRequest.risk_context, impact_dimensions: ["changed-impact"] } }),
     "2026-11-15T10:00:00Z", policyRef)).toContain("approval is bound to a different canonical request payload");
   });
+  it("permits reusable approval across equivalent requests within the same scope only", () => {
+    const original = request({
+      authorization_request_id: "auth-req-original",
+      requested_at: "2026-11-15T10:00:00Z",
+      approval_ref: undefined,
+    });
+    const approvalRef = ref("APPROVAL", "reusable-approval");
+    const reusable: ApprovalRecord = {
+      approval_id: "reusable-approval",
+      approval_ref: approvalRef,
+      request_ref: ref("AUTHORIZATION_REQUEST", "auth-req-original"),
+      request_binding_fingerprint: buildApprovalBindingFingerprint(original, "REUSABLE_WITHIN_SCOPE"),
+      requested_by_ref: context.actor_ref,
+      required_approver_constraints: [],
+      approver_ref: { principal_id: "admin-1", principal_kind: "USER" },
+      action: original.action,
+      resource_ref: original.resource_ref,
+      scope_ref: original.scope_ref,
+      environment_ref: original.environment_ref,
+      context_version_refs: [],
+      policy_release_ref: { ...ref("POLICY_RELEASE", "policy-1"), object_version: "7" },
+      approval_use_mode: "REUSABLE_WITHIN_SCOPE",
+      state: "APPROVED",
+      created_at: "2026-11-15T09:50:00Z",
+      decided_at: "2026-11-15T09:55:00Z",
+      expires_at: "2026-11-15T10:10:00Z",
+    };
+    const equivalent = request({
+      authorization_request_id: "auth-req-next",
+      requested_at: "2026-11-15T10:02:00Z",
+      approval_ref: approvalRef,
+    });
+    expect(validateApprovalUse(reusable, equivalent, "2026-11-15T10:03:00Z", reusable.policy_release_ref!)).toEqual([]);
+
+    const otherResource = request({
+      authorization_request_id: "auth-req-next",
+      requested_at: "2026-11-15T10:02:00Z",
+      approval_ref: approvalRef,
+      resource_ref: ref("ARTIFACT", "artifact-other"),
+    });
+    expect(validateApprovalUse(reusable, otherResource, "2026-11-15T10:03:00Z", reusable.policy_release_ref!))
+      .toContain("approval is bound to a different canonical request payload");
+  });
+
   it("prevents delegation from exceeding grantor actions, resources, scope or expiry", () => {
     const delegationRequest: DelegationRequest = {
       delegation_ref: ref("DELEGATION", "delegation-1"),
