@@ -1,4 +1,5 @@
 import {
+  createOperationError,
   createOperationResult,
   isObjectRef,
   isRequestContext,
@@ -7,6 +8,7 @@ import {
   sameObjectRef,
   sameScopeRef,
   type ObjectRef,
+  type OperationErrorCode,
   type OperationResult,
   type RequestContext,
   type Timestamp,
@@ -256,13 +258,13 @@ function sameExactObjectRef(a: ObjectRef, b: ObjectRef): boolean {
 
 function rejectStartReceipt(
   context: RequestContext,
-  code: "VALIDATION_ERROR" | "FORBIDDEN" | "POLICY_DENIED" | "INTEGRITY_OR_UNTRUSTED_INPUT",
+  code: OperationErrorCode,
   message: string,
 ): OperationResult<void> {
   return createOperationResult({
     status: "REJECTED",
     correlation_id: context?.correlation_id ?? "unknown",
-    errors: [{ code, safe_message: message, retryable: false }],
+    errors: [createOperationError(code, message, false)],
   });
 }
 
