@@ -241,7 +241,8 @@ export interface EngineTransaction {
   repository<T>(key: string): VersionedRepository<T>;
   appendOnly<T>(key: string): AppendOnlyRepository<T>;
   idempotency: IdempotencyPort;
-  inbox: EventInboxPort;
+  /** Present on transactions that consume external/domain events. */
+  inbox?: EventInboxPort;
   outbox: EventOutboxPort;
 }
 
