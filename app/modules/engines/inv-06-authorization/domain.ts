@@ -1577,6 +1577,7 @@ export function validateDelegationLineage(
         request.resource_constraints.some(resource =>
           !current.resource_constraints.some(allowed => isExactObjectRef(allowed, resource))) ||
         request.limits.some(limit => !current.limits.includes(limit)) ||
+        current.limits.some(limit => !request.limits.includes(limit)) ||
         Date.parse(request.not_before) < Date.parse(current.not_before) ||
         Date.parse(request.expires_at) > Date.parse(current.expires_at)) {
       issues.push("child delegation exceeds an ancestor's effective authority");
@@ -1585,7 +1586,12 @@ export function validateDelegationLineage(
       parentCondition.condition_id === condition.condition_id &&
       parentCondition.condition_kind === condition.condition_kind &&
       parentCondition.must_hold_at_enforcement === condition.must_hold_at_enforcement &&
-      JSON.stringify(parentCondition.parameters_ref ?? null) === JSON.stringify(condition.parameters_ref ?? null)))) {
+      JSON.stringify(parentCondition.parameters_ref ?? null) === JSON.stringify(condition.parameters_ref ?? null))) ||
+      current.conditions.some(parentCondition => !request.conditions.some(condition =>
+        condition.condition_id === parentCondition.condition_id &&
+        condition.condition_kind === parentCondition.condition_kind &&
+        condition.must_hold_at_enforcement === parentCondition.must_hold_at_enforcement &&
+        JSON.stringify(condition.parameters_ref ?? null) === JSON.stringify(parentCondition.parameters_ref ?? null)))) {
       issues.push("child delegation weakens or changes an ancestor condition");
     }
     const next = ancestry[i + 1];
