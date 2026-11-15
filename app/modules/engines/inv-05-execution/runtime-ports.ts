@@ -261,7 +261,7 @@ function rejectStartReceipt(
 ): OperationResult<void> {
   return createOperationResult({
     status: "REJECTED",
-    correlation_id: context.correlation_id,
+    correlation_id: context?.correlation_id ?? "unknown",
     errors: [{ code, safe_message: message, retryable: false }],
   });
 }
@@ -280,8 +280,10 @@ export function validateRuntimeStartReceipt(
   receipt: RuntimeStartReceipt,
   now: Timestamp,
 ): OperationResult<void> {
-  if (!isRequestContext(context) || !isTimestamp(now) || !receipt ||
-      !isTimestamp(receipt.started_at) || !Array.isArray(invocation?.inputs)) {
+  if (!isRequestContext(context) || !isTimestamp(now) || !execution || !attempt ||
+      !profile || !receipt || !invocation ||
+      !isTimestamp(receipt.started_at) || !Array.isArray(invocation.inputs) ||
+      !Array.isArray(execution.attempt_refs)) {
     return rejectStartReceipt(context, "VALIDATION_ERROR", "Runtime start receipt or invocation inputs are incomplete or invalid");
   }
   const profileCheck = validateRuntimeProfile(context, profile);
@@ -291,6 +293,10 @@ export function validateRuntimeStartReceipt(
   if (
     execution.state !== "STARTING" ||
     attempt.state !== "STARTING" ||
+    !isObjectRef(execution.execution_ref) ||
+    !isObjectRef(attempt.attempt_ref) ||
+    !isObjectRef(attempt.execution_ref) ||
+    !isTimestamp(execution.created_at) ||
     !sameScopeRef(execution.scope_ref, context.scope_ref) ||
     !sameObjectRef(attempt.execution_ref, execution.execution_ref) ||
     !sameExactObjectRef(attempt.runtime_profile_ref, execution.runtime_profile_ref) ||
@@ -315,7 +321,9 @@ export function validateRuntimeStartReceipt(
   ];
   if (
     expectedBindings.some(([provided, authoritative]) =>
-      !isObjectRef(provided) || !sameExactObjectRef(provided, authoritative)) ||
+      !isObjectRef(provided) ||
+      !isObjectRef(authoritative) ||
+      !sameExactObjectRef(provided, authoritative)) ||
     invocation.capability_version !== execution.capability_version ||
     invocation.runtime_profile_version !== execution.runtime_profile_version ||
     invocation.runtime_profile_version !== profile.profile_version ||
@@ -336,6 +344,10 @@ export function validateRuntimeStartReceipt(
     return rejectStartReceipt(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Runtime start receipt does not bind the exact admitted invocation, profile and runtime identity");
   }
 
+  if (invocation.inputs.some((input) =>
+      !input || !isObjectRef(input.input_ref) || !isVersion(input.input_digest))) {
+    return rejectStartReceipt(context, "VALIDATION_ERROR", "Runtime invocation contains an invalid input reference or digest");
+  }
   const allRefs = [
     receipt.runtime_instance_ref,
     receipt.runtime_identity_ref,
