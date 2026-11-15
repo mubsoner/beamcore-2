@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyOutcomeAcceptanceReceipt,
   canSelectRoute,
+  createClarificationRequest,
   createOutcomeProposal,
   createRouteProposal,
   createDecisionRecord,
@@ -231,4 +232,46 @@ describe("INV-01 intent domain", () => {
     expect(applied.value.state).toBe("ACCEPTED_BY_WORK");
     expect(applied.value.acceptance_receipt_ref).toEqual(ref("OUTCOME_ACCEPTANCE_RECEIPT", "receipt-1"));
   });
+  it("creates a clarification request pinned to the exact awaiting Intent revision", () => {
+    const input = baseInput();
+    input.ambiguity_items = [{
+      ambiguity_id: "amb-clarify",
+      description: "Which deployment target?",
+      plausible_interpretations: ["Vercel", "Other"],
+      materiality: "MATERIAL",
+      clarification_required: true,
+    }];
+    const intent = normalizeIntent(input);
+    expect(intent.ok).toBe(true);
+    if (!intent.ok) return;
+    const result = createClarificationRequest({
+      clarification_ref: ref("CLARIFICATION_REQUEST", "clarification-1"),
+      intent: intent.value,
+      question: "Which deployment target should be used?",
+      decision_impact: "The target changes deployment and security requirements.",
+      required_field_ids: ["deployment_target"],
+      created_at: "2026-11-13T03:00:02Z",
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.intent_ref).toEqual(intent.value.intent_ref);
+      expect(result.value.state).toBe("OPEN");
+    }
+  });
+
+  it("rejects a clarification request for a non-awaiting or out-of-scope Intent", () => {
+    const intent = normalizeIntent(baseInput());
+    expect(intent.ok).toBe(true);
+    if (!intent.ok) return;
+    const result = createClarificationRequest({
+      clarification_ref: ref("CLARIFICATION_REQUEST", "clarification-2"),
+      intent: intent.value,
+      question: "Which target?",
+      decision_impact: "It changes the result.",
+      required_field_ids: ["target"],
+      created_at: "2026-11-13T03:00:02Z",
+    });
+    expect(result.ok).toBe(false);
+  });
+
 });

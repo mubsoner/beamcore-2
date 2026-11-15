@@ -626,3 +626,47 @@ export function canSelectRoute(
   }
   return ok(undefined);
 }
+
+
+/** Creates a clarification request bound to the exact normalized Intent revision. */
+export function createClarificationRequest(input: {
+  clarification_ref: ObjectRef;
+  intent: NormalizedIntent;
+  question: string;
+  decision_impact: string;
+  required_field_ids: string[];
+  created_at: Timestamp;
+  expires_at?: Timestamp;
+}): DomainResult<ClarificationRequest> {
+  const { clarification_ref, intent } = input;
+  if (!isObjectRef(clarification_ref) ||
+      clarification_ref.object_kind !== "CLARIFICATION_REQUEST" ||
+      clarification_ref.scope_ref.scope_id !== intent.intent_ref.scope_ref.scope_id ||
+      clarification_ref.scope_ref.scope_kind !== intent.intent_ref.scope_ref.scope_kind ||
+      !isObjectRef(intent.intent_ref) ||
+      intent.lifecycle_state !== "AWAITING_CLARIFICATION") {
+    return fail("VALIDATION_ERROR", "Clarification must reference an awaiting Intent in the same scope");
+  }
+  if (!input.question.trim() || !input.decision_impact.trim() ||
+      !Array.isArray(input.required_field_ids) ||
+      input.required_field_ids.length === 0 ||
+      input.required_field_ids.some((id) => typeof id !== "string" || !id.trim()) ||
+      new Set(input.required_field_ids).size !== input.required_field_ids.length) {
+    return fail("VALIDATION_ERROR", "Clarification question, decision impact and unique required fields are required");
+  }
+  if (!isTimestamp(input.created_at) ||
+      (input.expires_at !== undefined &&
+       (!isTimestamp(input.expires_at) || Date.parse(input.expires_at) <= Date.parse(input.created_at)))) {
+    return fail("VALIDATION_ERROR", "Clarification timestamps are invalid or expiry is not after creation");
+  }
+  return ok({
+    clarification_ref,
+    intent_ref: intent.intent_ref,
+    question: input.question.trim(),
+    decision_impact: input.decision_impact.trim(),
+    required_field_ids: [...input.required_field_ids],
+    state: "OPEN",
+    created_at: input.created_at,
+    ...(input.expires_at ? { expires_at: input.expires_at } : {}),
+  });
+}
