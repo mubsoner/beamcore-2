@@ -241,7 +241,7 @@ export function createInMemoryEngineUnitOfWork(): EngineUnitOfWorkPort & {
             },
           }),
           idempotency: {
-            get: async <V>(ctx, key: string) => {
+            get: async <V>(ctx: RequestContext, key: string) => {
               const record = staged.idempotency.get(JSON.stringify([scopeKey(ctx), key]));
               return result<IdempotencyRecord<V> | null>(
                 ctx,
@@ -249,7 +249,7 @@ export function createInMemoryEngineUnitOfWork(): EngineUnitOfWorkPort & {
                 record ? structuredClone(record as IdempotencyRecord<V>) : null,
               );
             },
-            record: async <V>(ctx, record: IdempotencyRecord<V>) => {
+            record: async <V>(ctx: RequestContext, record: IdempotencyRecord<V>) => {
               const key = JSON.stringify([scopeKey(ctx), record.idempotency_key]);
               const prior = staged.idempotency.get(key);
               if (prior && prior.request_fingerprint !== record.request_fingerprint) {
@@ -267,7 +267,7 @@ export function createInMemoryEngineUnitOfWork(): EngineUnitOfWorkPort & {
             append: async (ctx, event) => {
               const key = JSON.stringify([scopeKey(ctx), event.event_id]);
               if (staged.outbox.has(key)) {
-                return result(ctx, "REJECTED", undefined, [
+                return result<{ event_id: string }>(ctx, "REJECTED", undefined, [
                   createOperationError("EVENT_ID_REUSED_WITH_DIFFERENT_PAYLOAD", "Outbox event_id already exists"),
                 ]);
               }
