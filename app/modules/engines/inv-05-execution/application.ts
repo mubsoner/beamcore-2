@@ -19,6 +19,7 @@ import {
 import {
   createExecutionEvent,
   createExecutionRecord,
+  validateExecutionAttemptConsistency,
   validateExecutionRequest,
   type ExecutionRecord,
   type ExecutionAttempt,
@@ -610,6 +611,8 @@ function validateExecutionSnapshot(
     priorAttemptNumber = attempt.attempt_number;
     seen.add(attempt.attempt_ref.object_id);
   }
+  const consistency = validateExecutionAttemptConsistency(context, execution, attempts);
+  if (consistency.status !== "OK") return propagateFailure<ExecutionSnapshot>(consistency);
   return createOperationResult({
     status: "OK",
     correlation_id: context.correlation_id,
