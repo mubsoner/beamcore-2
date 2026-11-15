@@ -230,6 +230,7 @@ export interface PolicyEvaluation {
   valid_until?: Timestamp;
   approval_required: boolean;
   approval_use_mode?: ApprovalUseMode;
+  approval_expires_at?: Timestamp;
   independent_approver_required: boolean;
   risk_assessment_required: boolean;
   trust_required: boolean;
@@ -570,6 +571,11 @@ export function validatePolicyEvaluation(
       policy.approval_use_mode !== "REUSABLE_WITHIN_SCOPE") {
     issues.push("approval-required policy must explicitly declare an approval use mode");
   }
+  if (policy.approval_required &&
+      (!isTimestamp(policy.approval_expires_at) ||
+        Date.parse(policy.approval_expires_at) <= Date.parse(request.requested_at))) {
+    issues.push("approval-required policy must provide a future policy-derived approval expiry");
+  }
   if (policy.constrained_resource_ref &&
       (!isObjectRef(policy.constrained_resource_ref) ||
         !sameScopeRef(policy.constrained_resource_ref.scope_ref, request.scope_ref))) {
@@ -723,11 +729,14 @@ export function evaluateAuthorizationDecision(input: {
   audit_ref: ObjectRef;
   evaluated_at: Timestamp;
   authority_fingerprint: string;
+  approval_authority_verified?: boolean;
 }): OperationResult<AuthorizationDecision> {
   const correlation_id = input.context.correlation_id;
   const requestIssues = validateAuthorizationRequest(input.context, input.request);
   const principalIssues = validatePrincipalContext(input.context, input.principal, input.evaluated_at);
-  if (requestIssues.length || principalIssues.length ||
+  const authorityIssues = validateAuthorityFacts(input.facts, input.request, input.evaluated_at);
+  const policyIssues = validatePolicyEvaluation(input.policy, input.request);
+  if (requestIssues.length || principalIssues.length || authorityIssues.length || policyIssues.length ||
     !isObjectRef(input.decision_ref) || input.decision_ref.object_kind !== "AUTHORIZATION_DECISION" ||
     !sameScopeRef(input.decision_ref.scope_ref, input.context.scope_ref) ||
     !isObjectRef(input.request_ref) || input.request_ref.object_kind !== "AUTHORIZATION_REQUEST" ||
@@ -759,6 +768,12 @@ export function evaluateAuthorizationDecision(input: {
   } else if (!sameScopeRef(facts.verified_resource_scope_ref, request.resource_ref.scope_ref) ||
       !sameScopeRef(facts.verified_resource_scope_ref, request.scope_ref)) {
     result = "DENY"; reasons.push("SCOPE_MISMATCH");
+  } else if (request.expected_resource_version !== undefined &&
+      facts.current_resource_version !== request.expected_resource_version) {
+    result = "INDETERMINATE"; reasons.push("RESOURCE_VERSION_STALE");
+  } else if (request.delegation_ref &&
+      (!facts.verified_delegation_ref || !isExactObjectRef(facts.verified_delegation_ref, request.delegation_ref))) {
+    result = "DENY"; reasons.push("DELEGATION_REFERENCE_NOT_VERIFIED");
   } else if (facts.membership_state === "SUSPENDED" || facts.membership_state === "REVOKED" ||
       facts.entitlement_state === "INELIGIBLE" || facts.permission_state === "NOT_GRANTED" ||
       facts.delegation_state === "INVALID" || facts.external_authorization_state === "DENIED" ||
@@ -801,11 +816,16 @@ export function evaluateAuthorizationDecision(input: {
       result = "INDETERMINATE"; reasons.push("SCOPED_TRUST_ASSESSMENT_REQUIRED");
     }
     if (policy.approval_required) {
-      if (!input.approval) {
+      if (!input.approval || input.approval.state === "PENDING") {
         result = "REQUIRE_APPROVAL"; reasons.push("SCOPED_APPROVAL_REQUIRED");
       } else if (!isApprovalForRequest(input.approval, request,
           policy.policy_release.policy_release_ref, input.evaluated_at, policy.approval_use_mode)) {
         result = "DENY"; reasons.push("APPROVAL_INVALID_OR_MISMATCHED");
+      } else if (input.approval_authority_verified !== true) {
+        result = "DENY"; reasons.push("APPROVER_AUTHORITY_NOT_CURRENT");
+      } else if (policy.independent_approver_required &&
+          samePrincipal(input.approval.approver_ref!, input.approval.requested_by_ref)) {
+        result = "DENY"; reasons.push("INDEPENDENT_APPROVER_REQUIRED");
       }
     }
     if (policy.effect === "ALLOW" && facts.entitlement_state === "NOT_REQUIRED") {
@@ -816,8 +836,10 @@ export function evaluateAuthorizationDecision(input: {
     }
   }
 
+  if (request.deadline) validUntil.push(request.deadline);
   if (principal.valid_until) validUntil.push(principal.valid_until);
   if (facts.valid_until) validUntil.push(facts.valid_until);
+  if (request.risk_context.valid_until) validUntil.push(request.risk_context.valid_until);
   if (policy?.valid_until) validUntil.push(policy.valid_until);
   if (policy?.policy_release?.valid_until) validUntil.push(policy.policy_release.valid_until);
   if (input.approval?.expires_at && result === "ALLOW") validUntil.push(input.approval.expires_at);
@@ -835,6 +857,7 @@ export function evaluateAuthorizationDecision(input: {
     ...(policy?.evaluator_version ? { evaluator_version: policy.evaluator_version } : {}),
     authority_fingerprint: input.authority_fingerprint,
     request_fingerprint: buildCanonicalRequestFingerprint(request),
+    ...(policy?.approval_required && policy.approval_use_mode ? { approval_use_mode: policy.approval_use_mode } : {}),
     applicable_scope_ref: request.scope_ref,
     ...(result === "RESTRICT" && policy.constrained_action ? { constrained_action: policy.constrained_action } : {}),
     ...(result === "RESTRICT" && policy.constrained_resource_ref ? { constrained_resource_ref: policy.constrained_resource_ref } : {}),
@@ -863,6 +886,8 @@ export function isDecisionCurrentForRequest(
     (!decision.valid_until || Date.parse(decision.valid_until) > Date.parse(now)) &&
     decision.authority_fingerprint === currentAuthorityFingerprint &&
     decision.request_ref.object_kind === "AUTHORIZATION_REQUEST" &&
+    decision.request_ref.object_id === request.authorization_request_id &&
+    decision.request_ref.object_version !== undefined &&
     sameScopeRef(decision.applicable_scope_ref, request.scope_ref) &&
     decision.decision_ref.scope_ref && sameScopeRef(decision.decision_ref.scope_ref, request.scope_ref) &&
     decision.request_fingerprint === buildCanonicalRequestFingerprint(request) &&
