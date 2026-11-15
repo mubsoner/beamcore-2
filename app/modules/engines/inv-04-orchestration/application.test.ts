@@ -14,7 +14,15 @@ import {
 } from "../shared";
 import type { WorkRecord } from "../inv-02-work/domain";
 import type { GraphActivationReceipt, GraphNode, WorkGraphRevision } from "../inv-03-planning/domain";
-import { submitPlan, type OrchestrationStartReaderPort, type SubmitPlanCommand } from "./application";
+import {
+  requestRetry,
+  submitPlan,
+  type OrchestrationStartReaderPort,
+  type RequestRetryCommand,
+  type RetryAssessmentReaderPort,
+  type SubmitPlanCommand,
+} from "./application";
+import type { DispatchAttempt, RetryDecision, SideEffectClass } from "./domain";
 
 const scope = { scope_id: "scope-1", scope_kind: "WORK" as const };
 const context = (request_id: string, idempotency_key: string, correlation_id: string): RequestContext => ({
@@ -226,7 +234,7 @@ function makeUnitOfWork() {
   const recordRef = (value: unknown): ObjectRef | undefined => {
     if (!value || typeof value !== "object") return undefined;
     const item = value as Record<string, unknown>;
-    for (const key of ["receipt_ref", "request_ref", "orchestration_ref", "checkpoint_ref"]) {
+    for (const key of ["receipt_ref", "request_ref", "orchestration_ref", "checkpoint_ref", "retry_decision_ref"]) {
       const candidate = item[key];
       if (candidate && typeof candidate === "object" && "object_kind" in candidate) {
         return candidate as ObjectRef;
@@ -314,6 +322,9 @@ function makeUnitOfWork() {
     seedAppendOnly<T>(key: string, value: T) {
       appendOnlyFor(key).push(value);
     },
+    readAppendOnly<T>(key: string): T[] {
+      return [...appendOnlyFor(key)] as T[];
+    },
   };
 }
 
@@ -345,6 +356,77 @@ function makeCommand(
     created_at: "2026-11-14T01:00:06Z",
     request_fingerprint: fingerprint("a"),
     event_ref: ref("DOMAIN_EVENT", "event-" + suffix),
+  };
+}
+
+
+
+function makeDispatchAttempt(state: DispatchAttempt["state"] = "FAILED"): DispatchAttempt {
+  return {
+    dispatch_ref: ref("DISPATCH_ATTEMPT", "dispatch-retry"),
+    orchestration_ref: ref("ORCHESTRATION_RUN", "run-retry"),
+    node_coordination_ref: ref("NODE_COORDINATION", "coord-retry"),
+    work_ref: ref("WORK", "work-retry"),
+    graph_revision_ref: ref("WORK_GRAPH_REVISION", "graph-retry"),
+    graph_node_ref: ref("GRAPH_NODE", "node-retry"),
+    target_capability_ref: ref("CAPABILITY", "capability-retry"),
+    target_capability_version: "v1",
+    state,
+    attempt_number: 1,
+    idempotency_key: "dispatch-idem-1",
+    request_correlation_id: "dispatch-corr-1",
+    authorization_decision_ref: ref("AUTHORITY_DECISION", "auth-retry"),
+    resource_admission_ref: ref("RESOURCE_ADMISSION", "admission-retry"),
+    error_refs: [],
+    created_at: "2026-11-14T02:00:00Z",
+    updated_at: "2026-11-14T02:00:01Z",
+  };
+}
+
+function makeRetryAssessmentReader(
+  overrides: Partial<{
+    evidence_refs: ObjectRef[];
+    failure_classification: string;
+    side_effect_class: SideEffectClass;
+    retryable_failure: boolean;
+    next_attempt_number: number;
+    eligibility_expires_at: string;
+    policy_decision_ref: ObjectRef;
+    reconciliation_ref: ObjectRef;
+  }> = {},
+  onRead?: () => void,
+): RetryAssessmentReaderPort {
+  return {
+    readRetryAssessment: async (_context, input) => {
+      onRead?.();
+      return createOperationResult({
+        status: "OK",
+        correlation_id: "corr-test",
+        data: {
+          evidence_refs: input.failure_evidence_refs,
+          failure_classification: "transient-runtime-failure",
+          side_effect_class: "IDEMPOTENT",
+          retryable_failure: true,
+          next_attempt_number: 2,
+          ...overrides,
+        },
+      });
+    },
+  };
+}
+
+function makeRetryCommand(
+  suffix = "one",
+  include_event = false,
+): RequestRetryCommand {
+  return {
+    context: context("req-retry-" + suffix, "idem-retry-" + suffix, "corr-retry-" + suffix),
+    dispatch_ref: ref("DISPATCH_ATTEMPT", "dispatch-retry"),
+    failure_evidence_refs: [ref("EXECUTION_ATTEMPT", "execution-attempt-retry")],
+    retry_decision_ref: ref("RETRY_DECISION", "retry-decision-" + suffix),
+    ...(include_event ? { event_ref: ref("DOMAIN_EVENT", "event-retry-" + suffix) } : {}),
+    decided_at: "2026-11-14T02:00:05Z",
+    request_fingerprint: fingerprint(suffix),
   };
 }
 
@@ -429,6 +511,111 @@ describe("INV-04 orchestration application", () => {
     expect(result.status).toBe("REJECTED");
     expect(result.errors[0].code).toBe("VALIDATION_ERROR");
     expect(state.read("inv-04.orchestration-runs", "run-missing-node")).toBeUndefined();
+  });
+
+
+  it("persists a policy-backed retry decision and replays it idempotently", async () => {
+    const state = makeUnitOfWork();
+    const dispatch = makeDispatchAttempt("FAILED");
+    state.seedRepository("inv-04.dispatch-attempts", dispatch.dispatch_ref.object_id, dispatch, "1");
+    const command = makeRetryCommand("persist");
+    let assessments = 0;
+    const reader = makeRetryAssessmentReader({}, () => { assessments += 1; });
+
+    const first = await requestRetry(state.unitOfWork, reader, command);
+    expect(first.status).toBe("OK");
+    expect(first.data?.disposition).toBe("RETRY_ALLOWED");
+    expect(first.data?.next_attempt_number).toBe(2);
+    expect(state.readAppendOnly<RetryDecision>("inv-04.retry-decisions")).toHaveLength(1);
+    expect(state.events).toHaveLength(0);
+
+    const replay = await requestRetry(state.unitOfWork, reader, command);
+    expect(replay).toEqual(first);
+    expect(assessments).toBe(1);
+    expect(state.readAppendOnly<RetryDecision>("inv-04.retry-decisions")).toHaveLength(1);
+  });
+
+  it("rejects a changed request that reuses the retry idempotency key", async () => {
+    const state = makeUnitOfWork();
+    const dispatch = makeDispatchAttempt("FAILED");
+    state.seedRepository("inv-04.dispatch-attempts", dispatch.dispatch_ref.object_id, dispatch, "1");
+    const command = makeRetryCommand("idempotency");
+    await requestRetry(state.unitOfWork, makeRetryAssessmentReader(), command);
+
+    const changed = {
+      ...command,
+      request_fingerprint: fingerprint("changed"),
+      failure_evidence_refs: [ref("EXECUTION_ATTEMPT", "different-attempt")],
+    };
+    const result = await requestRetry(state.unitOfWork, makeRetryAssessmentReader(), changed);
+    expect(result.status).toBe("REJECTED");
+    expect(result.errors[0].code).toBe("IDEMPOTENCY_CONFLICT");
+    expect(state.readAppendOnly<RetryDecision>("inv-04.retry-decisions")).toHaveLength(1);
+  });
+
+  it("records reconciliation-required decisions and emits the canonical reconciliation event", async () => {
+    const state = makeUnitOfWork();
+    const dispatch = makeDispatchAttempt("UNKNOWN");
+    state.seedRepository("inv-04.dispatch-attempts", dispatch.dispatch_ref.object_id, dispatch, "1");
+    const command = makeRetryCommand("reconcile", true);
+    const reader = makeRetryAssessmentReader({
+      side_effect_class: "UNKNOWN",
+      reconciliation_ref: ref("RECONCILIATION_REQUEST", "reconciliation-retry"),
+    });
+
+    const result = await requestRetry(state.unitOfWork, reader, command);
+    expect(result.status).toBe("OK");
+    expect(result.data?.disposition).toBe("RECONCILE_FIRST");
+    expect(state.readAppendOnly<RetryDecision>("inv-04.retry-decisions")).toHaveLength(1);
+    expect(state.events).toHaveLength(1);
+    expect(state.events[0].event_type).toBe("orchestration.reconciliation_required");
+    expect((state.events[0].payload as Record<string, unknown>).failure_evidence_refs)
+      .toEqual(command.failure_evidence_refs);
+  });
+
+  it("fails closed when the assessment does not verify the exact failure evidence references", async () => {
+    const state = makeUnitOfWork();
+    const dispatch = makeDispatchAttempt("FAILED");
+    state.seedRepository("inv-04.dispatch-attempts", dispatch.dispatch_ref.object_id, dispatch, "1");
+    const command = makeRetryCommand("wrong-evidence");
+    const reader = makeRetryAssessmentReader({
+      evidence_refs: [ref("EXECUTION_ATTEMPT", "another-attempt")],
+    });
+
+    const result = await requestRetry(state.unitOfWork, reader, command);
+    expect(result.status).toBe("REJECTED");
+    expect(result.errors[0].code).toBe("INTEGRITY_OR_UNTRUSTED_INPUT");
+    expect(state.readAppendOnly<RetryDecision>("inv-04.retry-decisions")).toHaveLength(0);
+  });
+
+  it("rejects a stale dispatch if its authoritative version changes during evidence assessment", async () => {
+    const state = makeUnitOfWork();
+    const dispatch = makeDispatchAttempt("FAILED");
+    state.seedRepository("inv-04.dispatch-attempts", dispatch.dispatch_ref.object_id, dispatch, "1");
+    const command = makeRetryCommand("stale-dispatch");
+    const changedDispatch = { ...dispatch, updated_at: "2026-11-14T02:00:03Z" };
+    const reader = makeRetryAssessmentReader({}, () => {
+      state.seedRepository("inv-04.dispatch-attempts", dispatch.dispatch_ref.object_id, changedDispatch, "2");
+    });
+
+    const result = await requestRetry(state.unitOfWork, reader, command);
+    expect(result.status).toBe("REJECTED");
+    expect(result.errors[0].code).toBe("VERSION_CONFLICT");
+    expect(state.readAppendOnly<RetryDecision>("inv-04.retry-decisions")).toHaveLength(0);
+    expect(state.events).toHaveLength(0);
+  });
+
+  it("requires an outbox event reference when reconciliation must happen first", async () => {
+    const state = makeUnitOfWork();
+    const dispatch = makeDispatchAttempt("UNKNOWN");
+    state.seedRepository("inv-04.dispatch-attempts", dispatch.dispatch_ref.object_id, dispatch, "1");
+    const command = makeRetryCommand("missing-event");
+    const reader = makeRetryAssessmentReader({ side_effect_class: "NON_IDEMPOTENT" });
+
+    const result = await requestRetry(state.unitOfWork, reader, command);
+    expect(result.status).toBe("REJECTED");
+    expect(result.errors[0].code).toBe("VALIDATION_ERROR");
+    expect(state.readAppendOnly<RetryDecision>("inv-04.retry-decisions")).toHaveLength(0);
   });
 
   it("does not create an orchestration when the activation receipt is UNKNOWN", async () => {
