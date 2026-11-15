@@ -16,6 +16,7 @@ import {
   type AuthorizationSourcePort,
   type DecisionCommitCommand,
 } from "./application";
+import { buildCanonicalRequestFingerprint } from "./domain";
 import type {
   ApprovalRecord,
   AuthorizationDecision,
@@ -128,6 +129,7 @@ const approval: ApprovalRecord = {
   approval_id: "approval-1",
   approval_ref: ref("APPROVAL", "approval-1"),
   request_ref: ref("AUTHORIZATION_REQUEST", "authorization-request-1"),
+  request_binding_fingerprint: buildCanonicalRequestFingerprint(authorizationRequest()),
   requested_by_ref: actor,
   approver_ref: { principal_id: "admin-1", principal_kind: "USER" },
   required_approver_constraints: ["INDEPENDENT_APPROVER"],
