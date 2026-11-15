@@ -133,6 +133,58 @@ export interface DecisionCondition {
   must_hold_at_enforcement: boolean;
 }
 
+export interface AuthenticationRequest {
+  authentication_request_id: string;
+  proof_ref: ObjectRef;
+  requested_audience: string;
+  requested_scope_ref: ScopeRef;
+  client_or_service_ref?: PrincipalRef;
+  requested_at: Timestamp;
+  correlation_id: string;
+}
+
+export interface AuthenticationResult {
+  authentication_result_id: string;
+  state: AuthenticationState;
+  principal_ref?: PrincipalRef;
+  session_ref?: ObjectRef;
+  assurance_context_ref?: ObjectRef;
+  authenticated_at?: Timestamp;
+  expires_at?: Timestamp;
+  reason_code?: string;
+  authority_source_ref?: AuthoritySourceRef;
+}
+
+export interface PolicyReleaseOperationContext {
+  requested_by_ref: PrincipalRef;
+  change_ref: ObjectRef;
+  impact_report_ref?: ObjectRef;
+  approval_ref?: ObjectRef;
+  expected_version?: Version;
+  correlation_id: string;
+  idempotency_key: string;
+}
+
+export interface AuthorityRevocationRequest {
+  subject_ref: ObjectRef;
+  reason_code: string;
+  scope_ref: ScopeRef;
+  expected_version?: Version;
+  idempotency_key: string;
+  effective_at?: Timestamp;
+}
+
+export interface RevocationRecord {
+  revocation_ref: ObjectRef;
+  subject_ref: ObjectRef;
+  reason_code: string;
+  requested_by_ref: PrincipalRef;
+  effective_at: Timestamp;
+  source_version?: Version;
+  affected_scope_refs: ScopeRef[];
+  correlation_id: string;
+}
+
 export interface PolicyRelease {
   policy_release_id: string;
   policy_family_id: string;
@@ -431,6 +483,50 @@ export function validateAuthorizationRequest(
   if (request.action_arguments_digest !== undefined &&
     !/^sha256:[a-f0-9]{64}$/i.test(request.action_arguments_digest)) {
     issues.push("action_arguments_digest must be a SHA-256 digest");
+  }
+  return issues;
+}
+
+export function validateAuthenticationResult(
+  request: AuthenticationRequest,
+  result: AuthenticationResult,
+): string[] {
+  const issues: string[] = [];
+  if (!request || !result || typeof request !== "object" || typeof result !== "object") {
+    return ["authentication request and result are required"];
+  }
+  if (!request.authentication_request_id?.trim() ||
+      !isObjectRef(request.proof_ref) ||
+      !request.requested_audience?.trim() ||
+      !isScopeRef(request.requested_scope_ref) ||
+      !isTimestamp(request.requested_at) ||
+      !request.correlation_id?.trim()) {
+    issues.push("authentication request is malformed");
+  }
+  if (!result.authentication_result_id?.trim() ||
+      !(AUTHENTICATION_STATES as readonly string[]).includes(result.state)) {
+    issues.push("authentication result identity or state is invalid");
+  }
+  if (result.state === "AUTHENTICATED") {
+    if (!isPrincipalRef(result.principal_ref) ||
+        !isObjectRef(result.session_ref) ||
+        !isTimestamp(result.authenticated_at) ||
+        !isTimestamp(result.expires_at) ||
+        Date.parse(result.expires_at) <= Date.parse(result.authenticated_at)) {
+      issues.push("successful authentication requires principal, session and bounded validity");
+    }
+  }
+  if (result.state !== "AUTHENTICATED" && result.principal_ref !== undefined) {
+    issues.push("non-authenticated result cannot assert an authenticated principal");
+  }
+  if (result.assurance_context_ref !== undefined && !isObjectRef(result.assurance_context_ref)) {
+    issues.push("authentication assurance reference is invalid");
+  }
+  if (result.authority_source_ref !== undefined &&
+      (!result.authority_source_ref.source_kind?.trim() ||
+       !isObjectRef(result.authority_source_ref.object_ref) ||
+       !isTimestamp(result.authority_source_ref.observed_at))) {
+    issues.push("authentication source provenance is invalid");
   }
   return issues;
 }
@@ -1316,6 +1412,17 @@ export function transitionDelegation(
   to: DelegationState,
   now: Timestamp,
 ): OperationResult<DelegationRecord> {
+  if (!delegation || typeof delegation !== "object" ||
+      !isObjectRef(delegation.delegation_ref) ||
+      delegation.delegation_ref.object_kind !== "DELEGATION" ||
+      !isScopeRef(delegation.scope_ref) ||
+      !sameScopeRef(delegation.delegation_ref.scope_ref, delegation.scope_ref) ||
+      !isTimestamp(delegation.not_before) ||
+      !isTimestamp(delegation.expires_at) ||
+      !(DELEGATION_STATES as readonly string[]).includes(delegation.state)) {
+    return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
+      errors: [createOperationError("VALIDATION_ERROR", "Delegation record is malformed")] });
+  }
   if (!isTimestamp(now)) return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
     errors: [createOperationError("VALIDATION_ERROR", "Delegation transition timestamp is invalid")] });
   const allowed: Record<DelegationState, DelegationState[]> = {
@@ -1350,6 +1457,16 @@ export function transitionPolicyRelease(
   to: PolicyReleaseState,
   now: Timestamp,
 ): OperationResult<PolicyRelease> {
+  if (!release || typeof release !== "object" ||
+      !isObjectRef(release.policy_release_ref) ||
+      release.policy_release_ref.object_kind !== "POLICY_RELEASE" ||
+      !isVersion(release.version) ||
+      release.policy_release_ref.object_version !== release.version ||
+      !release.ruleset_digest?.trim() ||
+      !(POLICY_RELEASE_STATES as readonly string[]).includes(release.state)) {
+    return createOperationResult({ status: "REJECTED", correlation_id: "authorization",
+      errors: [createOperationError("VALIDATION_ERROR", "Policy release record is malformed")] });
+  }
   const sequence: PolicyReleaseState[] = [
     "DRAFT", "VALIDATED", "STATIC_ANALYSIS_PASSED", "SCENARIO_TESTED",
     "CONFLICT_TESTED", "REGRESSION_TESTED", "IMPACT_REVIEWED", "APPROVED",
