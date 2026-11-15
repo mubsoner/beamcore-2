@@ -11,7 +11,7 @@
 - **INTEGRATION BLOCKER** — completion needs an actual provider, persistent repository, or another engine's enforcement/source adapter; a port or fake test adapter is not proof.
 - **GAP** — required logical behavior or test is still missing/incomplete.
 
-**Current engine test inventory:** 30 domain tests + 26 application tests = 56 focused INV-06 tests. Latest branch head inspected: `1358f79fc74276b0e7122cfb980b6588f2adb026`; CI run `43775152004` for that exact head was `queued` at matrix update time. This inventory is a test count, not a pass count. Passing unit tests are not substitutes for the provider/integration blockers below.
+**Current engine test inventory:** 31 domain tests + 26 application tests = 57 focused INV-06 tests. Latest branch head inspected: `922677878ba67dbf690c3808caf989a4b667568d`; CI run `43775252037` for that exact head was `in_progress` at matrix update time. This inventory is a test count, not a pass count. Passing unit tests are not substitutes for the provider/integration blockers below.
 
 ## Acceptance status
 
