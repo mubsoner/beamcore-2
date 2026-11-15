@@ -1,6 +1,7 @@
 import {
   createOperationError,
   createOperationResult,
+  isRequestContext,
   sameObjectRef,
   sameScopeRef,
   type ClockPort,
@@ -639,12 +640,12 @@ export async function authenticatePrincipal(
   context: RequestContext,
   request: AuthenticationRequest,
 ): Promise<OperationResult<AuthenticationResult>> {
-  if (!request || !isRequestContextLike(context) ||
+  if (!request || !isRequestContext(context) ||
       !request.authentication_request_id?.trim() ||
       !request.correlation_id || request.correlation_id !== context.correlation_id ||
       !sameScopeRef(request.requested_scope_ref, context.scope_ref) ||
       !request.requested_audience?.trim() ||
-      request.requested_at > deps.clock.now()) {
+      Date.parse(request.requested_at) > Date.parse(deps.clock.now())) {
     return fail(context, "VALIDATION_ERROR", "Authentication request is invalid or outside the authenticated scope");
   }
   const result = await deps.sources.authenticatePrincipal(context, request);
@@ -803,9 +804,11 @@ async function transitionPolicyReleaseLifecycle(
       (operation.approval_ref && !sameScopeRef(operation.approval_ref.scope_ref, context.scope_ref))) {
     return fail(context, "VALIDATION_ERROR", "Policy release operation context is invalid or cross-scope");
   }
-  if ((targetState === "RELEASED" || targetState === "SUSPENDED" || targetState === "RETIRED") &&
-      !operation.approval_ref) {
-    return fail(context, "APPROVAL_REQUIRED", "Policy release or suspension requires an explicit approval reference");
+  if (targetState === "RELEASED" && !operation.approval_ref) {
+    return fail(context, "APPROVAL_REQUIRED", "Policy release requires an explicit approval reference");
+  }
+  if ((targetState === "SUSPENDED" || targetState === "RETIRED") && !operation.reason_code?.trim()) {
+    return fail(context, "VALIDATION_ERROR", "Policy suspension or retirement requires a reason code");
   }
   if (targetState === "RELEASED" && !operation.impact_report_ref) {
     return fail(context, "VALIDATION_ERROR", "Policy release requires an impact report reference");
@@ -843,6 +846,7 @@ async function transitionPolicyReleaseLifecycle(
       change_ref: operation.change_ref,
       impact_report_ref: operation.impact_report_ref ?? null,
       approval_ref: operation.approval_ref ?? null,
+      reason_code: operation.reason_code ?? null,
     })),
   });
 }
