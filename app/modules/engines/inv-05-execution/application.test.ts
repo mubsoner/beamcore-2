@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ClockPort, ObjectRef, RequestContext } from "../shared";
+import type { ClockPort, EngineTransaction, ObjectRef, OperationResult, RequestContext } from "../shared";
 import {
   submitExecution,
   validateExecutionAdmission,
@@ -393,6 +393,127 @@ describe("INV-05 execution application admission boundary", () => {
     expect(result.status).toBe("REJECTED");
     expect(result.errors[0]?.code).toBe("POLICY_DENIED");
     expect(unitOfWorkCalled).toBe(false);
+  });
+
+  it("persists an Execution only after source-owned profile, dispatch and admission reads", async () => {
+    const authoritativeProfile = profile({
+      memory_limit: { value: 1024, unit: "MiB" },
+    });
+    let admissionSawAuthoritativeProfile = false;
+    let persistedExecution: unknown;
+    let outboxEventId: string | undefined;
+    let idempotencyRecorded = false;
+
+    const reader = admissionReader({
+      readCurrentAdmission: async (_context, trustedRequest) => {
+        admissionSawAuthoritativeProfile =
+          trustedRequest.runtime_profile.memory_limit?.value === 1024;
+        return {
+          status: "OK",
+          correlation_id: context.correlation_id,
+          data: admission(),
+          errors: [],
+          warnings: [],
+        };
+      },
+    }, authoritativeProfile);
+
+    const transaction = {
+      repository: <T,>() => ({
+        get: async () => {
+          throw new Error("Unexpected repository read");
+        },
+        create: async (_context: RequestContext, _ref: ObjectRef, value: T): Promise<OperationResult<T>> => {
+          persistedExecution = value;
+          return {
+            status: "OK",
+            correlation_id: context.correlation_id,
+            data: value,
+            object_version: "1",
+            errors: [],
+            warnings: [],
+          };
+        },
+        update: async () => {
+          throw new Error("Unexpected repository update");
+        },
+      }),
+      appendOnly: <T,>() => ({
+        append: async (_context: RequestContext, value: T): Promise<OperationResult<T>> => ({
+          status: "OK",
+          correlation_id: context.correlation_id,
+          data: value,
+          errors: [],
+          warnings: [],
+        }),
+        get: async () => {
+          throw new Error("Unexpected append-only read");
+        },
+      }),
+      idempotency: {
+        get: async <T,>() => ({
+          status: "OK",
+          correlation_id: context.correlation_id,
+          data: null,
+          errors: [],
+          warnings: [],
+        }),
+        record: async <T,>(_context: RequestContext, value: {
+          idempotency_key: string;
+          request_fingerprint: string;
+          result: OperationResult<T>;
+          recorded_at: string;
+        }): Promise<OperationResult<typeof value>> => {
+          idempotencyRecorded = true;
+          return {
+            status: "OK",
+            correlation_id: context.correlation_id,
+            data: value,
+            errors: [],
+            warnings: [],
+          };
+        },
+      },
+      outbox: {
+        append: async (_context: RequestContext, event: { event_id: string }): Promise<OperationResult<{ event_id: string }>> => {
+          outboxEventId = event.event_id;
+          return {
+            status: "OK",
+            correlation_id: context.correlation_id,
+            data: { event_id: event.event_id },
+            errors: [],
+            warnings: [],
+          };
+        },
+      },
+    } as unknown as EngineTransaction;
+
+    const unitOfWork: EngineUnitOfWorkPort = {
+      execute: async <T,>(
+        _context: RequestContext,
+        operation: (transaction: EngineTransaction) => Promise<OperationResult<T>>,
+      ) => operation(transaction),
+    };
+    const result = await submitExecution(unitOfWork, reader, {
+      now: () => "2026-11-15T08:00:06Z",
+    }, {
+      context,
+      request: request({
+        runtime_profile: profile({
+          memory_limit: { value: 1, unit: "MiB" },
+        }),
+      }),
+      execution_event_ref: ref("DOMAIN_EVENT", "event-accepted-success"),
+      created_at: "2026-11-15T08:00:06Z",
+    });
+
+    expect(result.status).toBe("OK");
+    expect(result.data?.state).toBe("CREATED");
+    expect(result.data?.runtime_profile_version).toBe("1");
+    expect(admissionSawAuthoritativeProfile).toBe(true);
+    expect(persistedExecution).toBeTruthy();
+    expect(outboxEventId).toBe("event-accepted-success");
+    expect(idempotencyRecorded).toBe(true);
   });
 
   it("does not persist or enqueue an Execution when admission is denied", async () => {
