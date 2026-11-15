@@ -110,6 +110,10 @@ function propagateFailure<T>(source: OperationResult<unknown>): OperationResult<
   });
 }
 
+function sameExactObjectRef(a: ObjectRef, b: ObjectRef): boolean {
+  return sameObjectRef(a, b) && a.object_version === b.object_version;
+}
+
 function validateSubmissionEnvelope(command: SubmitExecutionCommand): string | undefined {
   if (!command || typeof command !== "object" || !command.request || typeof command.request !== "object" ||
       !isObjectRef(command.request.execution_ref)) {
@@ -161,8 +165,8 @@ export function validateExecutionAdmission(
     !isObjectRef(snapshot.environment.environment_ref) ||
     !requiredRefs.every(([ref]) => sameScopeRef(ref.scope_ref, context.scope_ref)) ||
     !sameScopeRef(snapshot.environment.environment_ref.scope_ref, context.scope_ref) ||
-    !sameObjectRef(snapshot.authorization.decision_ref, request.authorization_decision_ref) ||
-    !sameObjectRef(snapshot.capability.capability_ref, request.capability_ref) ||
+    !sameExactObjectRef(snapshot.authorization.decision_ref, request.authorization_decision_ref) ||
+    !sameExactObjectRef(snapshot.capability.capability_ref, request.capability_ref) ||
     snapshot.capability.version !== request.capability_version
   ) {
     return rejected(context, "FORBIDDEN", "Admission evidence must bind exact in-scope authorization, capability and environment references");
@@ -215,7 +219,7 @@ async function persistExecution(
     const saved = await transaction.repository<ExecutionRecord>("inv-05.executions")
       .create(command.context, execution.execution_ref, execution);
     if (saved.status !== "OK" || !saved.data) return propagateFailure<ExecutionRecord>(saved);
-    if (!sameObjectRef(saved.data.execution_ref, execution.execution_ref) || !saved.object_version) {
+    if (!sameExactObjectRef(saved.data.execution_ref, execution.execution_ref) || !saved.object_version) {
       return rejected(
         command.context,
         "INTEGRITY_OR_UNTRUSTED_INPUT",
