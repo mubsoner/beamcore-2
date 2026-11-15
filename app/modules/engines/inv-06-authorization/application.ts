@@ -24,6 +24,7 @@ import {
   validateAuthorityFacts,
   validateDelegationRequest,
   validatePolicyEvaluation,
+  validatePrincipalContext,
   type ApprovalDecisionInput,
   type ApprovalRecord,
   type AuthorityFacts,
@@ -365,14 +366,26 @@ export async function requestApproval(
   request: AuthorizationRequest,
 ): Promise<OperationResult<ApprovalRecord>> {
   const requestIssues = validateAuthorizationRequest(context, request);
-  if (requestIssues.length) return fail(context, "VALIDATION_ERROR", "Approval request failed canonical validation");
+  if (requestIssues.length || request.approval_ref) {
+    return fail(context, "VALIDATION_ERROR", "Approval request must be a valid new request without an existing approval reference");
+  }
   const idempotencyKey = operationIdempotencyKey(context, request.idempotency_key);
   if (!idempotencyKey) return fail(context, "IDEMPOTENCY_CONFLICT", "Approval request requires one consistent idempotency key");
 
+  const preflight = await authorizeAction(deps, context, request);
+  if (preflight.status !== "OK" || !preflight.data) return propagate(context, preflight);
+  if (preflight.data.decision.result !== "REQUIRE_APPROVAL") {
+    return fail(context, "POLICY_DENIED", "Current authorization policy does not require an approval for this request");
+  }
+
   const principal = await deps.sources.resolvePrincipal(context);
   if (principal.status !== "OK" || !principal.data) return fail(context, "UNAUTHENTICATED", "Requester could not be authenticated");
+  const principalIssues = validatePrincipalContext(context, principal.data, deps.clock.now());
+  if (principalIssues.length) return fail(context, "UNAUTHENTICATED", "Current requester authentication context is invalid");
   const facts = await deps.sources.readAuthorityFacts(context, request);
   if (facts.status !== "OK" || !facts.data) return fail(context, "DEPENDENCY_UNAVAILABLE", "Current requester authority is unavailable");
+  const factIssues = validateAuthorityFacts(facts.data, request, deps.clock.now());
+  if (factIssues.length) return fail(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Current requester authority facts failed validation");
   const policy = await deps.sources.evaluatePolicy(context, request, principal.data, facts.data);
   if (policy.status !== "OK" || !policy.data) return fail(context, "DEPENDENCY_UNAVAILABLE", "Current policy could not be evaluated");
   const policyIssues = validatePolicyEvaluation(policy.data, request);
@@ -423,7 +436,7 @@ export async function requestApproval(
   if (created.status !== "OK" || !created.data) return propagate(context, created);
 
   return deps.repository.createApprovalWithEvent(context, created.data, {
-    key: idempotencyKey,
+    key: "approval.create:" + idempotencyKey,
     request_fingerprint: buildCanonicalRequestFingerprint(request),
   });
 }
