@@ -152,6 +152,7 @@ function makeDependencies(currentFacts: AuthorityFacts = facts) {
     evaluatePolicy: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: policy })),
     readApproval: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: approval })),
     readDelegation: vi.fn(async () => createOperationResult<DelegationRecord>({ status: "REJECTED", correlation_id: context.correlation_id })),
+    readDelegationLineage: vi.fn(async () => createOperationResult<DelegationRecord[]>({ status: "REJECTED", correlation_id: context.correlation_id })),
     verifyApprover: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { authorized: true, independent_required: true } })),
     resolveDelegationGrantAuthority: vi.fn(async () => createOperationResult<DelegationGrantAuthority>({ status: "REJECTED", correlation_id: context.correlation_id })),
     verifyDelegationDecision: vi.fn(async (_ctx: RequestContext, _request: DelegationRequest) => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { valid: false } })),
