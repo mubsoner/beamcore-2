@@ -126,6 +126,38 @@ describe("INV-06 authorization domain", () => {
     expect(evaluate({ facts: { current_resource_version: "2" } }).data?.result).toBe("INDETERMINATE");
     expect(evaluate({ facts: { current_resource_version: "2" } }).data?.reason_codes).toContain("RESOURCE_VERSION_STALE");
   });
+  it("requires assessed risk to have a bounded validity window and rejects future-dated assessments", () => {
+    const validRisk = request().risk_context;
+    const missingExpiry = validateAuthorizationRequest(context, request({
+      risk_context: { ...validRisk, valid_until: undefined },
+    }));
+    expect(missingExpiry).toContain("assessed risk context must include a bounded, ordered assessment validity window");
+
+    const futureAssessment = evaluate({
+      req: {
+        risk_context: {
+          ...validRisk,
+          assessed_at: "2026-11-15T10:01:00Z",
+          valid_until: "2026-11-15T10:10:00Z",
+        },
+      },
+    });
+    expect(futureAssessment.data?.result).toBe("INDETERMINATE");
+    expect(futureAssessment.data?.reason_codes).toContain("RISK_CONTEXT_NOT_CURRENT");
+  });
+
+  it("rejects policy and risk evidence references from another tenant scope", () => {
+    const otherScope: ScopeRef = { scope_id: "other-tenant", scope_kind: "ORGANIZATION" };
+    const malformedRequest = request({
+      policy_context_refs: [ref("POLICY_CONTEXT", "foreign-context", otherScope)],
+      risk_context: {
+        ...request().risk_context,
+        sensitivity_refs: [ref("SENSITIVITY", "foreign-sensitive-object", otherScope)],
+      },
+    });
+    expect(validateAuthorizationRequest(context, malformedRequest).length).toBeGreaterThan(0);
+  });
+
   it("rejects malformed authority snapshots and policy releases", () => {
     expect(validateAuthorityFacts(facts({ source_refs: [] }), request(), "2026-11-15T10:00:00Z").length).toBeGreaterThan(0);
     expect(validatePolicyEvaluation(policy({ approval_required: true }), request()).length).toBeGreaterThan(0);
