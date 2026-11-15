@@ -751,6 +751,37 @@ export function buildCanonicalRequestFingerprint(request: AuthorizationRequest):
   }));
 }
 
+/**
+ * ONE_TIME approvals bind to one canonical request. REUSABLE_WITHIN_SCOPE
+ * approvals bind to the stable action basis and may cover equivalent requests
+ * only while every scoped/context/risk/policy constraint remains identical.
+ */
+export function buildApprovalBindingFingerprint(
+  request: AuthorizationRequest,
+  useMode: ApprovalUseMode,
+): string {
+  if (useMode === "ONE_TIME") return buildCanonicalRequestFingerprint(request);
+  return JSON.stringify(canonicalize({
+    actor: request.actor_ref,
+    service_identity: request.service_identity_ref ?? null,
+    action: request.action,
+    resource: request.resource_ref,
+    scope: request.scope_ref,
+    environment: request.environment_ref,
+    work: request.work_ref ?? null,
+    plan_revision: request.plan_revision_ref ?? null,
+    graph_revision: request.graph_revision_ref ?? null,
+    execution: request.execution_ref ?? null,
+    capability: request.capability_ref ?? null,
+    delegation: request.delegation_ref ?? null,
+    risk: request.risk_context,
+    arguments_digest: request.action_arguments_digest ?? null,
+    expected_resource_version: request.expected_resource_version ?? null,
+    policy_context_refs: [...request.policy_context_refs].sort((a, b) =>
+      JSON.stringify(canonicalize(a)).localeCompare(JSON.stringify(canonicalize(b)))),
+  }));
+}
+
 export function buildAuthorityFingerprintMaterial(input: {
   request: AuthorizationRequest;
   principal: PrincipalContext;
@@ -1298,12 +1329,13 @@ export function validateApprovalUse(
     issues.push("approval reference does not match the request");
   }
   if (approval.request_ref.object_kind !== "AUTHORIZATION_REQUEST" ||
-    approval.request_ref.object_id !== request.authorization_request_id ||
-    !sameScopeRef(approval.request_ref.scope_ref, request.scope_ref)) {
+    !sameScopeRef(approval.request_ref.scope_ref, request.scope_ref) ||
+    (approval.approval_use_mode === "ONE_TIME" &&
+      approval.request_ref.object_id !== request.authorization_request_id)) {
     issues.push("approval request identity does not match");
   }
   if (!approval.request_binding_fingerprint ||
-      approval.request_binding_fingerprint !== buildCanonicalRequestFingerprint(request)) {
+      approval.request_binding_fingerprint !== buildApprovalBindingFingerprint(request, approval.approval_use_mode)) {
     issues.push("approval is bound to a different canonical request payload");
   }
   if (!samePrincipal(approval.requested_by_ref, request.actor_ref)) {
