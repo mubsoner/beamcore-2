@@ -666,6 +666,14 @@ export async function decideApprovalRequest(
       expected_version: expectedVersion,
       reason_ref: input.reason_ref ?? null,
       evidence_method_ref: input.evidence_method_ref ?? null,
+      approver_authority: {
+        authorized: approver.data.authorized,
+        independent_required: approver.data.independent_required,
+        satisfied_constraints: [...approver.data.satisfied_constraints].sort(),
+        authority_source_refs: approver.data.authority_source_refs,
+        observed_at: approver.data.observed_at,
+        valid_until: approver.data.valid_until,
+      },
     })),
   });
 }
