@@ -161,7 +161,7 @@ describe("INV-05 provider-neutral runtime start receipt", () => {
     expect(result.status).toBe("OK");
   });
 
-  it("rejects a substituted runtime instance or profile version", () => {
+  it("accepts a new scoped runtime instance but rejects a profile version substitution", () => {
     const state = makeStartingExecution();
     const invocation = buildInvocation(state.execution, state.attempt, state.runtimeProfile);
     const substitutedInstance = validateRuntimeStartReceipt(
@@ -251,6 +251,17 @@ describe("INV-05 provider-neutral runtime start receipt", () => {
       "2026-11-15T08:00:05Z",
     );
     expect(noAssurance.status).toBe("REJECTED");
+
+    const wrongProfileDigest = validateRuntimeStartReceipt(
+      context,
+      state.execution,
+      state.attempt,
+      generatedProfile,
+      invocation,
+      { ...receiptFor(generatedProfile), runtime_profile_digest: "sha256-forged-profile" },
+      "2026-11-15T08:00:05Z",
+    );
+    expect(wrongProfileDigest.status).toBe("REJECTED");
 
     const wrongIdentity = validateRuntimeStartReceipt(
       context,
