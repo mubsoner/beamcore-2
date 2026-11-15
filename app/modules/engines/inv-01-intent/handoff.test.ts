@@ -85,9 +85,19 @@ function makeHarness() {
   const tx: EngineTransaction = {
     repository: <T>(key: string) => (key === "inv-01.route-proposals" ? routeRepo as VersionedRepository<T> : decisionRepo as VersionedRepository<T>),
     appendOnly: <T>() => ({
-      append: vi.fn(async (_ctx, item) => {
+      append: vi.fn(async (_ctx, objectRef, item) => {
         const value = item as typeof item & { route_proposal_ref?: ObjectRef };
-        if (value.route_proposal_ref) receipts.set(value.route_proposal_ref.object_id, value as never);
+        if (!value.route_proposal_ref ||
+          value.route_proposal_ref.object_kind !== objectRef.object_kind ||
+          value.route_proposal_ref.object_id !== objectRef.object_id ||
+          value.route_proposal_ref.scope_ref.scope_id !== objectRef.scope_ref.scope_id ||
+          value.route_proposal_ref.scope_ref.scope_kind !== objectRef.scope_ref.scope_kind) {
+          return createOperationResult<T>({
+            status: "REJECTED", correlation_id: context.correlation_id,
+            errors: [{ code: "INTEGRITY_OR_UNTRUSTED_INPUT", safe_message: "Append-only identity mismatch", retryable: false }],
+          });
+        }
+        receipts.set(objectRef.object_id, value as never);
         return createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: item });
       }),
       get: vi.fn(async (_ctx, objectRef) => {
