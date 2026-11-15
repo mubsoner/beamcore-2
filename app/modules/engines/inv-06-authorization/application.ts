@@ -528,10 +528,10 @@ export async function grantDelegation(
     parent = parentResult.data;
   }
 
-  const issues = validateDelegationRequest(request, authorityResult.data, parent);
+  const now = deps.clock.now();
+  const issues = validateDelegationRequest(request, authorityResult.data, parent, now);
   if (issues.length) return fail(context, "FORBIDDEN", "Delegation exceeds current grantor authority or scope");
 
-  const now = deps.clock.now();
   const state = Date.parse(request.not_before) > Date.parse(now) ? "SCHEDULED" : "ACTIVE";
   const record: DelegationRecord = {
     delegation_id: request.delegation_ref.object_id,
