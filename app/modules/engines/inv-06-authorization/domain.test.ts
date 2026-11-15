@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ObjectRef, RequestContext, ScopeRef } from "../shared";
 import {
   buildAuthorityFingerprintMaterial,
+  buildApprovalBindingFingerprint,
   buildCanonicalRequestFingerprint,
   claimOneTimeApprovalRecord,
   createPendingApproval,
@@ -200,7 +201,7 @@ describe("INV-06 authorization domain", () => {
       approval_ref: ref("APPROVAL", "approval-1"),
       approval_id: "approval-1",
       request_ref: ref("AUTHORIZATION_REQUEST", "auth-req-1"),
-      request_binding_fingerprint: buildCanonicalRequestFingerprint(request()),
+      request_binding_fingerprint: buildApprovalBindingFingerprint(request(), "ONE_TIME"),
       requested_by_ref: context.actor_ref,
       required_approver_constraints: ["independent"],
       action: "artifact.publish", resource_ref: ref("ARTIFACT", "artifact-1"),
@@ -228,7 +229,7 @@ describe("INV-06 authorization domain", () => {
       approval_ref: ref("APPROVAL", "approval-consume"),
       approval_id: "approval-consume",
       request_ref: ref("AUTHORIZATION_REQUEST", "auth-req-1"),
-      request_binding_fingerprint: buildCanonicalRequestFingerprint(request()),
+      request_binding_fingerprint: buildApprovalBindingFingerprint(request(), "ONE_TIME"),
       requested_by_ref: context.actor_ref,
       required_approver_constraints: [],
       action: "artifact.publish",
@@ -270,7 +271,7 @@ describe("INV-06 authorization domain", () => {
     const approval: ApprovalRecord = {
       approval_id: "approval-1", approval_ref: ref("APPROVAL", "approval-1"),
       request_ref: ref("AUTHORIZATION_REQUEST", "auth-req-1"),
-      request_binding_fingerprint: buildCanonicalRequestFingerprint(request()),
+      request_binding_fingerprint: buildApprovalBindingFingerprint(request(), "ONE_TIME"),
       requested_by_ref: context.actor_ref, required_approver_constraints: [],
       approver_ref: { principal_id: "admin-1", principal_kind: "USER" },
       action: "artifact.delete", resource_ref: ref("ARTIFACT", "artifact-1"),
@@ -299,7 +300,7 @@ describe("INV-06 authorization domain", () => {
     }, currentRequest, "2026-11-15T10:00:00Z", policyRef)).toContain("approval policy release does not match");
     expect(validateApprovalUse({
       ...approval, approval_ref: currentRequest.approval_ref!, action: currentRequest.action,
-      request_binding_fingerprint: buildCanonicalRequestFingerprint(currentRequest),
+      request_binding_fingerprint: buildApprovalBindingFingerprint(currentRequest, "ONE_TIME"),
     }, request({ ...currentRequest, risk_context: { ...currentRequest.risk_context, impact_dimensions: ["changed-impact"] } }),
     "2026-11-15T10:00:00Z", policyRef)).toContain("approval is bound to a different canonical request payload");
   });
@@ -414,7 +415,7 @@ describe("INV-06 authorization domain", () => {
     const pending = createPendingApproval({
       approval_ref: ref("APPROVAL", "approval-lifecycle"), approval_id: "approval-lifecycle",
       request_ref: ref("AUTHORIZATION_REQUEST", "auth-req-1"),
-      request_binding_fingerprint: buildCanonicalRequestFingerprint(request()),
+      request_binding_fingerprint: buildApprovalBindingFingerprint(request(), "ONE_TIME"),
       requested_by_ref: context.actor_ref, required_approver_constraints: [],
       action: "artifact.publish", resource_ref: ref("ARTIFACT", "artifact-1"),
       scope_ref: scope, environment_ref: ref("ENVIRONMENT", "production"),
