@@ -23,6 +23,7 @@ import {
   transitionDelegation,
   transitionPolicyRelease,
   validateApprovalUse,
+  validateAuthenticationRequest,
   validateAuthenticationResult,
   validateAuthorizationRequest,
   validateAuthorityFacts,
@@ -436,9 +437,16 @@ export async function requestApproval(
     return fail(context, "POLICY_DENIED", "Current policy does not require or define this approval");
   }
   const now = deps.clock.now();
+  const expiryBounds = [
+    principal.data.valid_until,
+    facts.data.valid_until,
+    policy.data.valid_until,
+    policy.data.policy_release.valid_until,
+    request.deadline,
+  ].filter((value): value is Timestamp => value !== undefined);
   if (Date.parse(policy.data.approval_expires_at) <= Date.parse(now) ||
-      (request.deadline && Date.parse(policy.data.approval_expires_at) > Date.parse(request.deadline))) {
-    return fail(context, "POLICY_DENIED", "Policy-derived approval expiry is invalid for this request");
+      expiryBounds.some(bound => Date.parse(policy.data.approval_expires_at!) > Date.parse(bound))) {
+    return fail(context, "POLICY_DENIED", "Policy-derived approval expiry exceeds a current authority, policy or request validity bound");
   }
 
   const contextRefs = [
@@ -640,11 +648,10 @@ export async function authenticatePrincipal(
   context: RequestContext,
   request: AuthenticationRequest,
 ): Promise<OperationResult<AuthenticationResult>> {
-  if (!request || !isRequestContext(context) ||
-      !request.authentication_request_id?.trim() ||
-      !request.correlation_id || request.correlation_id !== context.correlation_id ||
+  if (!isRequestContext(context) ||
+      validateAuthenticationRequest(request).length > 0 ||
+      request.correlation_id !== context.correlation_id ||
       !sameScopeRef(request.requested_scope_ref, context.scope_ref) ||
-      !request.requested_audience?.trim() ||
       Date.parse(request.requested_at) > Date.parse(deps.clock.now())) {
     return fail(context, "VALIDATION_ERROR", "Authentication request is invalid or outside the authenticated scope");
   }
@@ -823,8 +830,7 @@ async function transitionPolicyReleaseLifecycle(
     return fail(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Policy source returned a different or out-of-scope release");
   }
   const version = current.object_version ?? current.data.version;
-  if (!version || version !== operation.expected_version ||
-      current.data.version !== version) {
+  if (!version || version !== operation.expected_version) {
     return fail(context, "VERSION_CONFLICT", "Policy release version changed before lifecycle transition");
   }
   const authority = await deps.sources.verifyPolicyReleaseOperator(context, current.data, targetState, operation);
