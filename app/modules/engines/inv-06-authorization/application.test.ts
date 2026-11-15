@@ -12,6 +12,7 @@ import {
   publishPolicyRelease,
   requestApproval,
   revokeApproval,
+  revokeDelegation,
   expireApproval,
   revokeAuthority,
   suspendPolicyRelease,
@@ -529,6 +530,52 @@ describe("INV-06 authorization application boundary", () => {
     expect(suspended.status).toBe("OK");
     expect(suspended.data?.state).toBe("SUSPENDED");
     expect(harness.repository.updateDelegationWithEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("revokes a delegation under current revoker authority with an atomic lifecycle event", async () => {
+    const harness = makeDependencies();
+    const delegation: DelegationRecord = {
+      delegation_id: "delegation-revoke",
+      delegation_ref: ref("DELEGATION", "delegation-revoke"),
+      grantor_ref: actor,
+      delegate_ref: { principal_id: "agent-revoke", principal_kind: "AGENT" },
+      purpose: "read artifact",
+      scope_ref: scope,
+      allowed_actions: ["artifact.read"],
+      resource_constraints: [ref("ARTIFACT", "artifact-1")],
+      limits: [],
+      conditions: [],
+      not_before: "2026-11-15T09:00:00Z",
+      expires_at: "2026-11-15T10:10:00Z",
+      allow_subdelegation: false,
+      authorized_by_decision_ref: ref("AUTHORIZATION_DECISION", "delegation-grant"),
+      state: "ACTIVE",
+      created_at: "2026-11-15T09:00:00Z",
+    };
+    vi.mocked(harness.sources.readDelegation).mockResolvedValue(
+      createOperationResult({
+        status: "OK",
+        correlation_id: context.correlation_id,
+        data: delegation,
+        object_version: "4",
+      }),
+    );
+    vi.mocked(harness.sources.verifyDelegationRevoker).mockResolvedValue(
+      createOperationResult({
+        status: "OK",
+        correlation_id: context.correlation_id,
+        data: { authorized: true },
+      }),
+    );
+    const result = await revokeDelegation(harness.deps, context, delegation.delegation_ref, "4");
+    expect(result.status).toBe("OK");
+    expect(result.data?.state).toBe("REVOKED");
+    expect(harness.repository.updateDelegationWithEvent).toHaveBeenCalledWith(
+      context,
+      expect.objectContaining({ state: "REVOKED", revoked_at: "2026-11-15T10:00:30Z" }),
+      "4",
+      expect.objectContaining({ key: context.idempotency_key, request_fingerprint: expect.any(String) }),
+    );
   });
 
   it("reactivates a suspended delegation only after current grantor and cited decision revalidation", async () => {
