@@ -201,7 +201,7 @@ function makeDependencies(currentFacts: AuthorityFacts = facts) {
     verifyAuthorityRevoker: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { authorized: true, source_version: "4" } })),
     readPolicyRelease: vi.fn(async (_ctx, policyRef) => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: {
       ...policy.policy_release, state: "APPROVED" as const, policy_release_ref: policyRef,
-    } })),
+    }, object_version: "1" })),
     verifyPolicyReleaseOperator: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { authorized: true } })),
     checkEnforcementConditions: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { satisfied: true, unresolved_condition_ids: [] } })),
   };
@@ -261,7 +261,7 @@ describe("INV-06 authorization application boundary", () => {
         ...policy.policy_release,
         policy_release_ref: { ...ref("POLICY_RELEASE", "policy-1"), object_version: "8" },
         version: "8",
-        ruleset_digest: "sha256:policy-v8",
+        ruleset_digest: "sha256:8888888888888888888888888888888888888888888888888888888888888888",
       },
       evaluator_version: "evaluator-v2",
     };
@@ -901,7 +901,7 @@ describe("INV-06 authorization application boundary", () => {
       decision: "APPROVE" as const,
       expected_version: "2",
       idempotency_key: approverContext.idempotency_key!,
-      decided_at: "2026-11-15T10:01:00Z",
+      decided_at: "2026-11-15T10:00:20Z",
     };
     const result = await decideApprovalRequest(
       harness.deps, approverContext, approval.approval_ref, input, "2",
