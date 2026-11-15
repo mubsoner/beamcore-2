@@ -9,6 +9,7 @@ on:
     branches:
       - master
       - engines/foundation-v1
+      - engines/shared-foundation-v1
   pull_request:
 
 jobs:
