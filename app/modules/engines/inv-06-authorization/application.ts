@@ -275,7 +275,7 @@ async function authorizeActionCore(
       return fail(context, "APPROVAL_REQUIRED", "The referenced approval is unavailable or not visible");
     }
     approval = approvalResult.data;
-    approvalCurrentVersion = approvalResult.object_version ?? approval.approval_ref.object_version;
+    approvalCurrentVersion = approvalResult.object_version;
     if (!sameObjectRef(approval.approval_ref, request.approval_ref) ||
         !sameScopeRef(approval.approval_ref.scope_ref, context.scope_ref)) {
       return fail(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Approval source returned a different or out-of-scope record");
@@ -589,7 +589,7 @@ export async function decideApprovalRequest(
       !sameScopeRef(current.data.scope_ref, context.scope_ref)) {
     return fail(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Approval source returned a different or out-of-scope record");
   }
-  const version = current.object_version ?? current.data.approval_ref.object_version;
+  const version = current.object_version;
   if (!version || version !== expectedVersion) {
     return fail(context, "VERSION_CONFLICT", "Approval version changed before the decision");
   }
@@ -608,7 +608,8 @@ export async function decideApprovalRequest(
     decision: input,
     expected_current_version: expectedVersion,
     approver_is_authorized: approver.data.authorized,
-    independent_approval_required: approver.data.independent_required,
+    independent_approval_required: approver.data.independent_required ||
+      current.data.required_approver_constraints.includes("INDEPENDENT_APPROVER"),
     now: deps.clock.now(),
   });
   if (transitioned.status !== "OK" || !transitioned.data) return propagate(context, transitioned);
@@ -645,7 +646,7 @@ async function transitionApprovalLifecycle(
       !sameScopeRef(current.data.scope_ref, context.scope_ref)) {
     return fail(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Approval source returned a different or out-of-scope record");
   }
-  const version = current.object_version ?? current.data.approval_ref.object_version;
+  const version = current.object_version;
   if (!version || version !== expectedVersion) return fail(context, "VERSION_CONFLICT", "Approval version changed before lifecycle transition");
   const operator = await deps.sources.verifyApprovalLifecycleOperator(context, current.data, targetState);
   if (operator.status !== "OK" || !operator.data) {
@@ -770,7 +771,7 @@ export async function revokeDelegation(
       !sameScopeRef(current.data.scope_ref, context.scope_ref)) {
     return fail(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Delegation source returned a different or out-of-scope record");
   }
-  const currentVersion = current.object_version ?? current.data.delegation_ref.object_version;
+  const currentVersion = current.object_version;
   if (!currentVersion || currentVersion !== expectedVersion) {
     return fail(context, "VERSION_CONFLICT", "Delegation version changed before revocation");
   }
@@ -809,7 +810,9 @@ export async function authenticatePrincipal(
   if (issues.length) return fail(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Authentication adapter returned an invalid result");
   if (result.data.state === "AUTHENTICATED" &&
       (!samePrincipal(result.data.principal_ref!, context.actor_ref) ||
-       !sameScopeRef(result.data.session_ref!.scope_ref, context.scope_ref))) {
+       !sameScopeRef(result.data.session_ref!.scope_ref, context.scope_ref) ||
+       Date.parse(result.data.expires_at!) <= Date.parse(deps.clock.now()) ||
+       Date.parse(result.data.authenticated_at!) > Date.parse(deps.clock.now()))) {
     return fail(context, "UNAUTHENTICATED", "Authentication result does not match the requested principal or scope");
   }
   return result;
@@ -831,7 +834,7 @@ export async function revokeAuthority(
   }
   const now = deps.clock.now();
   const effectiveAt = request.effective_at ?? now;
-  if (effectiveAt > now) return fail(context, "VALIDATION_ERROR", "Future-dated revocation requires a separately scheduled lifecycle operation");
+  if (Date.parse(effectiveAt) > Date.parse(now)) return fail(context, "VALIDATION_ERROR", "Future-dated revocation requires a separately scheduled lifecycle operation");
   const authorization = await deps.sources.verifyAuthorityRevoker(context, request);
   if (authorization.status !== "OK" || !authorization.data) {
     return fail(context, "DEPENDENCY_UNAVAILABLE", "Current authority to revoke this subject could not be verified");
@@ -894,7 +897,7 @@ async function transitionDelegationLifecycle(
       !sameScopeRef(current.data.scope_ref, context.scope_ref)) {
     return fail(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Delegation source returned a different or out-of-scope record");
   }
-  const version = current.object_version ?? current.data.delegation_ref.object_version;
+  const version = current.object_version;
   if (!version || version !== expectedVersion) {
     return fail(context, "VERSION_CONFLICT", "Delegation version changed before lifecycle transition");
   }
@@ -1031,7 +1034,7 @@ async function transitionPolicyReleaseLifecycle(
       !sameScopeRef(current.data.policy_release_ref.scope_ref, context.scope_ref)) {
     return fail(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Policy source returned a different or out-of-scope release");
   }
-  const version = current.object_version ?? current.data.version;
+  const version = current.object_version;
   if (!version || version !== operation.expected_version) {
     return fail(context, "VERSION_CONFLICT", "Policy release version changed before lifecycle transition");
   }
