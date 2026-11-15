@@ -37,6 +37,14 @@ function copyScopeRef(scope: ScopeRef): ScopeRef {
   };
 }
 
+function scopeKey(scope: ScopeRef): string {
+  return JSON.stringify([
+    scope.scope_kind,
+    scope.scope_id,
+    scope.parent_scope_ref ? scopeKey(scope.parent_scope_ref) : null,
+  ]);
+}
+
 /**
  * Test/reference adapter only. This store is intentionally process-local and
  * is not durable; production adapters must enforce the same rules inside the
@@ -73,14 +81,19 @@ export function createInMemoryEventInbox(
       // The adapter owns fingerprint calculation; callers cannot supply or forge it.
       const verifiedFingerprint = await fingerprintInboxEvent(context, consumer_id, event);
       if (verifiedFingerprint.status !== "OK" || !verifiedFingerprint.data) {
-        return verifiedFingerprint as ReturnType<EventInboxPort["accept"]> extends Promise<infer T> ? T : never;
+        return createOperationResult<InboxAcceptance>({
+          status: "REJECTED",
+          correlation_id: context.correlation_id,
+          errors: verifiedFingerprint.errors,
+          warnings: verifiedFingerprint.warnings,
+        });
       }
       const fingerprint = verifiedFingerprint.data;
 
-      const scopeKey = JSON.stringify(context.scope_ref);
-      const eventKey = JSON.stringify([scopeKey, consumer_id, event.event_id]);
+      const scopedIdentity = scopeKey(context.scope_ref);
+      const eventKey = JSON.stringify([scopedIdentity, consumer_id, event.event_id]);
       const aggregateKey = JSON.stringify([
-        scopeKey,
+        scopedIdentity,
         consumer_id,
         event.aggregate_ref.object_kind,
         event.aggregate_ref.object_id,
