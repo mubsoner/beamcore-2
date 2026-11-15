@@ -57,6 +57,50 @@ describe("Inbox event contract", () => {
     );
   });
 
+  it("compares the complete hierarchical tenant scope path", () => {
+    const parentA = { scope_id: "org-a", scope_kind: "ORGANIZATION" as const };
+    const parentB = { scope_id: "org-b", scope_kind: "ORGANIZATION" as const };
+    const childScope = {
+      scope_id: "project-1",
+      scope_kind: "PROJECT" as const,
+      parent_scope_ref: parentA,
+    };
+    const childContext: RequestContext = { ...context, scope_ref: childScope };
+    const foreignParentEvent = event({
+      scope_ref: {
+        scope_id: "project-1",
+        scope_kind: "PROJECT",
+        parent_scope_ref: parentB,
+      },
+      object_ref: {
+        object_kind: "STOCK_ITEM",
+        object_id: "item-1",
+        object_version: "7",
+        scope_ref: {
+          scope_id: "project-1",
+          scope_kind: "PROJECT",
+          parent_scope_ref: parentB,
+        },
+      },
+      aggregate_ref: {
+        object_kind: "INVENTORY",
+        object_id: "inventory-1",
+        object_version: "7",
+        scope_ref: {
+          scope_id: "project-1",
+          scope_kind: "PROJECT",
+          parent_scope_ref: parentB,
+        },
+      },
+    });
+
+    expect(validateInboxEvent(
+      childContext,
+      "inventory-projection-v1",
+      foreignParentEvent,
+    )).toContain("event scope_ref must match the authenticated request scope");
+  });
+
   it("rejects an event outside the authenticated request scope", () => {
     const foreign = event({
       scope_ref: { scope_id: "tenant-b", scope_kind: "ORGANIZATION" },
