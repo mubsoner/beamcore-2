@@ -253,6 +253,34 @@ describe("INV-06 authorization application boundary", () => {
     });
   });
 
+  it("re-evaluates the current released policy version at the action boundary", async () => {
+    const harness = makeDependencies();
+    const newerPolicy: PolicyEvaluation = {
+      ...policy,
+      policy_release: {
+        ...policy.policy_release,
+        policy_release_ref: { ...ref("POLICY_RELEASE", "policy-1"), object_version: "8" },
+        version: "8",
+        ruleset_digest: "sha256:policy-v8",
+      },
+      evaluator_version: "evaluator-v2",
+    };
+    vi.mocked(harness.sources.evaluatePolicy).mockResolvedValue(
+      createOperationResult({
+        status: "OK",
+        correlation_id: context.correlation_id,
+        data: newerPolicy,
+      }),
+    );
+    const result = await recheckAuthorizationAtActionBoundary(
+      harness.deps, context, authorizationRequest(),
+    );
+    expect(result.status).toBe("OK");
+    expect(result.data?.policy_version).toBe("8");
+    expect(result.data?.policy_release_ref).toEqual(newerPolicy.policy_release.policy_release_ref);
+    expect(harness.sources.evaluatePolicy).toHaveBeenCalledTimes(1);
+  });
+
   it("defers a protected action when a required enforcement condition is unsatisfied", async () => {
     const harness = makeDependencies();
     vi.mocked(harness.sources.evaluatePolicy).mockResolvedValue(
@@ -973,6 +1001,10 @@ describe("INV-06 authorization application boundary", () => {
     });
     expect(hidden.status).toBe("REJECTED");
     expect(harness.repository.readDecision).not.toHaveBeenCalled();
+    const missing = await getAuthorityDecision(harness.deps, context, ref("AUTHORIZATION_DECISION", "missing"));
+    expect(missing.status).toBe("REJECTED");
+    expect(hidden.errors[0]?.code).toBe(missing.errors[0]?.code);
+    expect(hidden.errors[0]?.safe_message).toBe(missing.errors[0]?.safe_message);
     const explanation = await explainDenialSafe(harness.deps, context, ref("AUTHORIZATION_DECISION", "missing"));
     expect(explanation.status).toBe("REJECTED");
   });
