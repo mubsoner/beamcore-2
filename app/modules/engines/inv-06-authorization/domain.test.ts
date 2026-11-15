@@ -18,8 +18,10 @@ import {
   validateDelegationLineage,
   validateAuthorizationRequest,
   validatePrincipalContext,
+  validateApprovalAuthoritySnapshot,
   validateAuthorityFacts,
   validatePolicyEvaluation,
+  type ApprovalAuthoritySnapshot,
   type ApprovalRecord,
   type AuthorizationRequest,
   type AuthorityFacts,
@@ -197,6 +199,14 @@ describe("INV-06 authorization domain", () => {
       request_binding_fingerprint: buildApprovalBindingFingerprint(request(), "ONE_TIME"),
       requested_by_ref: context.actor_ref,
       approver_ref: { principal_id: "admin-replay", principal_kind: "USER" as const },
+      approver_authority_source_refs: [{
+        source_kind: "approver-membership",
+        object_ref: ref("MEMBERSHIP", "membership-admin-1"),
+        source_version: "4",
+        observed_at: "2026-11-15T09:59:30Z",
+      }],
+      approver_authority_observed_at: "2026-11-15T09:59:30Z",
+      approver_authority_valid_until: "2026-11-15T10:05:00Z",
       required_approver_constraints: [],
       action: "artifact.publish",
       resource_ref: ref("ARTIFACT", "artifact-1"),
@@ -376,6 +386,14 @@ describe("INV-06 authorization domain", () => {
       ...created.data!,
       state: "APPROVED" as const,
       approver_ref: { principal_id: "admin-1", principal_kind: "USER" as const },
+      approver_authority_source_refs: [{
+        source_kind: "approver-membership",
+        object_ref: ref("MEMBERSHIP", "membership-admin-1"),
+        source_version: "4",
+        observed_at: "2026-11-15T09:59:30Z",
+      }],
+      approver_authority_observed_at: "2026-11-15T09:59:30Z",
+      approver_authority_valid_until: "2026-11-15T10:05:00Z",
       decided_at: "2026-11-15T10:01:00Z",
     };
     const requestRef = ref("AUTHORIZATION_REQUEST", "auth-req-1");
@@ -459,6 +477,35 @@ describe("INV-06 authorization domain", () => {
     }).status).toBe("REJECTED");
   });
 
+  it("requires current, scoped and versioned approver evidence", () => {
+    const snapshot = {
+      authorized: true,
+      independent_required: true,
+      satisfied_constraints: ["INDEPENDENT_APPROVER"],
+      authority_source_refs: [{
+        source_kind: "approver-membership",
+        object_ref: ref("MEMBERSHIP", "admin-membership"),
+        source_version: "4",
+        observed_at: "2026-11-15T09:59:30Z",
+      }],
+      observed_at: "2026-11-15T09:59:30Z",
+      valid_until: "2026-11-15T10:05:00Z",
+    };
+    expect(validateApprovalAuthoritySnapshot(snapshot, scope, "2026-11-15T10:00:00Z")).toEqual([]);
+    expect(validateApprovalAuthoritySnapshot({
+      ...snapshot, authority_source_refs: [],
+    }, scope, "2026-11-15T10:00:00Z").length).toBeGreaterThan(0);
+    expect(validateApprovalAuthoritySnapshot({
+      ...snapshot, authority_source_refs: [{
+        ...snapshot.authority_source_refs[0],
+        object_ref: ref("MEMBERSHIP", "foreign-admin", { scope_id: "foreign", scope_kind: "ORGANIZATION" }),
+      }],
+    }, scope, "2026-11-15T10:00:00Z").length).toBeGreaterThan(0);
+    expect(validateApprovalAuthoritySnapshot({
+      ...snapshot, valid_until: "2026-11-15T09:59:59Z",
+    }, scope, "2026-11-15T10:00:00Z").length).toBeGreaterThan(0);
+  });
+
   it("rejects approvals with a different action, target, environment, tenant or expiry", () => {
     const approval: ApprovalRecord = {
       approval_id: "approval-1", approval_ref: ref("APPROVAL", "approval-1"),
@@ -466,6 +513,14 @@ describe("INV-06 authorization domain", () => {
       request_binding_fingerprint: buildApprovalBindingFingerprint(request(), "ONE_TIME"),
       requested_by_ref: context.actor_ref, required_approver_constraints: [],
       approver_ref: { principal_id: "admin-1", principal_kind: "USER" },
+      approver_authority_source_refs: [{
+        source_kind: "approver-membership",
+        object_ref: ref("MEMBERSHIP", "membership-admin-1"),
+        source_version: "4",
+        observed_at: "2026-11-15T09:59:30Z",
+      }],
+      approver_authority_observed_at: "2026-11-15T09:59:30Z",
+      approver_authority_valid_until: "2026-11-15T10:05:00Z",
       action: "artifact.delete", resource_ref: ref("ARTIFACT", "artifact-1"),
       scope_ref: scope, environment_ref: ref("ENVIRONMENT", "production"),
       context_version_refs: [], policy_release_ref: { ...ref("POLICY_RELEASE", "policy-1"), object_version: "7" },
@@ -512,6 +567,14 @@ describe("INV-06 authorization domain", () => {
       requested_by_ref: context.actor_ref,
       required_approver_constraints: [],
       approver_ref: { principal_id: "admin-1", principal_kind: "USER" },
+      approver_authority_source_refs: [{
+        source_kind: "approver-membership",
+        object_ref: ref("MEMBERSHIP", "membership-admin-1"),
+        source_version: "4",
+        observed_at: "2026-11-15T09:59:30Z",
+      }],
+      approver_authority_observed_at: "2026-11-15T09:59:30Z",
+      approver_authority_valid_until: "2026-11-15T10:05:00Z",
       action: original.action,
       resource_ref: original.resource_ref,
       scope_ref: original.scope_ref,
