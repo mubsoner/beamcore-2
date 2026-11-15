@@ -413,6 +413,33 @@ describe("INV-06 authorization domain", () => {
       idempotency_key: "claim-3", now: "2026-11-15T10:03:00Z",
     }).status).toBe("REJECTED");
   });
+  it("rejects approval creation with cross-scope or unbound Work context references", () => {
+    const otherScope: ScopeRef = { scope_id: "other-tenant", scope_kind: "ORGANIZATION" };
+    const base = {
+      approval_ref: ref("APPROVAL", "approval-context"),
+      approval_id: "approval-context",
+      request_ref: ref("AUTHORIZATION_REQUEST", "auth-req-1"),
+      request_binding_fingerprint: buildApprovalBindingFingerprint(request(), "ONE_TIME"),
+      requested_by_ref: context.actor_ref,
+      required_approver_constraints: [],
+      action: "artifact.publish",
+      resource_ref: ref("ARTIFACT", "artifact-1"),
+      scope_ref: scope,
+      environment_ref: ref("ENVIRONMENT", "production"),
+      context_version_refs: [ref("PLAN_REVISION", "plan-1", otherScope)],
+      policy_release_ref: ref("POLICY_RELEASE", "policy-1"),
+      approval_use_mode: "ONE_TIME" as const,
+      created_at: "2026-11-15T10:00:00Z",
+      expires_at: "2026-11-15T10:10:00Z",
+    };
+    expect(createPendingApproval(base).status).toBe("REJECTED");
+    expect(createPendingApproval({
+      ...base,
+      work_ref: ref("WORK", "work-1"),
+      context_version_refs: [],
+    }).status).toBe("REJECTED");
+  });
+
   it("rejects approvals with a different action, target, environment, tenant or expiry", () => {
     const approval: ApprovalRecord = {
       approval_id: "approval-1", approval_ref: ref("APPROVAL", "approval-1"),
