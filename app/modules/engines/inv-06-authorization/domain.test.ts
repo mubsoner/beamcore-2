@@ -292,8 +292,15 @@ describe("INV-06 authorization domain", () => {
   it("fails closed for unauthenticated, revoked, unknown and stale authority", () => {
     expect(evaluate({ principal: { authentication_state: "UNAUTHENTICATED" } }).data?.result).toBe("DENY");
     expect(evaluate({ facts: { membership_state: "REVOKED" } }).data?.result).toBe("DENY");
+    expect(evaluate({ facts: { permission_state: "NOT_GRANTED" } }).data?.result).toBe("DENY");
     expect(evaluate({ facts: { permission_state: "UNKNOWN" } }).data?.result).toBe("INDETERMINATE");
+    expect(evaluate({ facts: { external_authorization_state: "DENIED" } }).data?.result).toBe("DENY");
+    expect(evaluate({ facts: { external_authorization_state: "UNKNOWN" } }).data?.result).toBe("INDETERMINATE");
     expect(evaluate({ facts: { valid_until: "2026-11-15T09:59:59Z" } }).data?.result).toBe("INDETERMINATE");
+    expect(evaluate({
+      principal: { role_binding_refs: [ref("ROLE_BINDING", "OWNER")] },
+      facts: { permission_state: "NOT_GRANTED" },
+    }).data?.result).toBe("DENY");
   });
   it("fails closed when a required scoped trust assessment is missing or invalid", () => {
     expect(evaluate({ policy: { trust_required: true } }).data?.result).toBe("INDETERMINATE");
