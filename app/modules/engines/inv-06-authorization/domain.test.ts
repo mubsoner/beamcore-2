@@ -276,7 +276,8 @@ describe("INV-06 authorization domain", () => {
       approver_ref: { principal_id: "admin-1", principal_kind: "USER" },
       action: "artifact.delete", resource_ref: ref("ARTIFACT", "artifact-1"),
       scope_ref: scope, environment_ref: ref("ENVIRONMENT", "production"),
-      context_version_refs: [], approval_use_mode: "ONE_TIME",
+      context_version_refs: [], policy_release_ref: { ...ref("POLICY_RELEASE", "policy-1"), object_version: "7" },
+      approval_use_mode: "ONE_TIME",
       state: "APPROVED", created_at: "2026-11-15T09:00:00Z",
       decided_at: "2026-11-15T09:01:00Z", expires_at: "2026-11-15T11:00:00Z",
     };
