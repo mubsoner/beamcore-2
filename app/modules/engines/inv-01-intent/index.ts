@@ -3,3 +3,5 @@ import type {Base,Context,Ref,Result} from "../shared"; import {ok,err,problem,b
 /** Canonical provider-neutral domain implementation; legacy prototype exports remain temporarily for migration compatibility. */
 export * as CanonicalDomain from "./domain";
 export * as Application from "./application";
+
+export * as HandoffApplication from "./handoff";
