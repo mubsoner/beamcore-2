@@ -165,7 +165,13 @@ describe("INV-06 authorization domain", () => {
   it("requires a separately resolved service identity when a service identity is asserted", () => {
     const service = { principal_id: "service-1", principal_kind: "SERVICE" as const };
     expect(evaluate({ req: { service_identity_ref: service } }).data?.result).toBe("DENY");
-    expect(evaluate({ req: { service_identity_ref: service }, principal: { service_identity_ref: service } }).data?.result).toBe("ALLOW");
+    expect(evaluate({ req: { service_identity_ref: service }, principal: { service_identity_ref: service } }).data?.result).toBe("DENY");
+    const delegationRef = ref("DELEGATION", "service-delegation");
+    expect(evaluate({
+      req: { service_identity_ref: service, delegation_ref: delegationRef },
+      principal: { service_identity_ref: service, delegation_refs: [delegationRef] },
+      facts: { delegation_state: "VALID", verified_delegation_ref: delegationRef },
+    }).data?.result).toBe("ALLOW");
   });
   it("fails closed for unauthenticated, revoked, unknown and stale authority", () => {
     expect(evaluate({ principal: { authentication_state: "UNAUTHENTICATED" } }).data?.result).toBe("DENY");
