@@ -1487,7 +1487,8 @@ export function validateApprovalUse(
          !!source && typeof source.source_kind === "string" && !!source.source_kind.trim() &&
          isObjectRef(source.object_ref) && isScopeWithin(source.object_ref.scope_ref, request.scope_ref) &&
          isVersion(source.source_version) &&
-         isTimestamp(source.observed_at)) ||
+         isTimestamp(source.observed_at) &&
+         Date.parse(source.observed_at) <= Date.parse(now)) ||
        !isTimestamp(approval.approver_authority_observed_at) ||
        !isTimestamp(approval.approver_authority_valid_until) ||
        Date.parse(approval.approver_authority_observed_at) > Date.parse(now) ||
