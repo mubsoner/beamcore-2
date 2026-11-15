@@ -157,7 +157,7 @@ function makeDependencies(currentFacts: AuthorityFacts = facts) {
     resolvePrincipal: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: principal })),
     readAuthorityFacts: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: currentFacts })),
     evaluatePolicy: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: policy })),
-    readApproval: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: approval })),
+    readApproval: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: approval, object_version: "1" })),
     readDelegation: vi.fn(async () => createOperationResult<DelegationRecord>({ status: "REJECTED", correlation_id: context.correlation_id })),
     readDelegationLineage: vi.fn(async () => createOperationResult<DelegationRecord[]>({ status: "REJECTED", correlation_id: context.correlation_id })),
     verifyApprover: vi.fn(async () => createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: { authorized: true, independent_required: true, satisfied_constraints: ["INDEPENDENT_APPROVER"] } })),
@@ -241,6 +241,18 @@ describe("INV-06 authorization application boundary", () => {
     expect(harness.commitCalls[0].decision.reason_codes).toContain("ENFORCEMENT_CONDITIONS_UNSATISFIED");
   });
 
+  it("fails closed when an approval adapter omits the current concurrency version", async () => {
+    const harness = makeDependencies();
+    vi.mocked(harness.sources.readApproval).mockResolvedValue(
+      createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: approval }),
+    );
+    const result = await recheckAuthorizationAtActionBoundary(
+      harness.deps, context, authorizationRequest({ approval_ref: approval.approval_ref }),
+    );
+    expect(result.status).toBe("REJECTED");
+    expect(harness.repository.commitDecision).not.toHaveBeenCalled();
+  });
+
   it("uses the repository's current approval row version, not the stable reference version", async () => {
     const harness = makeDependencies();
     vi.mocked(harness.sources.readApproval).mockResolvedValue(
@@ -289,6 +301,26 @@ describe("INV-06 authorization application boundary", () => {
     expect(result.status).toBe("REJECTED");
     expect(harness.commitCalls[0].decision.result).toBe("DENY");
     expect(harness.commitCalls[0].command.approval_claim).toBeUndefined();
+  });
+
+  it("rejects an authentication result whose session has already expired", async () => {
+    const harness = makeDependencies();
+    vi.mocked(harness.sources.authenticatePrincipal).mockResolvedValue(
+      createOperationResult({ status: "OK", correlation_id: context.correlation_id, data: {
+        authentication_result_id: "authn-expired", state: "AUTHENTICATED" as const,
+        principal_ref: actor, session_ref: ref("SESSION", "expired-session"),
+        authenticated_at: "2026-11-15T09:00:00Z", expires_at: "2026-11-15T09:59:00Z",
+      } }),
+    );
+    const authRequest = {
+      authentication_request_id: "authn-request-expired",
+      proof_ref: ref("AUTH_PROOF", "proof-expired"),
+      requested_audience: "beamcore-api",
+      requested_scope_ref: scope,
+      requested_at: "2026-11-15T10:00:00Z",
+      correlation_id: context.correlation_id,
+    };
+    expect((await authenticatePrincipal(harness.deps, context, authRequest)).status).toBe("REJECTED");
   });
 
   it("authenticates through the source adapter and rejects principal substitution", async () => {
