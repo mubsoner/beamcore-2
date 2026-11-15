@@ -25,6 +25,7 @@ import {
   transitionDelegation,
   transitionPolicyRelease,
   validateApprovalUse,
+  validateApprovalAuthoritySnapshot,
   validateAuthenticationRequest,
   validateAuthenticationResult,
   validateAuthorizationRequest,
@@ -34,6 +35,7 @@ import {
   validatePolicyEvaluation,
   validatePrincipalContext,
   type ApprovalDecisionInput,
+  type ApprovalAuthoritySnapshot,
   type ApprovalRecord,
   type AuthenticationRequest,
   type AuthenticationResult,
@@ -75,11 +77,7 @@ export interface AuthorizationSourcePort {
     context: RequestContext,
     approval: ApprovalRecord,
     approver: PrincipalRef,
-  ): Promise<OperationResult<{
-    authorized: boolean;
-    independent_required: boolean;
-    satisfied_constraints: string[];
-  }>>;
+  ): Promise<OperationResult<ApprovalAuthoritySnapshot>>;
   /** Resolve grantor powers from authoritative identity, membership, policy and delegation sources. */
   resolveDelegationGrantAuthority(context: RequestContext, request: DelegationRequest): Promise<OperationResult<DelegationGrantAuthority>>;
   /** Verify the cited decision is current, ALLOW, exact-request-bound and sufficient for this grant. */
@@ -267,6 +265,7 @@ async function authorizeActionCore(
   }
 
   let approval: ApprovalRecord | undefined;
+  let approvalAuthority: ApprovalAuthoritySnapshot | undefined;
   let approvalCurrentVersion: Version | undefined;
   let approvalAuthorityVerified = false;
   if (request.approval_ref) {
@@ -300,6 +299,11 @@ async function authorizeActionCore(
           return fail(context, "DEPENDENCY_UNAVAILABLE", "Current approver authority could not be verified");
         }
         const approverData = approverResult.data;
+        const approverIssues = validateApprovalAuthoritySnapshot(approverData, context.scope_ref, deps.clock.now());
+        if (approverIssues.length) {
+          return fail(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Current approver authority evidence is missing, stale or out of scope");
+        }
+        approvalAuthority = approverData;
         const constraintsSatisfied = approval.required_approver_constraints.every(constraint =>
           approverData.satisfied_constraints.includes(constraint));
         approvalAuthorityVerified =
@@ -337,6 +341,7 @@ async function authorizeActionCore(
     facts: factsResult.data,
     policy: policyResult.data,
     approval,
+    approval_authority: approvalAuthority,
     idempotency_key: idempotencyKey,
   });
   const fingerprint = await digestSha256(fingerprintMaterial);
@@ -405,6 +410,7 @@ async function authorizeActionCore(
     source_version_refs: [
       ...principalResult.data.authority_source_refs.map(source => source.object_ref),
       ...factsResult.data.source_refs.map(source => source.object_ref),
+      ...(approvalAuthority?.authority_source_refs.map(source => source.object_ref) ?? []),
     ],
     evaluated_at: decision.evaluated_at,
     correlation_id: context.correlation_id,
@@ -625,6 +631,10 @@ export async function decideApprovalRequest(
   if (approver.status !== "OK" || !approver.data) {
     return fail(context, "DEPENDENCY_UNAVAILABLE", "Current approver authority could not be verified");
   }
+  const approverIssues = validateApprovalAuthoritySnapshot(approver.data, context.scope_ref, deps.clock.now());
+  if (approverIssues.length) {
+    return fail(context, "INTEGRITY_OR_UNTRUSTED_INPUT", "Approver authority evidence is missing, stale or out of scope");
+  }
   const constraintsSatisfied = current.data.required_approver_constraints.every(constraint =>
     approver.data!.satisfied_constraints.includes(constraint));
   if (!approver.data.authorized || !constraintsSatisfied) {
@@ -640,7 +650,13 @@ export async function decideApprovalRequest(
     now: deps.clock.now(),
   });
   if (transitioned.status !== "OK" || !transitioned.data) return propagate(context, transitioned);
-  return deps.repository.updateApprovalWithEvent(context, transitioned.data, expectedVersion, {
+  const approvalWithProvenance: ApprovalRecord = {
+    ...transitioned.data,
+    approver_authority_source_refs: approver.data.authority_source_refs,
+    approver_authority_observed_at: approver.data.observed_at,
+    approver_authority_valid_until: approver.data.valid_until,
+  };
+  return deps.repository.updateApprovalWithEvent(context, approvalWithProvenance, expectedVersion, {
     key: context.idempotency_key,
     request_fingerprint: await digestSha256(JSON.stringify({
       approval_ref: approvalRef,
