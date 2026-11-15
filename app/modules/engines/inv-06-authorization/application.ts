@@ -353,6 +353,7 @@ async function authorizeActionCore(
     facts: factsResult.data,
     policy: policyResult.data,
     approval,
+    approval_authority: approvalAuthority,
     approval_authority_verified: approvalAuthorityVerified,
     idempotency_key: idempotencyKey,
     decision_ref: decisionRef,
