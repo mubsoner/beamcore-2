@@ -2,6 +2,7 @@ import {
   createOperationError,
   createOperationResult,
   isObjectRef,
+  isPrincipalRef,
   isRequestContext,
   isTimestamp,
   sameObjectRef,
@@ -149,8 +150,9 @@ function propagateFailure<T>(source: OperationResult<unknown>): OperationResult<
   });
 }
 
-function sameExactObjectRef(a: ObjectRef, b: ObjectRef): boolean {
-  return sameObjectRef(a, b) && a.object_version === b.object_version;
+function sameExactObjectRef(a: unknown, b: unknown): boolean {
+  return isObjectRef(a) && isObjectRef(b) &&
+    sameObjectRef(a, b) && a.object_version === b.object_version;
 }
 
 function validateCreatedDispatchBinding(
