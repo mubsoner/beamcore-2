@@ -1314,7 +1314,10 @@ export function claimOneTimeApprovalRecord(input: {
   now: Timestamp;
 }): OperationResult<ApprovalRecord> {
   const { approval, authorization_request_ref, current_version, expected_version, idempotency_key, now } = input;
-  if (!isObjectRef(authorization_request_ref) ||
+  if (!approval || typeof approval !== "object" ||
+      !isObjectRef(approval.approval_ref) || approval.approval_ref.object_kind !== "APPROVAL" ||
+      !isScopeRef(approval.scope_ref) ||
+      !isObjectRef(authorization_request_ref) ||
       authorization_request_ref.object_kind !== "AUTHORIZATION_REQUEST" ||
       !sameScopeRef(authorization_request_ref.scope_ref, approval.scope_ref) ||
       !isVersion(current_version) || !isVersion(expected_version) ||
@@ -1336,6 +1339,7 @@ export function claimOneTimeApprovalRecord(input: {
   }
   if (approval.state === "CONSUMED") {
     if (approval.consumed_at && isTimestamp(approval.consumed_at) &&
+        Date.parse(approval.consumed_at) <= Date.parse(now) &&
         approval.consumed_by_request_ref &&
         isExactObjectRef(approval.consumed_by_request_ref, authorization_request_ref) &&
         approval.consumed_idempotency_key === idempotency_key) {
@@ -1381,6 +1385,8 @@ export function validateApprovalUse(
     approval.approval_use_mode === "ONE_TIME" &&
     !!idempotencyKey &&
     approval.consumed_idempotency_key === idempotencyKey &&
+    !!approval.consumed_at && isTimestamp(approval.consumed_at) &&
+    Date.parse(approval.consumed_at) <= Date.parse(now) &&
     !!approval.consumed_by_request_ref &&
     isExactObjectRef(approval.consumed_by_request_ref, {
       object_kind: "AUTHORIZATION_REQUEST",
