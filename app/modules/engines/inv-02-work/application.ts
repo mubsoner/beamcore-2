@@ -372,6 +372,7 @@ export interface ActivePlanGraphBinding {
   binding_state: "UNBOUND" | "BOUND";
   plan_revision_ref?: ObjectRef;
   graph_revision_ref?: ObjectRef;
+  activation_receipt_ref?: ObjectRef;
 }
 
 function sameObjectRef(a: ObjectRef, b: ObjectRef): boolean {
@@ -797,6 +798,7 @@ export async function getActivePlanGraphBinding(
 
   const plan = current.data.current_plan_ref;
   const graph = current.data.current_work_graph_ref;
+  const activationReceipt = current.data.current_plan_graph_activation_receipt_ref;
   if (!plan && !graph) {
     return createOperationResult<ActivePlanGraphBinding>({
       status: "OK",
@@ -812,6 +814,11 @@ export async function getActivePlanGraphBinding(
   if (
     !plan ||
     !graph ||
+    !activationReceipt ||
+    !isObjectRef(activationReceipt) ||
+    activationReceipt.object_kind !== "PLAN_GRAPH_ACTIVATION_RECEIPT" ||
+    activationReceipt.scope_ref.scope_id !== current.data.scope_ref.scope_id ||
+    activationReceipt.scope_ref.scope_kind !== current.data.scope_ref.scope_kind ||
     !isObjectRef(plan) ||
     plan.object_kind !== "PLAN_REVISION" ||
     !isObjectRef(graph) ||
@@ -856,6 +863,7 @@ export async function getActivePlanGraphBinding(
       binding_state: "BOUND",
       plan_revision_ref: plan,
       graph_revision_ref: graph,
+      activation_receipt_ref: activationReceipt,
     },
     object_version: current.object_version,
   });
