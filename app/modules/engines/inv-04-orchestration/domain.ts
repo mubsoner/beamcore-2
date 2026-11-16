@@ -230,6 +230,8 @@ export function createOrchestrationRun(input: {
   }
   if (graph.state !== "VALIDATED" || !sameRef(graph.work_ref, work.work_ref) ||
       !work.current_plan_ref || !work.current_work_graph_ref ||
+      !work.current_plan_graph_activation_receipt_ref ||
+      !sameRef(work.current_plan_graph_activation_receipt_ref, activation_receipt.receipt_ref) ||
       !sameRef(work.current_plan_ref, graph.source_plan_revision_ref) ||
       !sameRef(work.current_work_graph_ref, graph.graph_revision_ref)) {
     return fail("VALIDATION_ERROR", "Work must point to this exact accepted Plan and validated Graph before orchestration starts");
