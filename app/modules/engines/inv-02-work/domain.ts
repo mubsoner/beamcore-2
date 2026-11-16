@@ -51,6 +51,7 @@ export interface WorkRecord {
   current_desired_outcome_ref?: ObjectRef;
   current_plan_ref?: ObjectRef;
   current_work_graph_ref?: ObjectRef;
+  current_plan_graph_activation_receipt_ref?: ObjectRef;
   relationship_refs: ObjectRef[];
   blocker_refs: ObjectRef[];
   latest_outcome_assessment_ref?: ObjectRef;
@@ -489,6 +490,7 @@ export function applyPlanGraphActivation(
     ...work,
     current_plan_ref: receipt.plan_revision_ref,
     current_work_graph_ref: receipt.graph_revision_ref,
+    current_plan_graph_activation_receipt_ref: receipt.receipt_ref,
     current_revision: receipt.resulting_work_revision,
     updated_at: receipt.received_at,
   });
