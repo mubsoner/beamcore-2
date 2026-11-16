@@ -93,6 +93,7 @@ const makeFixtures = () => {
     ...work,
     current_plan_ref: plan.plan_revision_ref,
     current_work_graph_ref: graph.graph_revision_ref,
+    current_plan_graph_activation_receipt_ref: ref("PLAN_GRAPH_ACTIVATION_RECEIPT", "activation-1"),
   };
   const receipt = {
     receipt_ref: ref("PLAN_GRAPH_ACTIVATION_RECEIPT", "activation-1"),
@@ -220,6 +221,11 @@ describe("INV-04 orchestration domain", () => {
     expect(createOrchestrationRun({
       ...base,
       activation_request_ref: ref("GRAPH_ACTIVATION_REQUEST", "different-activation-request"),
+    }).ok).toBe(false);
+
+    expect(createOrchestrationRun({
+      ...base,
+      work: { ...fixtures.work, current_plan_graph_activation_receipt_ref: ref("PLAN_GRAPH_ACTIVATION_RECEIPT", "other-receipt") },
     }).ok).toBe(false);
 
     expect(createOrchestrationRun({
