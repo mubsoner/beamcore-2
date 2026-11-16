@@ -683,6 +683,7 @@ describe("INV-02 Plan/Graph activation application", () => {
     expect(after.data?.work_revision).toBe(2);
     expect(after.data?.plan_revision_ref?.object_id).toBe("plan-r1");
     expect(after.data?.graph_revision_ref?.object_id).toBe("graph-r1");
+    expect(after.data?.activation_receipt_ref?.object_id).toBe("activation-receipt-1");
   });
 
   it("keeps the Work binding authoritative when a later planning revision is prepared", async () => {
@@ -701,5 +702,6 @@ describe("INV-02 Plan/Graph activation application", () => {
     );
     expect(binding.status).toBe("OK");
     expect(binding.data?.binding_state).toBe("BOUND");
+    expect(binding.data?.activation_receipt_ref?.object_id).toBe("activation-receipt-1");
   });
 });
